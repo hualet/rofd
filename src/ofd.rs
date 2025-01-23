@@ -4,7 +4,7 @@ use std::io::BufReader;
 use zip::ZipArchive;
 use serde::{Deserialize, Serialize};
 
-/* 
+/*
 <?xml version="1.0" encoding="UTF-8"?><ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016" DocType="OFD" Version="1.0">
   <ofd:DocBody>
     <ofd:DocInfo>
@@ -77,6 +77,7 @@ pub struct CustomData {
     pub value: String, // XML node's text content
 }
 
+#[derive(Debug)]
 pub struct Ofd {
     pub node: OfdNode,
     pub zip_archive: ZipArchive<BufReader<File>>,

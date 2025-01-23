@@ -13,12 +13,12 @@ use crate::types::{CT_Box, CT_Color, mmtopx};
 
 pub trait Renderable {
     fn render(&self, context: &mut cairo::Context,
-        ofd: &mut Ofd, document: &mut Document);
+        ofd: &mut Ofd, document: &Document);
 }
 
 impl Renderable for Document {
     fn render(&self, _context: &mut cairo::Context,
-        _ofd: &mut Ofd, _document: &mut Document) {
+        _ofd: &mut Ofd, _document: &Document) {
         println!("render document");
         // self.pages.page.iter().for_each(|p| p.render(context));
     }
@@ -26,7 +26,7 @@ impl Renderable for Document {
 
 impl Renderable for Page {
     fn render(&self, context: &mut cairo::Context,
-        ofd: &mut Ofd, document: &mut Document) {
+        ofd: &mut Ofd, document: &Document) {
         println!("render page");
         _render_page_block(self.content.layer.events.clone(),
             context, ofd, document);
@@ -35,7 +35,7 @@ impl Renderable for Page {
 
 impl Renderable for PathObject {
     fn render(&self, context: &mut cairo::Context,
-        ofd: &mut Ofd, document: &mut Document) {
+        ofd: &mut Ofd, document: &Document) {
         context.save();
 
         let boundary = CT_Box::from(self.boundary.clone()).toPixel();
@@ -64,7 +64,7 @@ impl Renderable for PathObject {
 
 impl Renderable for TextObject {
     fn render(&self, context: &mut cairo::Context,
-        ofd: &mut Ofd, document: &mut Document) {
+        ofd: &mut Ofd, document: &Document) {
         context.save();
 
         let boundary = CT_Box::from(self.boundary.clone()).toPixel();
@@ -90,7 +90,7 @@ impl Renderable for TextObject {
 // implement Renderable for ImageObject
 impl Renderable for ImageObject {
     fn render(&self, context: &mut cairo::Context,
-        ofd: &mut Ofd, document: &mut Document) {
+        ofd: &mut Ofd, document: &Document) {
         context.save();
 
         let boundary = CT_Box::from(self.boundary.clone()).toPixel();
@@ -129,7 +129,7 @@ impl Renderable for ImageObject {
 
 impl Renderable for PageBlock {
     fn render(&self, context: &mut cairo::Context,
-        ofd: &mut Ofd, document: &mut Document) {
+        ofd: &mut Ofd, document: &Document) {
         println!("render pageblock");
         _render_page_block(self.events.clone(), context, ofd, document);
     }
@@ -137,7 +137,7 @@ impl Renderable for PageBlock {
 
 
 fn _render_page_block(events: Vec<Event>, context: &mut cairo::Context,
-    ofd: &mut Ofd, document: &mut Document) {
+    ofd: &mut Ofd, document: &Document) {
     for event in events.iter() {
         match event {
             Event::PathObject(p) => {
