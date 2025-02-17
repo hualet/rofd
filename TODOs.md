@@ -27,12 +27,17 @@
     - [x] ImageObject
     - [x] PageBlock
 - [ ] GUI application
+    - [ ] GTK demo
+    - [ ] Qt implementation
 
 ## dev
 
 - [ ] publish it to crates.io
 - [x] logging
 - [x] ci
+- [ ] Qt
+    - [ ] qrc setup
+    - [ ] add necessary wrapper API calls
 
 ## perf
 

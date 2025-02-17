@@ -77,14 +77,37 @@ fn build_ui(application: &gtk::Application) {
 }
 */
 
+use rofd::{read_ofd, render_ofd, TargetDevice};
+
+use cpp::cpp;
 use log::debug;
+use qmetaobject::{QImage, QPainter, QSize, ImageFormat};
 use qmetaobject::prelude::*;
 
 use std::fs;
 use std::path::Path;
 
+fn qpainter_from_qimage(value: QImage) -> QPainter {
+    cpp!(unsafe [value as "QImage*"] -> QPainter as "QPainter*" {
+        QPainter *painter = new QPainter(value);
+        return painter;
+    })
+}
+
 fn main() {
     env_logger::init();
+
+    let mut ofd_node = read_ofd("learning/test.ofd").unwrap();
+
+    let size = QSize{ width: 300, height: 300 };
+    let qimage = QImage::new(size, ImageFormat::ARGB32);
+    let qpainter = qpainter_from_qimage(qimage);
+
+    render_ofd(
+        &mut ofd_node,
+        &mut TargetDevice::QPainter(qpainter),
+    );
+    // qimage.save("qimage_target.png");
 
     let mut engine = QmlEngine::new();
     let qml_root_path = Path::new(file!()).parent().unwrap()

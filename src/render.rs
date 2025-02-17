@@ -7,6 +7,8 @@ use log::debug;
 use cairo;
 use cairo::Error;
 
+use qmetaobject::{QRectF, QColor, QPen};
+
 use crate::ofd::Ofd;
 use crate::document::Document;
 use crate::page::Page;
@@ -15,30 +17,43 @@ use crate::elements::*;
 use crate::types::{mmtopx, ct};
 
 pub trait Renderable {
-    fn render(&self, context: &mut cairo::Context,
+    fn render_to_cairo_context(&self, context: &mut cairo::Context,
         ofd: &mut Ofd, document: &Document) -> Result<(), Error>;
+    fn render_to_qpainter(&self, qpainter: &mut qmetaobject::QPainter,
+        ofd: &mut Ofd, document: &Document);
 }
 
 impl Renderable for Document {
-    fn render(&self, _context: &mut cairo::Context,
+    fn render_to_cairo_context(&self, _context: &mut cairo::Context,
         _ofd: &mut Ofd, _document: &Document) -> Result<(), Error> {
-        debug!("render document");
+        debug!("render document to cairo");
         Ok(())
-        // self.pages.page.iter().for_each(|p| p.render(context));
+    }
+
+    fn render_to_qpainter(&self, qpainter: &mut qmetaobject::QPainter,
+        _ofd: &mut Ofd, _document: &Document) {
+        debug!("render document to qpainter");
     }
 }
 
 impl Renderable for Page {
-    fn render(&self, context: &mut cairo::Context,
+    fn render_to_cairo_context(&self, context: &mut cairo::Context,
         ofd: &mut Ofd, document: &Document) -> Result<(), Error> {
         debug!("render page");
-        _render_page_block(self.content.layer.events.clone(),
+        _render_page_block_to_cairo(self.content.layer.events.clone(),
             context, ofd, document)
+    }
+
+    fn render_to_qpainter(&self, qpainter: &mut qmetaobject::QPainter,
+        ofd: &mut Ofd, document: &Document) {
+        debug!("render page to qpainter");
+        _render_page_block_to_qpainter(self.content.layer.events.clone(),
+            qpainter, ofd, document)
     }
 }
 
 impl Renderable for PathObject {
-    fn render(&self, context: &mut cairo::Context,
+    fn render_to_cairo_context(&self, context: &mut cairo::Context,
         _ofd: &mut Ofd, _document: &Document) -> Result<(), Error> {
         context.save()?;
 
@@ -65,10 +80,38 @@ impl Renderable for PathObject {
 
         context.restore()
     }
+
+    fn render_to_qpainter(&self, painter: &mut qmetaobject::QPainter,
+        _ofd: &mut Ofd, _document: &Document) {
+        debug!("render path object to qpainter");
+
+        painter.save();
+
+        // TODO(hualet): implement ctm.
+        let boundary = ct::Box::from(self.boundary.clone()).to_pixel();
+        let color = ct::Color::from(
+            self.stroke_color.as_ref().unwrap().value.clone());
+
+        let pen_color = QColor::from_rgb(color.value[0], color.value[1],
+            color.value[2]);
+        let mut pen = QPen::from_color(pen_color);
+        pen.set_width(mmtopx(self.line_width) as i32);
+        painter.set_pen(pen);
+
+        let rect = QRectF {
+            x: boundary.x as f64,
+            y: boundary.y as f64,
+            width: boundary.width as f64,
+            height: boundary.height as f64
+        };
+        painter.draw_rect(rect);
+
+        painter.restore();
+    }
 }
 
 impl Renderable for TextObject {
-    fn render(&self, context: &mut cairo::Context,
+    fn render_to_cairo_context(&self, context: &mut cairo::Context,
         _ofd: &mut Ofd, document: &Document) -> Result<(), Error> {
         context.save()?;
 
@@ -109,11 +152,16 @@ impl Renderable for TextObject {
 
         context.restore()
     }
+
+    fn render_to_qpainter(&self, qpainter: &mut qmetaobject::QPainter,
+        _ofd: &mut Ofd, _document: &Document) {
+        debug!("render text object to qpainter");
+    }
 }
 
 // implement Renderable for ImageObject
 impl Renderable for ImageObject {
-    fn render(&self, context: &mut cairo::Context,
+    fn render_to_cairo_context(&self, context: &mut cairo::Context,
         ofd: &mut Ofd, document: &Document) -> Result<(), Error> {
         context.save()?;
 
@@ -150,41 +198,51 @@ impl Renderable for ImageObject {
 
         context.restore()
     }
+
+    fn render_to_qpainter(&self, qpainter: &mut qmetaobject::QPainter,
+        ofd: &mut Ofd, document: &Document) {
+        debug!("render pageblock to qpainter");
+    }
 }
 
 impl Renderable for PageBlock {
-    fn render(&self, context: &mut cairo::Context,
+    fn render_to_cairo_context(&self, context: &mut cairo::Context,
         ofd: &mut Ofd, document: &Document) -> Result<(), Error> {
         debug!("render pageblock");
-        _render_page_block(self.events.clone(), context, ofd, document)
+        _render_page_block_to_cairo(self.events.clone(), context, ofd, document)
+    }
+
+    fn render_to_qpainter(&self, qpainter: &mut qmetaobject::QPainter,
+        ofd: &mut Ofd, document: &Document) {
+        debug!("render pageblock to qpainter");
     }
 }
 
 
-fn _render_page_block(events: Vec<Event>, context: &mut cairo::Context,
+fn _render_page_block_to_cairo(events: Vec<Event>, context: &mut cairo::Context,
     ofd: &mut Ofd, document: &Document) -> Result<(), Error> {
     for event in events.iter() {
         match event {
             Event::PathObject(p) => {
-                match p.render(context, ofd, document) {
+                match p.render_to_cairo_context(context, ofd, document) {
                     Ok(_) => (),
                     Err(e) => return Err(e),
                 }
             }
             Event::TextObject(t) => {
-                match t.render(context, ofd, document) {
+                match t.render_to_cairo_context(context, ofd, document) {
                     Ok(_) => (),
                     Err(e) => return Err(e),
                 }
             }
             Event::ImageObject(i) => {
-                match i.render(context, ofd, document) {
+                match i.render_to_cairo_context(context, ofd, document) {
                     Ok(_) => (),
                     Err(e) => return Err(e),
                 }
             }
             Event::PageBlock(p) => {
-                match p.render(context, ofd, document) {
+                match p.render_to_cairo_context(context, ofd, document) {
                     Ok(_) => (),
                     Err(e) => return Err(e),
                 }
@@ -193,6 +251,26 @@ fn _render_page_block(events: Vec<Event>, context: &mut cairo::Context,
     }
 
     Ok(())
+}
+
+fn _render_page_block_to_qpainter(events: Vec<Event>, qpainter: &mut qmetaobject::QPainter,
+    ofd: &mut Ofd, document: &Document) {
+    for event in events.iter() {
+        match event {
+            Event::PathObject(p) => {
+                p.render_to_qpainter(qpainter, ofd, document)
+            }
+            Event::TextObject(t) => {
+                t.render_to_qpainter(qpainter, ofd, document)
+            }
+            Event::ImageObject(i) => {
+                i.render_to_qpainter(qpainter, ofd, document)
+            }
+            Event::PageBlock(p) => {
+                p.render_to_qpainter(qpainter, ofd, document)
+            }
+        }
+    }
 }
 
 /*

@@ -13,7 +13,6 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use log::debug;
-
 use zip::ZipArchive;
 
 use document::{Document, DocumentRes, PublicRes, Annotations, PageAnnot};
@@ -21,6 +20,11 @@ use ofd::{Ofd, OfdNode};
 use page::Page;
 use render::Renderable;
 // use types::ct;
+
+pub enum TargetDevice {
+    CairoContext(cairo::Context),
+    QPainter(qmetaobject::QPainter),
+}
 
 pub fn read_ofd(file_path: &str) -> Result<Ofd, Box<dyn Error>> {
     let file = File::open(file_path)?;
@@ -46,7 +50,7 @@ pub fn read_ofd(file_path: &str) -> Result<Ofd, Box<dyn Error>> {
     Ok(ofd_result)
 }
 
-pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Result<(), Box<dyn Error>> {
+pub fn render_ofd(ofd: &mut Ofd, surface: &mut TargetDevice) -> Result<(), Box<dyn Error>> {
     // create a new String to store the content of the DocRoot file.
     let mut content = String::new();
 
@@ -150,7 +154,15 @@ pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Res
             page_file.read_to_string(&mut content)?;
         }
         let page = Page::from_xml(&content)?;
-        page.render(context, ofd, &document)?;
+
+        match surface {
+            TargetDevice::CairoContext(context) => {
+                page.render_to_cairo_context(context, ofd, &document)?;
+            },
+            TargetDevice::QPainter(qpainter) => {
+                page.render_to_qpainter(qpainter, ofd, &document);
+            },
+        }
     }
 
     Ok(())
@@ -163,8 +175,8 @@ pub fn export_ofd_to_png(ofd: &mut Ofd, output_path: &str, width: u32, height: u
         height as i32,
     )?;
 
-    let mut context = cairo::Context::new(&surface)?;
-    render_ofd_to_context(ofd, &mut context)?;
+    let context = cairo::Context::new(&surface)?;
+    render_ofd(ofd, &mut TargetDevice::CairoContext(context))?;
 
     let mut file = File::create(output_path)?;
     surface.write_to_png(&mut file)?;

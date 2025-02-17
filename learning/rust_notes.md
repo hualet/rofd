@@ -25,3 +25,10 @@ rustc 1.84.0 (9fc6b4312 2025-01-07)
 ## Rust 包管理
 
 - [Rust 的包管理机制](https://www.cnblogs.com/RioTian/p/18129335)
+
+
+## QMetaObject
+
+- 在 Rust 中使用 CPP 代码：
+- [Using KI18n with Rust and Qml](https://dev.to/ayush1325/using-ki18n-with-rust-and-qml-ja7)
+- [qmetaobject github](https://github.com/woboq/qmetaobject-rs/tree/master?tab=readme-ov-file#tutorial-adding-rust-wrappers-for-qt-c-api)
