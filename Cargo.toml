@@ -24,3 +24,19 @@ zip = "2.2.2"
 name = "rofd"
 path = "src/bin/rofd/main.rs"
 required-features = ["qt-reader"]
+
+[workspace]
+members = [".", "crates/rofd-core"]
+default-members = ["crates/rofd-core"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hualet/rofd"
+
+[workspace.dependencies]
+serde = { version = "1.0.217", features = ["derive"] }
+serde-xml-rs = "0.6.0"
+thiserror = "2.0.20"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

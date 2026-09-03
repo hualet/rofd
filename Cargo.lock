@@ -925,6 +925,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rofd-core"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde-xml-rs",
+ "thiserror 2.0.20",
+ "zip",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
