@@ -11,7 +11,7 @@ mod options;
 mod path;
 mod raw;
 
-pub use document::{Document, Metadata, Page};
+pub use document::{Document, Metadata, Page, Warning, WarningCode};
 pub use error::{Error, Result};
 pub use geometry::Rect;
 pub use options::{LoadOptions, ResourceLimits, Strictness};

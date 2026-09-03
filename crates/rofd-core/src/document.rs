@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 
@@ -32,6 +32,25 @@ pub struct Metadata {
     pub modification_date: Option<String>,
 }
 
+/// Stable categories for recoverable OFD problems.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum WarningCode {
+    /// The page omitted Area and inherited the document PageArea.
+    PageAreaFallback,
+}
+
+/// A recoverable OFD conformance diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Warning {
+    /// Machine-readable category.
+    pub code: WarningCode,
+    /// Path inside the OFD package.
+    pub path: String,
+    /// Human-readable explanation.
+    pub message: String,
+}
+
 #[derive(Debug)]
 struct PageReference {
     id: u64,
@@ -45,6 +64,8 @@ struct DocumentInner {
     metadata: Metadata,
     default_page_area: crate::raw::PageArea,
     pages: Vec<PageReference>,
+    strictness: crate::Strictness,
+    warnings: Mutex<Vec<Warning>>,
 }
 
 /// A read-only OFD document.
@@ -95,6 +116,7 @@ impl Document {
 
     /// Opens an OFD document from owned bytes.
     pub fn from_bytes(bytes: Vec<u8>, options: LoadOptions) -> Result<Self> {
+        let strictness = options.strictness;
         let container = Container::from_bytes(bytes, options.limits)?;
         let entry_path = PackagePath::new("OFD.xml")?;
         let ofd: OfdRoot = parse_xml(&container, &entry_path)?;
@@ -142,6 +164,8 @@ impl Document {
             },
             default_page_area: root.common_data.page_area,
             pages,
+            strictness,
+            warnings: Mutex::new(Vec::new()),
         })))
     }
 
@@ -171,9 +195,30 @@ impl Document {
         }
 
         let page: crate::raw::PageRoot = parse_xml(&self.0.container, &reference.path)?;
-        let area = page
-            .area
-            .unwrap_or_else(|| self.0.default_page_area.clone());
+        let area = match page.area {
+            Some(area) => area,
+            None if self.0.strictness == crate::Strictness::Strict => {
+                return Err(Error::InvalidStructure {
+                    path: reference.path.as_str().to_owned(),
+                    message: "Page.Area is missing".to_owned(),
+                });
+            }
+            None => {
+                self.0
+                    .warnings
+                    .lock()
+                    .map_err(|_| Error::InvalidStructure {
+                        path: reference.path.as_str().to_owned(),
+                        message: "warning store lock is poisoned".to_owned(),
+                    })?
+                    .push(Warning {
+                        code: WarningCode::PageAreaFallback,
+                        path: reference.path.as_str().to_owned(),
+                        message: "Page.Area is missing; inherited Document PageArea".to_owned(),
+                    });
+                self.0.default_page_area.clone()
+            }
+        };
         let size = crate::Rect::parse(&area.physical_box)?;
         let parsed = Arc::new(PageData { size });
         let data = reference.cache.get_or_init(|| Arc::clone(&parsed));
@@ -183,6 +228,15 @@ impl Document {
             object_id: reference.id,
             data: Arc::clone(data),
         })
+    }
+
+    /// Returns a snapshot of recoverable diagnostics collected so far.
+    pub fn warnings(&self) -> Vec<Warning> {
+        self.0
+            .warnings
+            .lock()
+            .map(|warnings| warnings.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 }
 
