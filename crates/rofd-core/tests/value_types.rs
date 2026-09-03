@@ -7,6 +7,7 @@ fn default_limits_are_finite_and_non_zero() {
     assert!(options.limits.max_entries > 0);
     assert!(options.limits.max_entry_size > 0);
     assert!(options.limits.max_total_size >= options.limits.max_entry_size);
+    assert!(options.limits.max_path_commands > 0);
 }
 
 #[test]

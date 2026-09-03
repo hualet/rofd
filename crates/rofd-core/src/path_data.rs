@@ -1,4 +1,4 @@
-use crate::{Error, Point, Result};
+use crate::{Error, Point, ResourceLimits, Result};
 
 /// A single command in an OFD abbreviated path.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,13 +52,30 @@ impl PathData {
     /// Parses an OFD abbreviated path.
     ///
     /// Each command must be explicit. Drawing and close commands are rejected
-    /// until a move command has introduced the first subpath.
+    /// until a move command has introduced the first subpath. Closing a
+    /// subpath keeps it active, so later drawing or close commands remain
+    /// valid until another move starts a new subpath.
     pub fn parse(value: &str) -> Result<Self> {
+        Self::parse_with_limit(value, ResourceLimits::default().max_path_commands)
+    }
+
+    /// Parses an OFD abbreviated path with an explicit command-count limit.
+    ///
+    /// The limit is checked before parsing or storing each command. A limit of
+    /// zero therefore rejects any input beginning with a recognized command
+    /// with [`Error::LimitExceeded`].
+    pub fn parse_with_limit(value: &str, max_commands: usize) -> Result<Self> {
         let mut parser = Parser::new(value);
         let mut commands = Vec::new();
         let mut has_subpath = false;
 
         while let Some(command) = parser.next_command()? {
+            if commands.len() >= max_commands {
+                let command_count = commands.len().saturating_add(1);
+                return Err(Error::LimitExceeded(format!(
+                    "path command count {command_count} exceeds limit {max_commands}"
+                )));
+            }
             let parsed = match command {
                 b'M' => {
                     has_subpath = true;

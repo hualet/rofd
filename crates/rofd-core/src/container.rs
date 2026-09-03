@@ -155,6 +155,7 @@ mod tests {
             max_entries: 10,
             max_entry_size: 4,
             max_total_size: 4,
+            ..ResourceLimits::default()
         };
         let error = Container::from_bytes(archive(&[("OFD.xml", b"12345")]), limits).unwrap_err();
         assert!(matches!(error, Error::LimitExceeded(_)));

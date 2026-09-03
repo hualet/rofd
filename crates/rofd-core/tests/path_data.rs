@@ -138,3 +138,73 @@ fn rejects_drawing_commands_before_the_first_move() {
         assert_invalid(value);
     }
 }
+
+#[test]
+fn enforces_the_command_limit_before_adding_repeated_close_commands() {
+    let value = "M 0 0 C C C";
+    let error = PathData::parse_with_limit(value, 3).unwrap_err();
+
+    assert!(matches!(
+        error,
+        Error::LimitExceeded(message)
+            if message.contains("path command count 4") && message.contains("limit 3")
+    ));
+
+    for nonempty_path in ["M 0 0", "M"] {
+        let zero_limit = PathData::parse_with_limit(nonempty_path, 0).unwrap_err();
+        assert!(matches!(
+            zero_limit,
+            Error::LimitExceeded(message)
+                if message.contains("path command count 1") && message.contains("limit 0")
+        ));
+    }
+}
+
+#[test]
+fn signed_numbers_may_start_without_whitespace_after_a_number() {
+    for (value, expected) in [("M1-2", point(1.0, -2.0)), ("M1e-2+3", point(0.01, 3.0))] {
+        assert_eq!(
+            PathData::parse(value).unwrap().commands(),
+            &[PathCommand::MoveTo(expected)]
+        );
+    }
+}
+
+#[test]
+fn rejects_doubled_signs_and_malformed_exponents() {
+    for value in [
+        "M--1 2", "M+-1 2", "M1e--2 3", "M1e+-2 3", "M1ee2 3", "M1e+ 3",
+    ] {
+        assert_invalid(value);
+    }
+}
+
+#[test]
+fn accepts_all_ascii_whitespace_defined_by_xml() {
+    let path = PathData::parse("\tM\r1\n2 L 3\t4\r\n").unwrap();
+
+    assert_eq!(
+        path.commands(),
+        &[
+            PathCommand::MoveTo(point(1.0, 2.0)),
+            PathCommand::LineTo(point(3.0, 4.0)),
+        ]
+    );
+}
+
+#[test]
+fn close_preserves_the_active_subpath_for_following_commands() {
+    let path = PathData::parse("M0 0 C C L1 1 M2 2 C").unwrap();
+
+    assert_eq!(
+        path.commands(),
+        &[
+            PathCommand::MoveTo(point(0.0, 0.0)),
+            PathCommand::Close,
+            PathCommand::Close,
+            PathCommand::LineTo(point(1.0, 1.0)),
+            PathCommand::MoveTo(point(2.0, 2.0)),
+            PathCommand::Close,
+        ]
+    );
+}
