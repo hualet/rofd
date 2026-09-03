@@ -10,6 +10,7 @@ description = "Safe OFD document parsing and query API"
 serde.workspace = true
 serde-xml-rs.workspace = true
 thiserror.workspace = true
+xml-rs.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

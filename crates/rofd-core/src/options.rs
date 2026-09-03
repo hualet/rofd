@@ -21,6 +21,10 @@ pub struct ResourceLimits {
     /// The default of 250,000 accommodates complex pages while bounding the
     /// memory occupied by the parsed command vector.
     pub max_path_commands: usize,
+    /// Maximum number of layer, group, and leaf object IDs on one page.
+    pub max_page_objects: usize,
+    /// Maximum nesting depth of page blocks on one page.
+    pub max_page_block_depth: usize,
 }
 
 impl Default for ResourceLimits {
@@ -30,6 +34,8 @@ impl Default for ResourceLimits {
             max_entry_size: 64 * 1024 * 1024,
             max_total_size: 512 * 1024 * 1024,
             max_path_commands: 250_000,
+            max_page_objects: 100_000,
+            max_page_block_depth: 64,
         }
     }
 }

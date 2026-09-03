@@ -931,6 +931,7 @@ dependencies = [
  "serde",
  "serde-xml-rs",
  "thiserror 2.0.20",
+ "xml-rs",
  "zip",
 ]
 

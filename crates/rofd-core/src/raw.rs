@@ -68,4 +68,83 @@ pub(crate) struct PageEntry {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PageRoot {
     pub(crate) area: Option<PageArea>,
+    pub(crate) content: Option<PageContent>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PageContent {
+    #[serde(rename = "Layer", default)]
+    pub(crate) layers: Vec<Layer>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Layer {
+    #[serde(rename = "ID")]
+    pub(crate) id: u64,
+    #[serde(rename = "Type")]
+    pub(crate) kind: Option<String>,
+    #[serde(rename = "$value", default)]
+    pub(crate) objects: Vec<GraphicUnit>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) enum GraphicUnit {
+    #[serde(rename = "PathObject")]
+    Path(Box<PathObject>),
+    #[serde(rename = "PageBlock")]
+    Group(PageBlock),
+    #[serde(rename = "TextObject")]
+    Text(ObjectReference),
+    #[serde(rename = "ImageObject")]
+    Image(ObjectReference),
+    #[serde(rename = "CompositeObject")]
+    Composite(ObjectReference),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PageBlock {
+    #[serde(rename = "ID")]
+    pub(crate) id: u64,
+    #[serde(rename = "$value", default)]
+    pub(crate) objects: Vec<GraphicUnit>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ObjectReference {
+    #[serde(rename = "ID")]
+    pub(crate) id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PathObject {
+    #[serde(rename = "ID")]
+    pub(crate) id: u64,
+    #[serde(rename = "Boundary")]
+    pub(crate) boundary: String,
+    #[serde(rename = "CTM")]
+    pub(crate) transform: Option<String>,
+    #[serde(rename = "Stroke")]
+    pub(crate) stroke: Option<String>,
+    #[serde(rename = "Fill")]
+    pub(crate) fill: Option<String>,
+    #[serde(rename = "LineWidth")]
+    pub(crate) line_width: Option<String>,
+    #[serde(rename = "Rule")]
+    pub(crate) fill_rule: Option<String>,
+    #[serde(rename = "Alpha")]
+    pub(crate) alpha: Option<String>,
+    #[serde(rename = "AbbreviatedData")]
+    pub(crate) abbreviated_data: String,
+    #[serde(rename = "StrokeColor")]
+    pub(crate) stroke_color: Option<PaintColor>,
+    #[serde(rename = "FillColor")]
+    pub(crate) fill_color: Option<PaintColor>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PaintColor {
+    #[serde(rename = "Value")]
+    pub(crate) value: String,
+    #[serde(rename = "Alpha")]
+    pub(crate) alpha: Option<String>,
 }

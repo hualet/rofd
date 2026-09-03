@@ -8,6 +8,8 @@ fn default_limits_are_finite_and_non_zero() {
     assert!(options.limits.max_entry_size > 0);
     assert!(options.limits.max_total_size >= options.limits.max_entry_size);
     assert!(options.limits.max_path_commands > 0);
+    assert_eq!(options.limits.max_page_objects, 100_000);
+    assert_eq!(options.limits.max_page_block_depth, 64);
 }
 
 #[test]

@@ -45,6 +45,7 @@ pub fn minimal_ofd(page_xml: &str) -> Vec<u8> {
     ofd_with_doc_bodies(page_xml, 1)
 }
 
+#[allow(dead_code)]
 pub const PAGE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
   <ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area>

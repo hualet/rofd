@@ -61,6 +61,7 @@ struct PageReference {
 #[derive(Debug)]
 struct DocumentInner {
     container: Container,
+    limits: crate::ResourceLimits,
     metadata: Metadata,
     default_page_area: crate::raw::PageArea,
     pages: Vec<PageReference>,
@@ -75,6 +76,7 @@ pub struct Document(Arc<DocumentInner>);
 #[derive(Debug)]
 struct PageData {
     size: crate::Rect,
+    layers: Vec<crate::Layer>,
 }
 
 /// One parsed page in an OFD document.
@@ -101,6 +103,11 @@ impl Page {
     pub fn size(&self) -> crate::Rect {
         self.data.size
     }
+
+    /// Returns page layers in source order.
+    pub fn layers(&self) -> &[crate::Layer] {
+        &self.data.layers
+    }
 }
 
 impl Document {
@@ -117,7 +124,8 @@ impl Document {
     /// Opens an OFD document from owned bytes.
     pub fn from_bytes(bytes: Vec<u8>, options: LoadOptions) -> Result<Self> {
         let strictness = options.strictness;
-        let container = Container::from_bytes(bytes, options.limits)?;
+        let limits = options.limits;
+        let container = Container::from_bytes(bytes, limits.clone())?;
         let entry_path = PackagePath::new("OFD.xml")?;
         let ofd: OfdRoot = parse_xml(&container, &entry_path)?;
         if ofd.doc_bodies.len() != 1 {
@@ -151,6 +159,7 @@ impl Document {
         let info = body.doc_info;
         Ok(Self(Arc::new(DocumentInner {
             container,
+            limits,
             metadata: Metadata {
                 document_id: info.document_id,
                 title: info.title,
@@ -194,7 +203,11 @@ impl Document {
             });
         }
 
-        let page: crate::raw::PageRoot = parse_xml(&self.0.container, &reference.path)?;
+        let page: crate::raw::PageRoot = parse_page_xml(
+            &self.0.container,
+            &reference.path,
+            self.0.limits.max_page_block_depth,
+        )?;
         let area = match page.area {
             Some(area) => area,
             None if self.0.strictness == crate::Strictness::Strict => {
@@ -220,7 +233,9 @@ impl Document {
             }
         };
         let size = crate::Rect::parse(&area.physical_box)?;
-        let parsed = Arc::new(PageData { size });
+        let layers =
+            crate::content::convert_layers(page.content, &self.0.limits, reference.path.as_str())?;
+        let parsed = Arc::new(PageData { size, layers });
         let data = reference.cache.get_or_init(|| Arc::clone(&parsed));
         Ok(Page {
             _document: Arc::clone(&self.0),
@@ -246,4 +261,62 @@ fn parse_xml<T: DeserializeOwned>(container: &Container, path: &PackagePath) -> 
         path: path.as_str().to_owned(),
         message: error.to_string(),
     })
+}
+
+fn parse_page_xml<T: DeserializeOwned>(
+    container: &Container,
+    path: &PackagePath,
+    max_page_block_depth: usize,
+) -> Result<T> {
+    let bytes = container.read(path)?;
+    preflight_page_xml(&bytes, path, max_page_block_depth)?;
+    serde_xml_rs::from_reader(bytes.as_slice()).map_err(|error| Error::Xml {
+        path: path.as_str().to_owned(),
+        message: error.to_string(),
+    })
+}
+
+fn preflight_page_xml(bytes: &[u8], path: &PackagePath, max_page_block_depth: usize) -> Result<()> {
+    use xml::reader::{EventReader, XmlEvent};
+
+    let mut elements = Vec::new();
+    let mut page_block_depth = 0usize;
+    for event in EventReader::new(bytes) {
+        match event.map_err(|error| Error::Xml {
+            path: path.as_str().to_owned(),
+            message: error.to_string(),
+        })? {
+            XmlEvent::StartElement { name, .. } => {
+                if matches!(
+                    elements.last().map(String::as_str),
+                    Some("Layer" | "PageBlock")
+                ) && !matches!(
+                    name.local_name.as_str(),
+                    "PathObject" | "PageBlock" | "TextObject" | "ImageObject" | "CompositeObject"
+                ) {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: format!("unknown graphic unit {}", name.local_name),
+                    });
+                }
+                if name.local_name == "PageBlock" {
+                    page_block_depth = page_block_depth.saturating_add(1);
+                    if page_block_depth > max_page_block_depth {
+                        return Err(Error::LimitExceeded(format!(
+                            "page block depth {page_block_depth} exceeds limit {max_page_block_depth}"
+                        )));
+                    }
+                }
+                elements.push(name.local_name);
+            }
+            XmlEvent::EndElement { name } => {
+                if name.local_name == "PageBlock" {
+                    page_block_depth = page_block_depth.saturating_sub(1);
+                }
+                elements.pop();
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }

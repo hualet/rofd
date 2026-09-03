@@ -3,6 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 mod container;
+mod content;
 mod document;
 mod error;
 mod geometry;
@@ -12,6 +13,10 @@ mod path;
 mod path_data;
 mod raw;
 
+pub use content::{
+    FillRule, Layer, LayerType, PageGroup, PageObject, PathObject, UnsupportedObject,
+    UnsupportedObjectKind,
+};
 pub use document::{Document, Metadata, Page, Warning, WarningCode};
 pub use error::{Error, Result};
 pub use geometry::{Point, Rect, Transform};
