@@ -82,8 +82,10 @@ git commit -m "feat(core): add graphics value types"
 
 **Files:**
 - Create: `crates/rofd-core/src/path_data.rs`
+- Modify: `crates/rofd-core/src/options.rs`
 - Modify: `crates/rofd-core/src/lib.rs`
 - Create: `crates/rofd-core/tests/path_data.rs`
+- Modify: `crates/rofd-core/tests/value_types.rs`
 
 - [ ] **Step 1: Write failing path tests**
 
@@ -114,7 +116,7 @@ Expected: FAIL because `PathData` and `PathCommand` do not exist.
 
 - [ ] **Step 3: Implement a tokenizer and command parser**
 
-Tokenize letters separately from signed decimal/exponent numbers, then consume exact command arities: `M/L=2`, `Q=4`, `B=6`, `A=7`, `C=0`. Allow multiple subpaths, each introduced by `M`; reject drawing commands before the first `M`, trailing operands, unknown letters, invalid arc flags, and all non-finite values with `Error::InvalidValue { field: "path data", ... }`. Expose `commands(&self) -> &[PathCommand]`.
+Tokenize letters separately from signed decimal/exponent numbers, then consume exact command arities: `M/L=2`, `Q=4`, `B=6`, `A=7`, `C=0`. Allow multiple subpaths, each introduced by `M`; reject drawing commands before the first `M`, trailing operands, unknown letters, invalid arc flags, and all non-finite values with `Error::InvalidValue { field: "path data", ... }`. Expose `commands(&self) -> &[PathCommand]` and `parse_with_limit`; add `ResourceLimits::max_path_commands` and reject before each command allocation to prevent short-input/large-command-vector amplification.
 
 - [ ] **Step 4: Verify and fuzz the parser with representative malformed strings**
 
@@ -130,7 +132,7 @@ Expected: PASS with no panic.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/rofd-core/src/path_data.rs crates/rofd-core/src/lib.rs crates/rofd-core/tests/path_data.rs
+git add crates/rofd-core/src/path_data.rs crates/rofd-core/src/options.rs crates/rofd-core/src/lib.rs crates/rofd-core/tests/path_data.rs crates/rofd-core/tests/value_types.rs
 git commit -m "feat(core): parse OFD path data"
 ```
 
