@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
-
-//! Safe, read-only OFD document model.
+#![doc = include_str!("../README.md")]
 
 mod container;
 mod document;

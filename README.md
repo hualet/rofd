@@ -9,53 +9,40 @@
 OFD (Open Form Document) is an open standard for electronic documents, which is widely used in China. Unlike PDF, which is a layout-based format, OFD is a semantic-based format, which means it stores the document structure and text information separately. This makes OFD documents more flexible and easier to edit than PDFs. OFD also supports more features than PDF, such as form filling and digital signatures.
 
 
-# Plan
+# Project status
 
-Current achivements:
+- `rofd-core`: safe OFD container, metadata, and page access foundation.
+- Root `rofd` package: legacy Cairo rendering prototype kept during migration.
+- Qt/QML reader: design approved; implementation follows the C ABI phase.
 
-- [x] learning
-    - [x] Rust (basic syntax, types, traits, etc), notes [here](learning/notes.md)
-    - [x] OFD spec (basic structure and elements)
-- [x] parsing OFD files
-    - [x] drawing text, images, simple paths
-- [x] rendering to png
-- [x] showing in a simple GUI application
+The target architecture and phased roadmap are documented in
+[`docs/superpowers/specs/2026-09-03-rofd-library-reader-design.md`](docs/superpowers/specs/2026-09-03-rofd-library-reader-design.md).
+The active core-foundation plan is in
+[`docs/superpowers/plans/2026-09-03-rofd-core-foundation.md`](docs/superpowers/plans/2026-09-03-rofd-core-foundation.md).
 
-Next steps: [TODOs.md](TODOs.md)
-
-
-# Usage
-
-To try it out, you can run the following command:
+# Build the core library
 
 ```bash
-RUST_LOG=debug cargo run
+cargo test -p rofd-core
 ```
 
-# Logging
+# Run the legacy Qt prototype
 
-This library uses the `log` crate to record logs. To view log output, you need to initialize a logger implementation in your application. For example, using `env_logger`:
-
-
-```rust
-fn main() {
-    // initialize logger
-    env_logger::init();
-
-    // your code...
-    let mut ofd_node = read_ofd("learning/test.ofd").unwrap();
-    export_ofd_to_png(&mut ofd_node, "target/out.png").unwrap();
-}
+```bash
+cargo run --features qt-reader --bin rofd
 ```
 
+The Qt command requires the system Qt development dependencies used by
+`qmetaobject`. The prototype is not yet the planned OFD reader.
 
-# Project Strcuture
+# Project structure
 
 This project is organized into the following directories and files:
 
-- `src/`: source code.
-- `src/bin/rofd`: the rofd binary crate.
-- `src/lib.rs`: the main library crate.
+- `crates/rofd-core/`: independent document parsing and query crate.
+- `src/`: legacy parser and Cairo renderer retained during migration.
+- `src/bin/rofd`: legacy Qt/QML prototype.
+- `src/lib.rs`: legacy library crate.
     - `src/document.rs`: document parsing and rendering.
     - `src/page.rs`: page parsing and rendering.
     - `src/render.rs`: rendering to Cairo surface.

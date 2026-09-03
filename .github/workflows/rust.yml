@@ -22,7 +22,7 @@ jobs:
         sudo apt-get install -y build-essential libcairo2-dev
     - name: Format
       run: cargo fmt --all -- --check
-    - name: Check legacy library
-      run: cargo check --lib --tests
-    - name: Test
-      run: cargo test --lib --tests
+    - name: Lint core
+      run: cargo clippy -p rofd-core --all-targets -- -D warnings
+    - name: Test core
+      run: cargo test -p rofd-core
