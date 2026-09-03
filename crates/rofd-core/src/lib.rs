@@ -6,6 +6,7 @@
 mod error;
 mod geometry;
 mod options;
+mod path;
 
 pub use error::{Error, Result};
 pub use geometry::Rect;
