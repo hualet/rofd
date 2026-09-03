@@ -3,10 +3,8 @@ use crate::{Error, Result};
 /// A finite point expressed in OFD millimetres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
-    /// Horizontal coordinate.
-    pub x: f64,
-    /// Vertical coordinate.
-    pub y: f64,
+    x: f64,
+    y: f64,
 }
 
 impl Point {
@@ -21,6 +19,16 @@ impl Point {
 
         Ok(Self { x, y })
     }
+
+    /// Returns the horizontal coordinate.
+    pub fn x(self) -> f64 {
+        self.x
+    }
+
+    /// Returns the vertical coordinate.
+    pub fn y(self) -> f64 {
+        self.y
+    }
 }
 
 /// A finite two-dimensional affine transform.
@@ -29,18 +37,12 @@ impl Point {
 /// `y' = b*x + d*y + f`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform {
-    /// Horizontal scale or rotation component.
-    pub a: f64,
-    /// Vertical shear or rotation component.
-    pub b: f64,
-    /// Horizontal shear or rotation component.
-    pub c: f64,
-    /// Vertical scale or rotation component.
-    pub d: f64,
-    /// Horizontal translation.
-    pub e: f64,
-    /// Vertical translation.
-    pub f: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    e: f64,
+    f: f64,
 }
 
 impl Transform {
@@ -54,42 +56,87 @@ impl Transform {
         f: 0.0,
     };
 
-    /// Parses six whitespace-separated finite matrix components.
-    pub fn parse(value: &str) -> Result<Self> {
-        let values = value
-            .split_whitespace()
-            .map(str::parse::<f64>)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| invalid_transform(value))?;
-        let &[a, b, c, d, e, f] = values.as_slice() else {
-            return Err(invalid_transform(value));
-        };
-
-        if values.iter().any(|number| !number.is_finite()) {
-            return Err(invalid_transform(value));
+    /// Creates an affine transform from six finite matrix components.
+    pub fn new(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> Result<Self> {
+        if [a, b, c, d, e, f]
+            .iter()
+            .any(|component| !component.is_finite())
+        {
+            return Err(invalid_transform(&format!("{a} {b} {c} {d} {e} {f}")));
         }
 
         Ok(Self { a, b, c, d, e, f })
     }
 
-    /// Composes two transforms, applying `self` first and `next` second.
-    pub fn then(self, next: Self) -> Self {
-        Self {
-            a: next.a * self.a + next.c * self.b,
-            b: next.b * self.a + next.d * self.b,
-            c: next.a * self.c + next.c * self.d,
-            d: next.b * self.c + next.d * self.d,
-            e: next.a * self.e + next.c * self.f + next.e,
-            f: next.b * self.e + next.d * self.f + next.f,
+    /// Parses six whitespace-separated finite matrix components.
+    pub fn parse(value: &str) -> Result<Self> {
+        let mut components = value.split_whitespace();
+        let [Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)] = [(); 6].map(|()| {
+            components
+                .next()
+                .and_then(|component| component.parse::<f64>().ok())
+        }) else {
+            return Err(invalid_transform(value));
+        };
+        if components.next().is_some() {
+            return Err(invalid_transform(value));
         }
+
+        Self::new(a, b, c, d, e, f).map_err(|_| invalid_transform(value))
+    }
+
+    /// Composes two transforms, applying `self` first and `next` second.
+    ///
+    /// Returns an error if composition overflows to a non-finite component.
+    pub fn then(self, next: Self) -> Result<Self> {
+        Self::new(
+            next.a * self.a + next.c * self.b,
+            next.b * self.a + next.d * self.b,
+            next.a * self.c + next.c * self.d,
+            next.b * self.c + next.d * self.d,
+            next.a * self.e + next.c * self.f + next.e,
+            next.b * self.e + next.d * self.f + next.f,
+        )
     }
 
     /// Applies this transform to a point.
-    pub fn apply(self, point: Point) -> Point {
-        Point {
-            x: self.a * point.x + self.c * point.y + self.e,
-            y: self.b * point.x + self.d * point.y + self.f,
-        }
+    ///
+    /// Returns an error if mapping overflows to a non-finite coordinate.
+    pub fn apply(self, point: Point) -> Result<Point> {
+        Point::new(
+            self.a * point.x + self.c * point.y + self.e,
+            self.b * point.x + self.d * point.y + self.f,
+        )
+    }
+
+    /// Returns the horizontal scale or rotation component.
+    pub fn a(self) -> f64 {
+        self.a
+    }
+
+    /// Returns the vertical shear or rotation component.
+    pub fn b(self) -> f64 {
+        self.b
+    }
+
+    /// Returns the horizontal shear or rotation component.
+    pub fn c(self) -> f64 {
+        self.c
+    }
+
+    /// Returns the vertical scale or rotation component.
+    pub fn d(self) -> f64 {
+        self.d
+    }
+
+    /// Returns the horizontal translation.
+    pub fn e(self) -> f64 {
+        self.e
+    }
+
+    /// Returns the vertical translation.
+    pub fn f(self) -> f64 {
+        self.f
     }
 }
 

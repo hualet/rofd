@@ -27,14 +27,17 @@ impl Color {
     /// Every channel must be an integer in the inclusive range `0..=255`. An omitted
     /// alpha channel defaults to fully opaque.
     pub fn parse_rgb(value: &str, alpha: Option<&str>) -> Result<Self> {
-        let channels = value
-            .split_whitespace()
-            .map(str::parse::<u8>)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| invalid_color(value))?;
-        let &[red, green, blue] = channels.as_slice() else {
+        let mut channels = value.split_whitespace();
+        let [Some(red), Some(green), Some(blue)] = [(); 3].map(|()| {
+            channels
+                .next()
+                .and_then(|channel| channel.parse::<u8>().ok())
+        }) else {
             return Err(invalid_color(value));
         };
+        if channels.next().is_some() {
+            return Err(invalid_color(value));
+        }
         let alpha = alpha
             .map(str::parse::<u8>)
             .transpose()
