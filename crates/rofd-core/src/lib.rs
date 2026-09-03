@@ -3,6 +3,7 @@
 
 //! Safe, read-only OFD document model.
 
+mod container;
 mod error;
 mod geometry;
 mod options;
