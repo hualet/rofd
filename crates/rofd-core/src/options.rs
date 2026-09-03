@@ -16,10 +16,13 @@ pub struct ResourceLimits {
     pub max_entry_size: u64,
     /// Maximum sum of declared uncompressed entry sizes.
     pub max_total_size: u64,
-    /// Maximum number of commands accepted in one abbreviated path.
+    /// Maximum number of path commands accepted by the configured operation.
     ///
-    /// The default of 250,000 accommodates complex pages while bounding the
-    /// memory occupied by the parsed command vector.
+    /// [`crate::PathData::parse`] uses the default value as a standalone
+    /// per-call cap, while [`crate::PathData::parse_with_limit`] accepts the
+    /// equivalent cap explicitly. During [`crate::Document`] page conversion,
+    /// this configured value is a cumulative budget shared by every path on
+    /// one page. The default is 250,000 commands.
     pub max_path_commands: usize,
     /// Maximum number of layer, group, and leaf object IDs on one page.
     pub max_page_objects: usize,

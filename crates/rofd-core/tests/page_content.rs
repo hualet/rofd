@@ -143,6 +143,28 @@ fn alpha_combination_rounds_to_the_nearest_integer() {
 }
 
 #[test]
+fn enabled_fill_without_color_defaults_to_black_with_object_alpha() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject
+  ID="2" Boundary="0 0 1 1" Stroke="false" Fill="true" Alpha="128">
+  <ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap();
+    let PageObject::Path(path) = &page.layers()[0].objects()[0] else {
+        panic!("expected a path object");
+    };
+
+    assert_eq!(
+        path.fill(),
+        Some(Color {
+            alpha: 128,
+            ..Color::BLACK
+        })
+    );
+}
+
+#[test]
 fn nested_page_blocks_preserve_exact_source_order() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1">
@@ -252,6 +274,34 @@ fn rejects_nonpositive_or_nonfinite_line_width() {
 }
 
 #[test]
+fn rejects_invalid_stroke_and_fill_attributes() {
+    for (attribute, field) in [("Stroke=\"yes\"", "stroke"), ("Fill=\"1\"", "fill")] {
+        let content = format!(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1" {attribute}><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+        );
+        let error = open_page(&content).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidValue { field: actual, .. } if actual == field),
+            "expected invalid {field}, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_object_alpha_attributes() {
+    for value in ["not-a-number", "-1", "256"] {
+        let content = format!(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1" Alpha="{value}"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+        );
+        let error = open_page(&content).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidValue { field: "alpha", .. }),
+            "expected invalid alpha, got {error:?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_boundary_transform_path_and_enabled_color() {
     let cases = [
         (
@@ -315,6 +365,26 @@ fn counts_layers_groups_and_leaves_against_page_object_limit() {
 }
 
 #[test]
+fn page_object_limit_accepts_exactly_one_layer_one_group_and_one_leaf() {
+    let limits = ResourceLimits {
+        max_page_objects: 3,
+        ..ResourceLimits::default()
+    };
+    let page = open_page_with_limits(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:TextObject ID="3"/></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        limits,
+    )
+    .unwrap();
+
+    assert_eq!(page.layers()[0].object_id(), 1);
+    let PageObject::Group(group) = &page.layers()[0].objects()[0] else {
+        panic!("expected page group");
+    };
+    assert_eq!(group.object_id(), 2);
+    assert_eq!(group.objects()[0].object_id(), 3);
+}
+
+#[test]
 fn path_command_limit_is_cumulative_across_the_page() {
     let limits = ResourceLimits {
         max_path_commands: 3,
@@ -332,6 +402,22 @@ fn path_command_limit_is_cumulative_across_the_page() {
 }
 
 #[test]
+fn cumulative_path_command_limit_accepts_the_exact_page_total() {
+    let limits = ResourceLimits {
+        max_path_commands: 4,
+        ..ResourceLimits::default()
+    };
+    let content = format!(
+        "<ofd:Content><ofd:Layer ID=\"1\">{}{}</ofd:Layer></ofd:Content>",
+        simple_path(2, "M 0 0 L 1 1"),
+        simple_path(3, "M 2 2 L 3 3")
+    );
+    let page = open_page_with_limits(&content, limits).unwrap();
+
+    assert_eq!(page.layers()[0].objects().len(), 2);
+}
+
+#[test]
 fn page_block_depth_is_checked_before_recursive_deserialization() {
     let limits = ResourceLimits {
         max_page_block_depth: 2,
@@ -345,6 +431,24 @@ fn page_block_depth_is_checked_before_recursive_deserialization() {
     assert!(
         matches!(error, Error::LimitExceeded(message) if message.contains("page block depth 3 exceeds limit 2"))
     );
+}
+
+#[test]
+fn page_block_depth_limit_accepts_the_exact_nesting_depth() {
+    let limits = ResourceLimits {
+        max_page_block_depth: 2,
+        ..ResourceLimits::default()
+    };
+    let page = open_page_with_limits(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PageBlock ID="3"><ofd:TextObject ID="4"/></ofd:PageBlock></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        limits,
+    )
+    .unwrap();
+
+    let PageObject::Group(outer) = &page.layers()[0].objects()[0] else {
+        panic!("expected outer page group");
+    };
+    assert!(matches!(outer.objects()[0], PageObject::Group(_)));
 }
 
 #[test]
