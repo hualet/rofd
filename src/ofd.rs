@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::BufReader;
 
-use zip::ZipArchive;
 use serde::{Deserialize, Serialize};
+use zip::ZipArchive;
 
 /*
 <?xml version="1.0" encoding="UTF-8"?><ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016" DocType="OFD" Version="1.0">
@@ -59,7 +59,6 @@ pub struct DocInfo {
     #[serde(rename = "CustomDatas")]
     pub custom_datas: CustomDataList,
 }
-
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]

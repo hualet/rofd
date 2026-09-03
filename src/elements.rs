@@ -367,7 +367,7 @@ pub struct PageBlock {
     #[serde(rename = "ID")]
     pub id: u32,
     #[serde(rename = "$value")]
-    pub(crate)events: Vec<Event>,
+    pub(crate) events: Vec<Event>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -402,7 +402,6 @@ impl Default for Color {
         }
     }
 }
-
 
 /* Annot_0.xml
 <?xml version="1.0" encoding="UTF-8"?>

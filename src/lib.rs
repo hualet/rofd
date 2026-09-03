@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
 mod document;
+mod elements;
 mod ofd;
 mod page;
 mod render;
 mod types;
-mod elements;
 
 use std::error::Error;
 use std::fs::File;
@@ -16,7 +16,7 @@ use log::debug;
 
 use zip::ZipArchive;
 
-use document::{Document, DocumentRes, PublicRes, Annotations, PageAnnot};
+use document::{Annotations, Document, DocumentRes, PageAnnot, PublicRes};
 use ofd::{Ofd, OfdNode};
 use page::Page;
 use render::Renderable;
@@ -46,7 +46,10 @@ pub fn read_ofd(file_path: &str) -> Result<Ofd, Box<dyn Error>> {
     Ok(ofd_result)
 }
 
-pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Result<(), Box<dyn Error>> {
+pub fn render_ofd_to_context(
+    ofd: &mut Ofd,
+    context: &mut cairo::Context,
+) -> Result<(), Box<dyn Error>> {
     // create a new String to store the content of the DocRoot file.
     let mut content = String::new();
 
@@ -65,8 +68,9 @@ pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Res
         let doc_root_path = ofd.node.doc_body.doc_root.as_str();
         let root_path = Path::new(doc_root_path);
         let res_path = root_path
-                        .parent().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
-                        .join(document.common_data.document_res.as_str());
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
+            .join(document.common_data.document_res.as_str());
         let mut document_res_file = ofd.zip_archive.by_name(res_path.to_str().unwrap())?;
 
         content.clear();
@@ -82,8 +86,9 @@ pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Res
         let doc_root_path = ofd.node.doc_body.doc_root.as_str();
         let root_path = Path::new(doc_root_path);
         let res_path = root_path
-                        .parent().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
-                        .join(document.common_data.public_res.as_str());
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
+            .join(document.common_data.public_res.as_str());
         let mut public_res_file = ofd.zip_archive.by_name(res_path.to_str().unwrap())?;
 
         content.clear();
@@ -99,8 +104,9 @@ pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Res
         let doc_root_path = ofd.node.doc_body.doc_root.as_str();
         let root_path = Path::new(doc_root_path);
         let annots_path = root_path
-                        .parent().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
-                        .join(document.annotations.clone().unwrap());
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
+            .join(document.annotations.clone().unwrap());
         let mut annotations_file = ofd.zip_archive.by_name(annots_path.to_str().unwrap())?;
 
         content.clear();
@@ -116,10 +122,12 @@ pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Res
             // let annots_root_path = Path::new(annots_path.as_str()).parent().unwrap();
             let root_path = Path::new(doc_root_path);
             let annot_path = root_path
-                                .parent()
-                                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
-                                .join("Annots") // TODO(hualet): hardcoded
-                                .join(page_annot.file_loc.as_str());
+                .parent()
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "Parent directory not found")
+                })?
+                .join("Annots") // TODO(hualet): hardcoded
+                .join(page_annot.file_loc.as_str());
             let mut annot_file = ofd.zip_archive.by_name(annot_path.to_str().unwrap())?;
             content.clear();
             annot_file.read_to_string(&mut content)?;
@@ -140,12 +148,13 @@ pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Res
             let doc_root_path = ofd.node.doc_body.doc_root.as_str();
             let root_path = Path::new(doc_root_path);
             let page_path = root_path
-                            .parent()
-                            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent directory not found"))?
-                            .join(page_info.base_loc.as_ref()
-                                                    .ok_or_else(||
-                                                        {io::Error::new(io::ErrorKind::InvalidInput, "Page base location not found")})?
-                                );
+                .parent()
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "Parent directory not found")
+                })?
+                .join(page_info.base_loc.as_ref().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "Page base location not found")
+                })?);
             let mut page_file = ofd.zip_archive.by_name(page_path.to_str().unwrap())?;
             page_file.read_to_string(&mut content)?;
         }
@@ -156,12 +165,13 @@ pub fn render_ofd_to_context(ofd: &mut Ofd, context: &mut cairo::Context) -> Res
     Ok(())
 }
 
-pub fn export_ofd_to_png(ofd: &mut Ofd, output_path: &str, width: u32, height: u32) -> Result<(), Box<dyn Error>> {
-    let surface = cairo::ImageSurface::create(
-        cairo::Format::ARgb32,
-        width as i32,
-        height as i32,
-    )?;
+pub fn export_ofd_to_png(
+    ofd: &mut Ofd,
+    output_path: &str,
+    width: u32,
+    height: u32,
+) -> Result<(), Box<dyn Error>> {
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width as i32, height as i32)?;
 
     let mut context = cairo::Context::new(&surface)?;
     render_ofd_to_context(ofd, &mut context)?;

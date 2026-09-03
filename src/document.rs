@@ -1,4 +1,4 @@
-use serde::{Deserialize};
+use serde::Deserialize;
 
 use crate::elements::*;
 
@@ -73,8 +73,6 @@ impl Document {
     }
 }
 
-
-
 /*  DocumentRes.xml
 <?xml version="1.0" encoding="UTF-8"?><ofd:Res xmlns:ofd="http://www.ofdspec.org/2016" BaseLoc="Res">
   <ofd:MultiMedias>
@@ -116,7 +114,6 @@ impl DocumentRes {
     }
 }
 
-
 /* PublicRes.xml
 <?xml version="1.0" encoding="UTF-8"?><ofd:Res xmlns:ofd="http://www.ofdspec.org/2016" BaseLoc="Res">
   <ofd:Fonts>
@@ -155,7 +152,6 @@ impl PublicRes {
     }
 }
 
-
 /* Annotations.xml
 <?xml version="1.0" encoding="UTF-8"?>
 <ofd:Annotations xmlns:ofd="http://www.ofdspec.org/2016">
@@ -185,7 +181,6 @@ impl Annotations {
         serde_xml_rs::from_str(xml)
     }
 }
-
 
 /* Annot_0.xml
 <?xml version="1.0" encoding="UTF-8"?>

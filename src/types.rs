@@ -1,4 +1,3 @@
-
 pub fn mmtopx(mm: f64) -> f64 {
     // TODO(hualet): use actual dpi?
     let dpi = 97.0;
@@ -10,8 +9,8 @@ pub mod st {
 }
 
 pub mod ct {
-    use crate::types::st;
     use crate::types::mmtopx;
+    use crate::types::st;
 
     pub struct PageArea {
         pub x: f64,
@@ -48,7 +47,10 @@ pub mod ct {
     // implement string to PageArea
     impl From<String> for PageArea {
         fn from(value: String) -> Self {
-            let parts: Vec<f64> = value.split_whitespace().map(|s| s.parse().unwrap()).collect();
+            let parts: Vec<f64> = value
+                .split_whitespace()
+                .map(|s| s.parse().unwrap())
+                .collect();
             PageArea {
                 x: parts[0],
                 y: parts[1],
@@ -71,7 +73,10 @@ pub mod ct {
 
     impl From<String> for Matrix {
         fn from(value: String) -> Self {
-            let parts: Vec<f64> = value.split_whitespace().map(|s| s.parse().unwrap()).collect();
+            let parts: Vec<f64> = value
+                .split_whitespace()
+                .map(|s| s.parse().unwrap())
+                .collect();
             // According to the spec, the matrix should be 6 elements long.
             assert_eq!(parts.len(), 6);
 
@@ -81,7 +86,7 @@ pub mod ct {
                 c: parts[2],
                 d: parts[3],
                 e: parts[4],
-                f: parts[5]
+                f: parts[5],
             }
         }
     }
@@ -89,7 +94,10 @@ pub mod ct {
     // implement string to Box
     impl From<String> for Box {
         fn from(value: String) -> Self {
-            let parts: Vec<f64> = value.split_whitespace().map(|s| s.parse().unwrap()).collect();
+            let parts: Vec<f64> = value
+                .split_whitespace()
+                .map(|s| s.parse().unwrap())
+                .collect();
             Box {
                 x: parts[0],
                 y: parts[1],
@@ -98,7 +106,6 @@ pub mod ct {
             }
         }
     }
-
 
     impl Box {
         pub fn to_pixel(&self) -> Box {
@@ -114,12 +121,14 @@ pub mod ct {
     // implement string to Color
     impl From<String> for Color {
         fn from(value: String) -> Self {
-            let parts: Vec<i32> = value.split_whitespace().map(|s| s.parse().unwrap()).collect();
+            let parts: Vec<i32> = value
+                .split_whitespace()
+                .map(|s| s.parse().unwrap())
+                .collect();
             Color {
                 value: parts.clone(),
                 alpha: 255,
             }
         }
     }
-
 }

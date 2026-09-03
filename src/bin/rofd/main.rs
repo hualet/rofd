@@ -87,7 +87,9 @@ fn main() {
     env_logger::init();
 
     let mut engine = QmlEngine::new();
-    let qml_root_path = Path::new(file!()).parent().unwrap()
+    let qml_root_path = Path::new(file!())
+        .parent()
+        .unwrap()
         .join("ui/main_window.qml");
     let qml_root_content = fs::read_to_string(qml_root_path).unwrap();
 
