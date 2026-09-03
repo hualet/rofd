@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::de::DeserializeOwned;
 
@@ -36,6 +36,7 @@ pub struct Metadata {
 struct PageReference {
     id: u64,
     path: PackagePath,
+    cache: OnceLock<Arc<PageData>>,
 }
 
 #[derive(Debug)]
@@ -49,6 +50,37 @@ struct DocumentInner {
 /// A read-only OFD document.
 #[derive(Clone, Debug)]
 pub struct Document(Arc<DocumentInner>);
+
+#[derive(Debug)]
+struct PageData {
+    size: crate::Rect,
+}
+
+/// One parsed page in an OFD document.
+#[derive(Clone, Debug)]
+pub struct Page {
+    _document: Arc<DocumentInner>,
+    index: usize,
+    object_id: u64,
+    data: Arc<PageData>,
+}
+
+impl Page {
+    /// Returns the zero-based page index.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Returns the OFD object identifier of the page.
+    pub fn object_id(&self) -> u64 {
+        self.object_id
+    }
+
+    /// Returns the effective physical page box in millimetres.
+    pub fn size(&self) -> crate::Rect {
+        self.data.size
+    }
+}
 
 impl Document {
     /// Opens an OFD document from a host file path.
@@ -90,6 +122,7 @@ impl Document {
                 Ok(PageReference {
                     id: page.id,
                     path: document_path.resolve(&page.base_loc)?,
+                    cache: OnceLock::new(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -120,6 +153,36 @@ impl Document {
     /// Returns the number of indexed pages.
     pub fn page_count(&self) -> usize {
         self.0.pages.len()
+    }
+
+    /// Loads and returns a page by zero-based index.
+    pub fn page(&self, index: usize) -> Result<Page> {
+        let reference = self.0.pages.get(index).ok_or(Error::PageOutOfRange {
+            index,
+            page_count: self.page_count(),
+        })?;
+        if let Some(data) = reference.cache.get() {
+            return Ok(Page {
+                _document: Arc::clone(&self.0),
+                index,
+                object_id: reference.id,
+                data: Arc::clone(data),
+            });
+        }
+
+        let page: crate::raw::PageRoot = parse_xml(&self.0.container, &reference.path)?;
+        let area = page
+            .area
+            .unwrap_or_else(|| self.0.default_page_area.clone());
+        let size = crate::Rect::parse(&area.physical_box)?;
+        let parsed = Arc::new(PageData { size });
+        let data = reference.cache.get_or_init(|| Arc::clone(&parsed));
+        Ok(Page {
+            _document: Arc::clone(&self.0),
+            index,
+            object_id: reference.id,
+            data: Arc::clone(data),
+        })
     }
 }
 

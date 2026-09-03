@@ -43,7 +43,7 @@ pub(crate) struct CommonData {
     pub(crate) page_area: PageArea,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PageArea {
     pub(crate) physical_box: String,
@@ -62,4 +62,10 @@ pub(crate) struct PageEntry {
     pub(crate) id: u64,
     #[serde(rename = "BaseLoc")]
     pub(crate) base_loc: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct PageRoot {
+    pub(crate) area: Option<PageArea>,
 }
