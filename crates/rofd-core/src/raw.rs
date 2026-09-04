@@ -139,7 +139,58 @@ pub(crate) struct PathObject {
     pub(crate) stroke_color: Option<PaintColor>,
     #[serde(rename = "FillColor")]
     pub(crate) fill_color: Option<PaintColor>,
+    #[serde(rename = "Clips")]
+    pub(crate) clips: Option<Clips>,
 }
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Clips {
+    #[serde(rename = "TransFlag")]
+    pub(crate) trans_flag: Option<String>,
+    #[serde(rename = "Clip", default)]
+    pub(crate) clips: Vec<Clip>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Clip {
+    #[serde(rename = "Area", default)]
+    pub(crate) areas: Vec<ClipArea>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ClipArea {
+    #[serde(rename = "CTM")]
+    pub(crate) transform: Option<String>,
+    #[serde(rename = "$value", default)]
+    pub(crate) children: Vec<ClipAreaChild>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) enum ClipAreaChild {
+    #[serde(rename = "Path")]
+    Path(ClipPath),
+    #[serde(rename = "Text")]
+    Text(ClipText),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ClipPath {
+    #[serde(rename = "Boundary")]
+    pub(crate) boundary: String,
+    #[serde(rename = "CTM")]
+    pub(crate) transform: Option<String>,
+    #[serde(rename = "Stroke")]
+    pub(crate) stroke: Option<String>,
+    #[serde(rename = "Fill")]
+    pub(crate) fill: Option<String>,
+    #[serde(rename = "Rule")]
+    pub(crate) fill_rule: Option<String>,
+    #[serde(rename = "AbbreviatedData")]
+    pub(crate) abbreviated_data: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ClipText {}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PaintColor {

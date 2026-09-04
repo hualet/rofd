@@ -24,7 +24,12 @@ pub struct ResourceLimits {
     /// this configured value is a cumulative budget shared by every path on
     /// one page. The default is 250,000 commands.
     pub max_path_commands: usize,
-    /// Maximum number of layer, group, and leaf object IDs on one page.
+    /// Maximum number of layers, groups, leaf objects, and clip structures on
+    /// one page.
+    ///
+    /// Each `Clip`, `Area`, and clip `Path` consumes one unit even though
+    /// these structures do not have object IDs. The limit is enforced during
+    /// XML preflight, before recursive deserialization.
     pub max_page_objects: usize,
     /// Maximum nesting depth of page blocks on one page.
     pub max_page_block_depth: usize,

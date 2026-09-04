@@ -332,6 +332,10 @@ fn preflight_page_xml(
         Content,
         Layer,
         PageBlock,
+        PathObject,
+        Clips,
+        Clip,
+        ClipArea,
         Other,
     }
 
@@ -364,13 +368,21 @@ fn preflight_page_xml(
                             | "ImageObject"
                             | "CompositeObject"
                     );
+                let is_clips =
+                    matches!(parent, Some(ElementMarker::PathObject)) && name.local_name == "Clips";
+                let is_clip =
+                    matches!(parent, Some(ElementMarker::Clips)) && name.local_name == "Clip";
+                let is_clip_area =
+                    matches!(parent, Some(ElementMarker::Clip)) && name.local_name == "Area";
+                let is_clip_path =
+                    matches!(parent, Some(ElementMarker::ClipArea)) && name.local_name == "Path";
                 if parent_is_object_container && !is_graphic_unit {
                     return Err(Error::InvalidStructure {
                         path: path.as_str().to_owned(),
                         message: format!("unknown graphic unit {}", name.local_name),
                     });
                 }
-                if is_layer || is_graphic_unit {
+                if is_layer || is_graphic_unit || is_clip || is_clip_area || is_clip_path {
                     if page_object_count >= limits.max_page_objects {
                         return Err(Error::LimitExceeded(format!(
                             "page object count {} exceeds limit {}",
@@ -395,6 +407,12 @@ fn preflight_page_xml(
                     _ if is_content => ElementMarker::Content,
                     _ if is_layer => ElementMarker::Layer,
                     _ if is_page_block => ElementMarker::PageBlock,
+                    _ if is_graphic_unit && name.local_name == "PathObject" => {
+                        ElementMarker::PathObject
+                    }
+                    _ if is_clips => ElementMarker::Clips,
+                    _ if is_clip => ElementMarker::Clip,
+                    _ if is_clip_area => ElementMarker::ClipArea,
                     _ => ElementMarker::Other,
                 });
             }

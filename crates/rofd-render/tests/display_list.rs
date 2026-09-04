@@ -3,7 +3,7 @@ use std::io::{Cursor, Write};
 use rofd_core::{
     Color, Document, FillRule, LoadOptions, PathData, Point, Transform, UnsupportedObjectKind,
 };
-use rofd_render::{Command, DisplayList};
+use rofd_render::{ClipPath, Command, DisplayList};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 fn minimal_ofd(page_xml: &str) -> Vec<u8> {
@@ -276,15 +276,107 @@ fn empty_page_produces_an_empty_display_list() {
 }
 
 #[test]
-fn clip_path_variant_has_the_stable_public_shape_but_is_not_emitted_yet() {
+fn clip_path_variant_represents_one_union_operand() {
     let clip = Command::ClipPath {
-        path: PathData::parse("M 0 0 L 1 1").unwrap(),
+        paths: vec![ClipPath::new(
+            Transform::IDENTITY,
+            PathData::parse("M 0 0 L 1 1").unwrap(),
+        )],
         rule: FillRule::EvenOdd,
     };
     assert!(matches!(
         clip,
         Command::ClipPath {
             rule: FillRule::EvenOdd,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn lowers_clip_transforms_exactly_with_and_without_the_object_ctm() {
+    for (trans_flag, expected) in [
+        ("false", Point::new(79.0, 221.0).unwrap()),
+        ("true", Point::new(72.5, 247.0).unwrap()),
+    ] {
+        let page = open_page(&format!(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="100 200 30 40" CTM="2 1 0.5 3 4 5">
+  <ofd:Clips TransFlag="{trans_flag}"><ofd:Clip><ofd:Area CTM="0 1 -1 0 7 8">
+    <ofd:Path Boundary="10 20 30 40" CTM="2 0 0 3 1 2" Fill="true" Stroke="false">
+      <ofd:AbbreviatedData>M 1 2</ofd:AbbreviatedData>
+    </ofd:Path>
+  </ofd:Area></ofd:Clip></ofd:Clips>
+  <ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#
+        ));
+
+        let display_list = DisplayList::from_page(&page).unwrap();
+        let Command::ClipPath { paths, .. } = &display_list.commands()[1] else {
+            panic!("expected clip command before drawing transform");
+        };
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            paths[0]
+                .transform()
+                .apply(Point::new(1.0, 2.0).unwrap())
+                .unwrap(),
+            expected,
+            "TransFlag={trans_flag}"
+        );
+    }
+}
+
+#[test]
+fn unions_areas_per_clip_and_intersects_clips_in_source_order_before_drawing() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10">
+  <ofd:Clips>
+    <ofd:Clip>
+      <ofd:Area><ofd:Path Boundary="0 0 2 2" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 1 0</ofd:AbbreviatedData></ofd:Path></ofd:Area>
+      <ofd:Area><ofd:Path Boundary="0 0 2 2" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 2 0</ofd:AbbreviatedData></ofd:Path></ofd:Area>
+    </ofd:Clip>
+    <ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 2 2" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 3 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip>
+  </ofd:Clips>
+  <ofd:AbbreviatedData>M 4 0</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+
+    let display_list = DisplayList::from_page(&page).unwrap();
+    assert_eq!(display_list.commands()[0], Command::Save);
+    let Command::ClipPath { paths: first, rule } = &display_list.commands()[1] else {
+        panic!("expected first intersection operand");
+    };
+    assert_eq!(*rule, FillRule::NonZero);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].path(), &PathData::parse("M 1 0").unwrap());
+    assert_eq!(first[1].path(), &PathData::parse("M 2 0").unwrap());
+    let Command::ClipPath { paths: second, .. } = &display_list.commands()[2] else {
+        panic!("expected second intersection operand");
+    };
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].path(), &PathData::parse("M 3 0").unwrap());
+    assert!(matches!(
+        display_list.commands()[3],
+        Command::ConcatTransform(_)
+    ));
+    assert!(matches!(display_list.commands()[8], Command::DrawPath(_)));
+    assert_eq!(display_list.commands()[9], Command::Restore);
+}
+
+#[test]
+fn reports_clip_transform_overflow_as_an_invalid_model() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10">
+  <ofd:Clips><ofd:Clip><ofd:Area CTM="1e308 0 0 1 0 0"><ofd:Path Boundary="0 0 1 1" CTM="1e308 0 0 1 0 0" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>
+  <ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+
+    let error = DisplayList::from_page(&page).unwrap_err();
+    assert!(matches!(
+        error,
+        rofd_render::Error::InvalidModel {
+            field: "clip transform",
             ..
         }
     ));

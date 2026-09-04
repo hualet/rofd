@@ -130,6 +130,7 @@ pub struct PathObject {
     fill: Option<Color>,
     line_width: f64,
     fill_rule: FillRule,
+    clips: Vec<Clip>,
 }
 
 impl PathObject {
@@ -169,6 +170,67 @@ impl PathObject {
     }
 
     /// Returns the path fill rule.
+    pub fn fill_rule(&self) -> FillRule {
+        self.fill_rule
+    }
+
+    /// Returns source-ordered clipping intersection operands.
+    pub fn clips(&self) -> &[Clip] {
+        &self.clips
+    }
+}
+
+/// One clipping intersection operand containing unioned path areas.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clip {
+    paths: Vec<ClipPath>,
+    affected_by_object_transform: bool,
+}
+
+impl Clip {
+    /// Returns path areas whose filled regions are unioned for this operand.
+    pub fn paths(&self) -> &[ClipPath] {
+        &self.paths
+    }
+
+    /// Returns whether the owning object's CTM affects this clip.
+    pub fn affected_by_object_transform(&self) -> bool {
+        self.affected_by_object_transform
+    }
+}
+
+/// A validated fill-only path area used by a clipping operand.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipPath {
+    boundary: Rect,
+    transform: Transform,
+    area_transform: Transform,
+    path_data: PathData,
+    fill_rule: FillRule,
+}
+
+impl ClipPath {
+    /// Returns the clip path boundary relative to its owning object.
+    pub fn boundary(&self) -> Rect {
+        self.boundary
+    }
+
+    /// Returns the clip path CTM, or identity when it was omitted.
+    pub fn transform(&self) -> Transform {
+        self.transform
+    }
+
+    /// Returns the containing Area CTM, or identity when it was omitted.
+    pub fn area_transform(&self) -> Transform {
+        self.area_transform
+    }
+
+    /// Returns the validated abbreviated clip path.
+    pub fn path_data(&self) -> &PathData {
+        &self.path_data
+    }
+
+    /// Returns the rule used to fill the clip path.
     pub fn fill_rule(&self) -> FillRule {
         self.fill_rule
     }
@@ -325,6 +387,7 @@ impl ConversionContext<'_> {
             .remaining_path_commands
             .checked_sub(path_data.commands().len())
             .ok_or_else(|| Error::LimitExceeded("page path command budget exhausted".to_owned()))?;
+        let clips = self.convert_clips(path.clips)?;
 
         Ok(PathObject {
             object_id,
@@ -334,6 +397,118 @@ impl ConversionContext<'_> {
             stroke,
             fill,
             line_width,
+            fill_rule,
+            clips,
+        })
+    }
+
+    fn convert_clips(&mut self, clips: Option<raw::Clips>) -> Result<Vec<Clip>> {
+        let Some(clips) = clips else {
+            return Ok(Vec::new());
+        };
+        if clips.clips.is_empty() {
+            return Err(Error::InvalidStructure {
+                path: self.path.to_owned(),
+                message: "Clips must contain at least one Clip".to_owned(),
+            });
+        }
+        let affected_by_object_transform =
+            parse_bool(clips.trans_flag.as_deref(), false, "clip transform flag")?;
+        clips
+            .clips
+            .into_iter()
+            .map(|clip| self.convert_clip(clip, affected_by_object_transform))
+            .collect()
+    }
+
+    fn convert_clip(
+        &mut self,
+        clip: raw::Clip,
+        affected_by_object_transform: bool,
+    ) -> Result<Clip> {
+        if clip.areas.is_empty() {
+            return Err(Error::InvalidStructure {
+                path: self.path.to_owned(),
+                message: "Clip must contain at least one Area".to_owned(),
+            });
+        }
+        let mut paths = Vec::with_capacity(clip.areas.len());
+        for area in clip.areas {
+            if area.children.len() != 1 {
+                return Err(Error::InvalidStructure {
+                    path: self.path.to_owned(),
+                    message: "Area must contain exactly one Path or Text".to_owned(),
+                });
+            }
+            let area_transform = area
+                .transform
+                .as_deref()
+                .map(Transform::parse)
+                .transpose()?
+                .unwrap_or(Transform::IDENTITY);
+            let child = area.children.into_iter().next().expect("length checked");
+            match child {
+                raw::ClipAreaChild::Path(path) => {
+                    paths.push(self.convert_clip_path(path, area_transform)?);
+                }
+                raw::ClipAreaChild::Text(_) => {
+                    return Err(Error::UnsupportedFeature(
+                        "text clip areas are not supported in phase 2".to_owned(),
+                    ));
+                }
+            }
+        }
+        let fill_rule = paths[0].fill_rule;
+        if paths.iter().any(|path| path.fill_rule != fill_rule) {
+            return Err(Error::UnsupportedFeature(
+                "mixed fill rules within one Clip are not supported in phase 2".to_owned(),
+            ));
+        }
+        Ok(Clip {
+            paths,
+            affected_by_object_transform,
+        })
+    }
+
+    fn convert_clip_path(
+        &mut self,
+        path: raw::ClipPath,
+        area_transform: Transform,
+    ) -> Result<ClipPath> {
+        let fill_enabled = parse_bool(path.fill.as_deref(), false, "clip path fill")?;
+        let stroke_enabled = parse_bool(path.stroke.as_deref(), true, "clip path stroke")?;
+        if !fill_enabled || stroke_enabled {
+            return Err(Error::UnsupportedFeature(
+                "clip paths must be fill-only (Fill=true and Stroke=false) in phase 2".to_owned(),
+            ));
+        }
+        let boundary = Rect::parse(&path.boundary)
+            .map_err(|_| invalid_value("clip boundary", &path.boundary))?;
+        if boundary.width <= 0.0 || boundary.height <= 0.0 {
+            return Err(invalid_value("clip boundary", &path.boundary));
+        }
+        let transform = path
+            .transform
+            .as_deref()
+            .map(Transform::parse)
+            .transpose()?
+            .unwrap_or(Transform::IDENTITY);
+        let fill_rule = match path.fill_rule.as_deref() {
+            None | Some("NonZero") => FillRule::NonZero,
+            Some("Even-Odd") => FillRule::EvenOdd,
+            Some(value) => return Err(invalid_value("clip fill rule", value)),
+        };
+        let path_data =
+            PathData::parse_with_limit(&path.abbreviated_data, self.remaining_path_commands)?;
+        self.remaining_path_commands = self
+            .remaining_path_commands
+            .checked_sub(path_data.commands().len())
+            .ok_or_else(|| Error::LimitExceeded("page path command budget exhausted".to_owned()))?;
+        Ok(ClipPath {
+            boundary,
+            transform,
+            area_transform,
+            path_data,
             fill_rule,
         })
     }

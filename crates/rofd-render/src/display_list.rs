@@ -1,5 +1,6 @@
 use rofd_core::{
-    Color, FillRule, Page, PageObject, PathData, PathObject, Transform, UnsupportedObjectKind,
+    ClipPath as CoreClipPath, Color, FillRule, Page, PageObject, PathData, PathObject, Transform,
+    UnsupportedObjectKind,
 };
 
 use crate::{Error, Result};
@@ -17,13 +18,13 @@ pub enum Command {
     /// `M`, the new active transform is `M.then(T)`: `M` is applied first,
     /// followed by `T`.
     ConcatTransform(Transform),
-    /// Clips subsequent drawing to a path.
+    /// Intersects subsequent drawing with the union of one or more paths.
     ///
-    /// Page lowering does not emit this command yet; it is reserved for the
-    /// stable display-list shape used by clipping support.
+    /// A backend must append all `paths` and apply a single clip operation so
+    /// their filled regions are unioned. Separate commands intersect.
     ClipPath {
-        /// The clipping path.
-        path: PathData,
+        /// Paths whose filled regions form one union operand.
+        paths: Vec<ClipPath>,
         /// The fill rule used to determine the clipping region.
         rule: FillRule,
     },
@@ -39,6 +40,30 @@ pub enum Command {
     DrawPath(PathData),
     /// Restores the most recently saved graphics state.
     Restore,
+}
+
+/// One path in a display-list clipping union, already mapped to page space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipPath {
+    transform: Transform,
+    path: PathData,
+}
+
+impl ClipPath {
+    /// Creates a clip path with its complete local-to-page transform.
+    pub fn new(transform: Transform, path: PathData) -> Self {
+        Self { transform, path }
+    }
+
+    /// Returns the complete clip-local-to-page transform.
+    pub fn transform(&self) -> Transform {
+        self.transform
+    }
+
+    /// Returns the validated clipping path data.
+    pub fn path(&self) -> &PathData {
+        &self.path
+    }
 }
 
 /// An immutable sequence of drawing commands and non-fatal diagnostics.
@@ -123,6 +148,31 @@ impl DisplayList {
                 })?;
 
         self.commands.push(Command::Save);
+        for clip in path.clips() {
+            let Some(first) = clip.paths().first() else {
+                return Err(Error::InvalidModel {
+                    object_id: path.object_id(),
+                    field: "clip paths",
+                    value: "empty clipping operand".to_owned(),
+                });
+            };
+            let paths = clip
+                .paths()
+                .iter()
+                .map(|clip_path| {
+                    self.lower_clip_path(
+                        path,
+                        clip_path,
+                        clip.affected_by_object_transform(),
+                        translation,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            self.commands.push(Command::ClipPath {
+                paths,
+                rule: first.fill_rule(),
+            });
+        }
         self.commands.push(Command::ConcatTransform(object_to_page));
         self.commands.push(Command::SetStroke(path.stroke()));
         self.commands.push(Command::SetFill(path.fill()));
@@ -132,6 +182,40 @@ impl DisplayList {
             .push(Command::DrawPath(path.path_data().clone()));
         self.commands.push(Command::Restore);
         Ok(())
+    }
+
+    fn lower_clip_path(
+        &self,
+        object: &PathObject,
+        clip_path: &CoreClipPath,
+        affected_by_object_transform: bool,
+        object_boundary_translation: Transform,
+    ) -> Result<ClipPath> {
+        let boundary = clip_path.boundary();
+        let path_boundary_translation = Transform::new(1.0, 0.0, 0.0, 1.0, boundary.x, boundary.y)
+            .map_err(|error| clip_transform_error(object.object_id(), error))?;
+        let mut transform = clip_path
+            .transform()
+            .then(path_boundary_translation)
+            .and_then(|transform| transform.then(clip_path.area_transform()))
+            .map_err(|error| clip_transform_error(object.object_id(), error))?;
+        if affected_by_object_transform {
+            transform = transform
+                .then(object.transform())
+                .map_err(|error| clip_transform_error(object.object_id(), error))?;
+        }
+        transform = transform
+            .then(object_boundary_translation)
+            .map_err(|error| clip_transform_error(object.object_id(), error))?;
+        Ok(ClipPath::new(transform, clip_path.path_data().clone()))
+    }
+}
+
+fn clip_transform_error(object_id: u64, error: rofd_core::Error) -> Error {
+    Error::InvalidModel {
+        object_id,
+        field: "clip transform",
+        value: error.to_string(),
     }
 }
 

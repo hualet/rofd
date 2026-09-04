@@ -4,7 +4,7 @@
 
 mod display_list;
 
-pub use display_list::{Command, DisplayList, RenderDiagnostic};
+pub use display_list::{ClipPath, Command, DisplayList, RenderDiagnostic};
 
 /// An error encountered while lowering a validated page.
 #[derive(Debug, thiserror::Error)]
