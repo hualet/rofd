@@ -88,11 +88,11 @@ fn template_effective_layer_order_and_sources_flow_into_display_commands_and_dia
         ),
         (
             "Doc_0/Pages/Page.xml",
-            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:Area><ofd:Template TemplateID="10"/><ofd:Template TemplateID="20"/><ofd:Content><ofd:Layer ID="100"><ofd:PathObject ID="101" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 3 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content></ofd:Page>"#,
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:Area><ofd:Template TemplateID="10"/><ofd:Template TemplateID="20"/><ofd:Content><ofd:Layer ID="100"><ofd:PathObject ID="101" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 3 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PageBlock ID="102"><ofd:TextObject ID="103"/></ofd:PageBlock></ofd:Layer></ofd:Content></ofd:Page>"#,
         ),
         (
             "Doc_0/Templates/Back.xml",
-            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="10"><ofd:PathObject ID="11" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 1 0</ofd:AbbreviatedData></ofd:PathObject><ofd:TextObject ID="12"/></ofd:Layer></ofd:Content></ofd:Page>"#,
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="10"><ofd:PathObject ID="11" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 1 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PageBlock ID="13"><ofd:TextObject ID="12"/></ofd:PageBlock></ofd:Layer></ofd:Content></ofd:Page>"#,
         ),
         (
             "Doc_0/Templates/Front.xml",
@@ -124,8 +124,11 @@ fn template_effective_layer_order_and_sources_flow_into_display_commands_and_dia
         })
         .collect::<Vec<_>>();
     assert_eq!(x_coordinates, vec![1.0, 3.0, 5.0]);
-    assert_eq!(display.diagnostics().len(), 1);
+    assert_eq!(display.diagnostics().len(), 2);
     assert_eq!(display.diagnostics()[0].object_id(), 12);
+    assert_eq!(display.diagnostics()[0].source(), LayerSource::Template(10));
+    assert_eq!(display.diagnostics()[1].object_id(), 103);
+    assert_eq!(display.diagnostics()[1].source(), LayerSource::Page);
 }
 
 #[test]

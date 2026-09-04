@@ -100,6 +100,7 @@ struct PageData {
 struct TemplateData {
     layers: Vec<crate::Layer>,
     usage: crate::content::ContentUsage,
+    referenced_templates: Vec<u64>,
 }
 
 /// One parsed page in an OFD document.
@@ -363,9 +364,6 @@ impl Document {
                 message: format!("unknown template ID {id}"),
             })?;
         debug_assert_eq!(reference.id, id);
-        if let Some(data) = reference.cache.get() {
-            return Ok(Arc::clone(data));
-        }
 
         active.push(id);
         let loaded = (|| {
@@ -375,6 +373,12 @@ impl Document {
                     active.len(),
                     self.0.limits.max_page_block_depth
                 )));
+            }
+            if let Some(data) = reference.cache.get() {
+                for referenced_id in &data.referenced_templates {
+                    self.resolve_template(*referenced_id, &reference.path, active)?;
+                }
+                return Ok(Arc::clone(data));
             }
             let root: crate::raw::PageRoot =
                 parse_page_xml(&self.0.container, &reference.path, &self.0.limits)?;
@@ -410,8 +414,15 @@ impl Document {
     ) -> Result<TemplateData> {
         let mut background_templates = Vec::new();
         let mut foreground_templates = Vec::new();
+        let mut referenced_templates = Vec::with_capacity(template_references.len());
         for template in template_references {
+            usage = add_effective_usage(
+                usage,
+                crate::content::ContentUsage::template_reference(),
+                &self.0.limits,
+            )?;
             let id = parse_template_id(&template.template_id, path)?;
+            referenced_templates.push(id);
             let declaration = self
                 .0
                 .templates
@@ -455,6 +466,7 @@ impl Document {
         Ok(TemplateData {
             layers: background_templates,
             usage,
+            referenced_templates,
         })
     }
 }

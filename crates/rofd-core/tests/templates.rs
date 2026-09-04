@@ -1,22 +1,28 @@
 use std::io::{Cursor, Write};
+use std::sync::{Arc, Barrier};
 
 use rofd_core::{Document, Error, LayerSource, LayerType, LoadOptions, WarningCode};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 fn archive(document: &str, page: &str, templates: &[(&str, &str)]) -> Vec<u8> {
+    archive_with_pages(document, &[("Doc_0/Pages/Page.xml", page)], templates)
+}
+
+fn archive_with_pages(
+    document: &str,
+    pages: &[(&str, &str)],
+    templates: &[(&str, &str)],
+) -> Vec<u8> {
     let ofd = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016"><ofd:DocBody>
   <ofd:DocInfo><ofd:DocID>templates</ofd:DocID></ofd:DocInfo>
   <ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>
 </ofd:DocBody></ofd:OFD>"#;
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
-    for (name, contents) in [
-        ("OFD.xml", ofd),
-        ("Doc_0/Document.xml", document),
-        ("Doc_0/Pages/Page.xml", page),
-    ]
-    .into_iter()
-    .chain(templates.iter().copied())
+    for (name, contents) in [("OFD.xml", ofd), ("Doc_0/Document.xml", document)]
+        .into_iter()
+        .chain(pages.iter().copied())
+        .chain(templates.iter().copied())
     {
         writer
             .start_file(name, SimpleFileOptions::default())
@@ -383,12 +389,80 @@ fn repeated_references_expand_and_count_deterministically() {
     assert_eq!(sources(&page).len(), 2);
     assert_eq!(sources(&page)[0], sources(&page)[1]);
 
+    let mut exact = LoadOptions::default();
+    exact.limits.max_page_objects = 6;
+    assert_eq!(
+        Document::from_bytes(bytes.clone(), exact)
+            .unwrap()
+            .page(0)
+            .unwrap()
+            .layers()
+            .len(),
+        2
+    );
+
     let mut options = LoadOptions::default();
-    options.limits.max_page_objects = 3;
+    options.limits.max_page_objects = 5;
     assert!(matches!(
         Document::from_bytes(bytes, options).and_then(|document| document.page(0)),
-        Err(Error::LimitExceeded(ref message)) if message.contains("effective page object count 4")
+        Err(Error::LimitExceeded(ref message)) if message.contains("effective page object count 6")
     ));
+}
+
+#[test]
+fn cached_templates_still_enforce_the_current_expansion_depth() {
+    let declarations = [
+        template_decl("10", "Templates/A.xml", None),
+        template_decl("20", "Templates/B.xml", None),
+        template_decl("30", "Templates/C.xml", None),
+    ]
+    .join("");
+    let document_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:CommonData>
+    <ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>
+    {declarations}
+  </ofd:CommonData>
+  <ofd:Pages>
+    <ofd:Page ID="900" BaseLoc="Pages/Shallow.xml"/>
+    <ofd:Page ID="901" BaseLoc="Pages/Deep.xml"/>
+  </ofd:Pages>
+</ofd:Document>"#
+    );
+    let shallow = page(Some("0 0 20 20"), &template_ref("10", None), "");
+    let deep = page(Some("0 0 20 20"), &template_ref("30", None), "");
+    let a = template(&template_ref("20", None), "");
+    let b = template("", &layer(201, "Body", 1201));
+    let c = template(&template_ref("10", None), "");
+    let bytes = archive_with_pages(
+        &document_xml,
+        &[
+            ("Doc_0/Pages/Shallow.xml", &shallow),
+            ("Doc_0/Pages/Deep.xml", &deep),
+        ],
+        &[
+            ("Doc_0/Templates/A.xml", &a),
+            ("Doc_0/Templates/B.xml", &b),
+            ("Doc_0/Templates/C.xml", &c),
+        ],
+    );
+
+    let mut limited = LoadOptions::default();
+    limited.limits.max_page_block_depth = 2;
+    let document_handle = Document::from_bytes(bytes.clone(), limited).unwrap();
+    document_handle.page(0).unwrap();
+    assert!(matches!(
+        document_handle.page(1),
+        Err(Error::LimitExceeded(ref message))
+            if message.contains("template reference depth 3")
+    ));
+
+    let mut exact = LoadOptions::default();
+    exact.limits.max_page_block_depth = 3;
+    let document_handle = Document::from_bytes(bytes, exact).unwrap();
+    document_handle.page(0).unwrap();
+    assert_eq!(document_handle.page(1).unwrap().layers().len(), 1);
 }
 
 #[test]
@@ -411,6 +485,26 @@ fn effective_expansion_enforces_path_command_and_template_depth_limits() {
     assert!(matches!(
         Document::from_bytes(bytes.clone(), path_limited).and_then(|document| document.page(0)),
         Err(Error::LimitExceeded(ref message)) if message.contains("effective page path command count 4")
+    ));
+
+    let mut exact_objects = LoadOptions::default();
+    exact_objects.limits.max_page_objects = 6;
+    assert_eq!(
+        Document::from_bytes(bytes.clone(), exact_objects)
+            .unwrap()
+            .page(0)
+            .unwrap()
+            .layers()
+            .len(),
+        2
+    );
+
+    let mut object_limited = LoadOptions::default();
+    object_limited.limits.max_page_objects = 5;
+    assert!(matches!(
+        Document::from_bytes(bytes.clone(), object_limited)
+            .and_then(|document| document.page(0)),
+        Err(Error::LimitExceeded(ref message)) if message.contains("effective page object count 6")
     ));
 
     let mut depth_limited = LoadOptions::default();
@@ -488,4 +582,78 @@ fn failed_template_initialization_is_retryable_without_partial_publication() {
     assert!(document.page(0).is_err());
     assert!(document.page(0).is_err());
     assert!(document.warnings().is_empty());
+}
+
+#[test]
+fn concurrent_pages_share_only_complete_template_cache_results() {
+    let declarations = template_decl("10", "Templates/A.xml", None);
+    let document_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:CommonData>
+    <ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>
+    {declarations}
+  </ofd:CommonData>
+  <ofd:Pages>
+    <ofd:Page ID="900" BaseLoc="Pages/First.xml"/>
+    <ofd:Page ID="901" BaseLoc="Pages/Second.xml"/>
+  </ofd:Pages>
+</ofd:Document>"#
+    );
+    let page_xml = page(Some("0 0 20 20"), &template_ref("10", None), "");
+    let template_xml = template("", &layer(101, "Body", 1101));
+    let bytes = archive_with_pages(
+        &document_xml,
+        &[
+            ("Doc_0/Pages/First.xml", &page_xml),
+            ("Doc_0/Pages/Second.xml", &page_xml),
+        ],
+        &[("Doc_0/Templates/A.xml", &template_xml)],
+    );
+    let document_handle = Document::from_bytes(bytes, LoadOptions::default()).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let handles = (0..2)
+        .map(|index| {
+            let document_handle = document_handle.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                sources(&document_handle.page(index).unwrap())
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for handle in handles {
+        assert_eq!(
+            handle.join().unwrap(),
+            vec![(101, LayerType::Body, LayerSource::Template(10))]
+        );
+    }
+    assert!(document_handle.warnings().is_empty());
+
+    let malformed = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content>"#;
+    let bytes = archive_with_pages(
+        &document_xml,
+        &[
+            ("Doc_0/Pages/First.xml", &page_xml),
+            ("Doc_0/Pages/Second.xml", &page_xml),
+        ],
+        &[("Doc_0/Templates/A.xml", malformed)],
+    );
+    let document_handle = Document::from_bytes(bytes, LoadOptions::default()).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let handles = (0..2)
+        .map(|index| {
+            let document_handle = document_handle.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                document_handle.page(index).is_err()
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    assert!(handles.into_iter().all(|handle| handle.join().unwrap()));
+    assert!(document_handle.page(0).is_err());
+    assert!(document_handle.warnings().is_empty());
 }

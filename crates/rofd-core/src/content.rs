@@ -295,6 +295,13 @@ pub(crate) struct ContentUsage {
 }
 
 impl ContentUsage {
+    pub(crate) const fn template_reference() -> Self {
+        Self {
+            page_objects: 1,
+            path_commands: 0,
+        }
+    }
+
     pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
         Some(Self {
             page_objects: self.page_objects.checked_add(other.page_objects)?,

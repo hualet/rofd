@@ -23,6 +23,8 @@ for layer in first_page.layers() {
 The v0.2 foundation supports one `DocBody`. Multiple document bodies return an
 explicit `UnsupportedFeature` error. Page access resolves referenced template
 pages lazily, merges background/page/foreground content in effective paint
-order, and exposes each layer's `LayerSource`. Rendering, text extraction,
+order, and exposes each layer's `LayerSource`. Concurrent page loads publish
+only complete immutable template cache entries; they may safely duplicate work
+while a shared template is still being parsed. Rendering, text extraction,
 annotations, signatures, and the C ABI are delivered by the following
 implementation phases.

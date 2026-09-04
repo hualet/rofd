@@ -1,6 +1,6 @@
 use rofd_core::{
-    ClipPath as CoreClipPath, Color, FillRule, Page, PageObject, PathData, PathObject, Transform,
-    UnsupportedObjectKind,
+    ClipPath as CoreClipPath, Color, FillRule, LayerSource, Page, PageObject, PathData, PathObject,
+    Transform, UnsupportedObjectKind,
 };
 
 use crate::{Error, Result};
@@ -90,7 +90,7 @@ impl DisplayList {
         let mut display_list = Self::default();
         for layer in page.layers() {
             for object in layer.objects() {
-                display_list.lower_object(object)?;
+                display_list.lower_object(object, layer.source())?;
             }
         }
         Ok(display_list)
@@ -106,12 +106,12 @@ impl DisplayList {
         &self.diagnostics
     }
 
-    fn lower_object(&mut self, object: &PageObject) -> Result<()> {
+    fn lower_object(&mut self, object: &PageObject, source: LayerSource) -> Result<()> {
         match object {
             PageObject::Path(path) => self.lower_path(path),
             PageObject::Group(group) => {
                 for child in group.objects() {
-                    self.lower_object(child)?;
+                    self.lower_object(child, source)?;
                 }
                 Ok(())
             }
@@ -119,6 +119,7 @@ impl DisplayList {
                 self.diagnostics.push(RenderDiagnostic {
                     object_id: object.object_id(),
                     kind: object.kind(),
+                    source,
                     message: unsupported_message(object.kind()).to_owned(),
                 });
                 Ok(())
@@ -231,6 +232,7 @@ fn clip_transform_error(object_id: u64, error: rofd_core::Error) -> Error {
 pub struct RenderDiagnostic {
     object_id: u64,
     kind: UnsupportedObjectKind,
+    source: LayerSource,
     message: String,
 }
 
@@ -243,6 +245,11 @@ impl RenderDiagnostic {
     /// Returns the unsupported object category.
     pub fn kind(&self) -> UnsupportedObjectKind {
         self.kind
+    }
+
+    /// Returns the page or template layer source of the omitted object.
+    pub fn source(&self) -> LayerSource {
+        self.source
     }
 
     /// Returns a human-readable explanation.
