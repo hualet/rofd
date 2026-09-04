@@ -33,12 +33,14 @@ pub enum Error {
         message: String,
     },
     /// A scalar or compound value has invalid syntax.
-    #[error("invalid {field} value `{value}`")]
+    #[error("invalid {field} value `{value}`{location}", location = invalid_value_location(.path))]
     InvalidValue {
         /// Field category.
         field: &'static str,
         /// Original value.
         value: String,
+        /// Package path containing the invalid value, when available.
+        path: Option<String>,
     },
     /// A requested package entry does not exist.
     #[error("missing OFD entry: {0}")]
@@ -57,6 +59,12 @@ pub enum Error {
     /// The document uses a feature that this version cannot process correctly.
     #[error("unsupported OFD feature: {0}")]
     UnsupportedFeature(String),
+}
+
+fn invalid_value_location(path: &Option<String>) -> String {
+    path.as_ref()
+        .map(|path| format!(" at {path}"))
+        .unwrap_or_default()
 }
 
 /// Result type used by rofd-core.

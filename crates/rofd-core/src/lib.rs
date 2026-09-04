@@ -14,7 +14,7 @@ mod path_data;
 mod raw;
 
 pub use content::{
-    Clip, ClipPath, FillRule, Layer, LayerType, PageGroup, PageObject, PathObject,
+    Clip, ClipPath, FillRule, Layer, LayerSource, LayerType, PageGroup, PageObject, PathObject,
     UnsupportedObject, UnsupportedObjectKind,
 };
 pub use document::{Document, Metadata, Page, Warning, WarningCode};

@@ -15,6 +15,7 @@ fn point_rejects_non_finite_coordinates() {
         Error::InvalidValue {
             field: "point",
             value,
+            ..
         } if value == "NaN 0"
     ));
     assert!(Point::new(0.0, f64::INFINITY).is_err());
@@ -73,6 +74,7 @@ fn transform_rejects_invalid_values() {
         Error::InvalidValue {
             field: "transform",
             value,
+            ..
         } if value == "1 0 0 1 NaN 0"
     ));
     assert!(Transform::parse("1 0 0 1 inf 0").is_err());
@@ -112,6 +114,7 @@ fn color_rejects_invalid_channels_and_alpha() {
         Error::InvalidValue {
             field: "color",
             value,
+            ..
         } if value == "256 0 0"
     ));
     assert!(Color::parse_rgb("-1 0 0", None).is_err());
@@ -124,6 +127,7 @@ fn color_rejects_invalid_channels_and_alpha() {
         Error::InvalidValue {
             field: "alpha",
             value,
+            ..
         } if value == "256"
     ));
     assert!(Color::parse_rgb("0 0 0", Some("-1")).is_err());

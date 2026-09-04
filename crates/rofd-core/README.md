@@ -14,9 +14,15 @@ println!(
     first_page.size().width,
     first_page.size().height
 );
+for layer in first_page.layers() {
+    println!("layer {} from {:?}", layer.object_id(), layer.source());
+}
 # Ok::<(), rofd_core::Error>(())
 ```
 
 The v0.2 foundation supports one `DocBody`. Multiple document bodies return an
-explicit `UnsupportedFeature` error. Rendering, text extraction, annotations,
-signatures, and the C ABI are delivered by the following implementation phases.
+explicit `UnsupportedFeature` error. Page access resolves referenced template
+pages lazily, merges background/page/foreground content in effective paint
+order, and exposes each layer's `LayerSource`. Rendering, text extraction,
+annotations, signatures, and the C ABI are delivered by the following
+implementation phases.

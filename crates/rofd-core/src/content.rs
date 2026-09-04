@@ -14,11 +14,21 @@ pub enum LayerType {
     Foreground,
 }
 
+/// The package source that contributed an effective page layer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LayerSource {
+    /// A layer loaded from the template with the given object identifier.
+    Template(u64),
+    /// A layer declared directly by the real page.
+    Page,
+}
+
 /// An ordered layer of page objects.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     object_id: u64,
     kind: LayerType,
+    source: LayerSource,
     objects: Vec<PageObject>,
 }
 
@@ -31,6 +41,11 @@ impl Layer {
     /// Returns the stacking category.
     pub fn kind(&self) -> LayerType {
         self.kind
+    }
+
+    /// Returns whether this layer came from the real page or a template.
+    pub fn source(&self) -> LayerSource {
+        self.source
     }
 
     /// Returns child objects in source order.
@@ -240,9 +255,10 @@ pub(crate) fn convert_layers(
     content: Option<raw::PageContent>,
     limits: &ResourceLimits,
     path: &str,
-) -> Result<Vec<Layer>> {
+    source: LayerSource,
+) -> Result<(Vec<Layer>, ContentUsage)> {
     let Some(content) = content else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), ContentUsage::default()));
     };
     let mut context = ConversionContext {
         limits,
@@ -264,10 +280,60 @@ pub(crate) fn convert_layers(
         layers.push(Layer {
             object_id,
             kind,
+            source,
             objects,
         });
     }
-    Ok(layers)
+    let usage = ContentUsage::from_layers(&layers);
+    Ok((layers, usage))
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ContentUsage {
+    pub(crate) page_objects: usize,
+    pub(crate) path_commands: usize,
+}
+
+impl ContentUsage {
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            page_objects: self.page_objects.checked_add(other.page_objects)?,
+            path_commands: self.path_commands.checked_add(other.path_commands)?,
+        })
+    }
+
+    fn from_layers(layers: &[Layer]) -> Self {
+        let mut usage = Self::default();
+        for layer in layers {
+            usage.page_objects += 1;
+            for object in &layer.objects {
+                usage.add_object(object);
+            }
+        }
+        usage
+    }
+
+    fn add_object(&mut self, object: &PageObject) {
+        self.page_objects += 1;
+        match object {
+            PageObject::Path(path) => {
+                self.path_commands += path.path_data.commands().len();
+                for clip in &path.clips {
+                    self.page_objects += 1;
+                    for clip_path in &clip.paths {
+                        self.page_objects += 2;
+                        self.path_commands += clip_path.path_data.commands().len();
+                    }
+                }
+            }
+            PageObject::Group(group) => {
+                for child in &group.objects {
+                    self.add_object(child);
+                }
+            }
+            PageObject::Unsupported(_) => {}
+        }
+    }
 }
 
 struct ConversionContext<'a> {
@@ -551,5 +617,6 @@ fn invalid_value(field: &'static str, value: &str) -> Error {
     Error::InvalidValue {
         field,
         value: value.to_owned(),
+        path: None,
     }
 }

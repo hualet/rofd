@@ -57,6 +57,7 @@ fn invalid_color(value: &str) -> Error {
     Error::InvalidValue {
         field: "color",
         value: value.to_owned(),
+        path: None,
     }
 }
 
@@ -64,5 +65,6 @@ fn invalid_alpha(value: &str) -> Error {
     Error::InvalidValue {
         field: "alpha",
         value: value.to_owned(),
+        path: None,
     }
 }

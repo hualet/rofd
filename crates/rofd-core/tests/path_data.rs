@@ -10,6 +10,7 @@ fn assert_invalid(value: &str) {
         Error::InvalidValue {
             field: "path data",
             value: offending,
+            ..
         } if offending == value
     ));
 }

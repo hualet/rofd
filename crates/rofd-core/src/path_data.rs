@@ -236,5 +236,6 @@ fn invalid_path(value: &str) -> Error {
     Error::InvalidValue {
         field: "path data",
         value: value.to_owned(),
+        path: None,
     }
 }

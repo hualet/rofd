@@ -14,6 +14,7 @@ impl Point {
             return Err(Error::InvalidValue {
                 field: "point",
                 value: format!("{x} {y}"),
+                path: None,
             });
         }
 
@@ -144,6 +145,7 @@ fn invalid_transform(value: &str) -> Error {
     Error::InvalidValue {
         field: "transform",
         value: value.to_owned(),
+        path: None,
     }
 }
 
@@ -170,12 +172,14 @@ impl Rect {
             .map_err(|_| Error::InvalidValue {
                 field: "rectangle",
                 value: value.to_owned(),
+                path: None,
             })?;
 
         if values.len() != 4 || values.iter().any(|number| !number.is_finite()) {
             return Err(Error::InvalidValue {
                 field: "rectangle",
                 value: value.to_owned(),
+                path: None,
             });
         }
 

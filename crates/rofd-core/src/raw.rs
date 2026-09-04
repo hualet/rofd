@@ -41,6 +41,18 @@ pub(crate) struct DocumentRoot {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct CommonData {
     pub(crate) page_area: PageArea,
+    #[serde(rename = "TemplatePage", default)]
+    pub(crate) template_pages: Vec<TemplatePage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TemplatePage {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "BaseLoc")]
+    pub(crate) base_loc: String,
+    #[serde(rename = "ZOrder")]
+    pub(crate) z_order: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -68,7 +80,17 @@ pub(crate) struct PageEntry {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PageRoot {
     pub(crate) area: Option<PageArea>,
+    #[serde(rename = "Template", default)]
+    pub(crate) templates: Vec<TemplateReference>,
     pub(crate) content: Option<PageContent>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TemplateReference {
+    #[serde(rename = "TemplateID")]
+    pub(crate) template_id: String,
+    #[serde(rename = "ZOrder")]
+    pub(crate) z_order: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,7 +1,8 @@
 use std::io::{Cursor, Write};
 
 use rofd_core::{
-    Color, Document, FillRule, LoadOptions, PathData, Point, Transform, UnsupportedObjectKind,
+    Color, Document, FillRule, LayerSource, LoadOptions, PathData, Point, Transform,
+    UnsupportedObjectKind,
 };
 use rofd_render::{ClipPath, Command, DisplayList};
 use zip::{write::SimpleFileOptions, ZipWriter};
@@ -72,6 +73,59 @@ fn drawn_paths(display_list: &DisplayList) -> Vec<&PathData> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn template_effective_layer_order_and_sources_flow_into_display_commands_and_diagnostics() {
+    let entries = [
+        (
+            "OFD.xml",
+            r#"<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016"><ofd:DocBody><ofd:DocInfo><ofd:DocID>templates</ofd:DocID></ofd:DocInfo><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>"#,
+        ),
+        (
+            "Doc_0/Document.xml",
+            r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:PageArea><ofd:TemplatePage ID="10" BaseLoc="Templates/Back.xml"/><ofd:TemplatePage ID="20" BaseLoc="Templates/Front.xml" ZOrder="Foreground"/></ofd:CommonData><ofd:Pages><ofd:Page ID="100" BaseLoc="Pages/Page.xml"/></ofd:Pages></ofd:Document>"#,
+        ),
+        (
+            "Doc_0/Pages/Page.xml",
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:Area><ofd:Template TemplateID="10"/><ofd:Template TemplateID="20"/><ofd:Content><ofd:Layer ID="100"><ofd:PathObject ID="101" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 3 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content></ofd:Page>"#,
+        ),
+        (
+            "Doc_0/Templates/Back.xml",
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="10"><ofd:PathObject ID="11" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 1 0</ofd:AbbreviatedData></ofd:PathObject><ofd:TextObject ID="12"/></ofd:Layer></ofd:Content></ofd:Page>"#,
+        ),
+        (
+            "Doc_0/Templates/Front.xml",
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="20"><ofd:PathObject ID="21" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 5 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content></ofd:Page>"#,
+        ),
+    ];
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, contents) in entries {
+        writer
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(contents.as_bytes()).unwrap();
+    }
+    let bytes = writer.finish().unwrap().into_inner();
+    let page = Document::from_bytes(bytes, LoadOptions::default())
+        .unwrap()
+        .page(0)
+        .unwrap();
+
+    assert_eq!(page.layers()[0].source(), LayerSource::Template(10));
+    assert_eq!(page.layers()[1].source(), LayerSource::Page);
+    assert_eq!(page.layers()[2].source(), LayerSource::Template(20));
+    let display = DisplayList::from_page(&page).unwrap();
+    let x_coordinates = drawn_paths(&display)
+        .iter()
+        .map(|path| match path.commands()[0] {
+            rofd_core::PathCommand::MoveTo(point) => point.x(),
+            _ => panic!("expected MoveTo"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(x_coordinates, vec![1.0, 3.0, 5.0]);
+    assert_eq!(display.diagnostics().len(), 1);
+    assert_eq!(display.diagnostics()[0].object_id(), 12);
 }
 
 #[test]
@@ -217,7 +271,7 @@ fn recursively_flattens_nested_groups_in_source_order_without_group_state() {
 }
 
 #[test]
-fn preserves_current_layer_source_order() {
+fn direct_page_layers_follow_effective_category_order() {
     let page = open_page(&format!(
         r#"<ofd:Content>
   <ofd:Layer ID="1" Type="Foreground">{}</ofd:Layer>
@@ -231,7 +285,7 @@ fn preserves_current_layer_source_order() {
 
     assert_eq!(
         drawn_paths(&display_list),
-        ["M 2 0", "M 4 0"]
+        ["M 4 0", "M 2 0"]
             .map(|data| PathData::parse(data).unwrap())
             .iter()
             .collect::<Vec<_>>()

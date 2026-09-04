@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -59,6 +60,20 @@ struct PageReference {
     initialization: Mutex<()>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TemplateZOrder {
+    Background,
+    Foreground,
+}
+
+#[derive(Debug)]
+struct TemplateReference {
+    id: u64,
+    path: PackagePath,
+    default_z_order: TemplateZOrder,
+    cache: OnceLock<Arc<TemplateData>>,
+}
+
 #[derive(Debug)]
 struct DocumentInner {
     container: Container,
@@ -66,6 +81,7 @@ struct DocumentInner {
     metadata: Metadata,
     default_page_area: crate::raw::PageArea,
     pages: Vec<PageReference>,
+    templates: HashMap<u64, TemplateReference>,
     strictness: crate::Strictness,
     warnings: Mutex<Vec<Warning>>,
 }
@@ -78,6 +94,12 @@ pub struct Document(Arc<DocumentInner>);
 struct PageData {
     size: crate::Rect,
     layers: Vec<crate::Layer>,
+}
+
+#[derive(Debug)]
+struct TemplateData {
+    layers: Vec<crate::Layer>,
+    usage: crate::content::ContentUsage,
 }
 
 /// One parsed page in an OFD document.
@@ -105,7 +127,7 @@ impl Page {
         self.data.size
     }
 
-    /// Returns page layers in source order.
+    /// Returns immutable layers in effective template/page paint order.
     pub fn layers(&self) -> &[crate::Layer] {
         &self.data.layers
     }
@@ -158,6 +180,33 @@ impl Document {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut templates = HashMap::new();
+        for template in root.common_data.template_pages {
+            let id = parse_template_id(&template.id, &document_path)?;
+            if templates.contains_key(&id) {
+                return Err(Error::InvalidStructure {
+                    path: document_path.as_str().to_owned(),
+                    message: format!("duplicate template ID {id}"),
+                });
+            }
+            let path = document_path
+                .resolve(&template.base_loc)
+                .map_err(|error| with_error_path(error, &document_path))?;
+            let default_z_order = parse_template_z_order(
+                template.z_order.as_deref(),
+                TemplateZOrder::Background,
+                &document_path,
+            )?;
+            templates.insert(
+                id,
+                TemplateReference {
+                    id,
+                    path,
+                    default_z_order,
+                    cache: OnceLock::new(),
+                },
+            );
+        }
         let info = body.doc_info;
         Ok(Self(Arc::new(DocumentInner {
             container,
@@ -175,6 +224,7 @@ impl Document {
             },
             default_page_area: root.common_data.page_area,
             pages,
+            templates,
             strictness,
             warnings: Mutex::new(Vec::new()),
         })))
@@ -241,9 +291,23 @@ impl Document {
                 }),
             ),
         };
-        let size = crate::Rect::parse(&area.physical_box)?;
-        let layers =
-            crate::content::convert_layers(page.content, &self.0.limits, reference.path.as_str())?;
+        let size = crate::Rect::parse(&area.physical_box)
+            .map_err(|error| with_error_path(error, &reference.path))?;
+        let (direct_layers, direct_usage) = crate::content::convert_layers(
+            page.content,
+            &self.0.limits,
+            reference.path.as_str(),
+            crate::LayerSource::Page,
+        )?;
+        let layers = self
+            .merge_effective_layers(
+                page.templates,
+                direct_layers,
+                direct_usage,
+                &reference.path,
+                &mut Vec::new(),
+            )?
+            .layers;
         let parsed = Arc::new(PageData { size, layers });
         if let Some(warning) = pending_warning {
             self.0
@@ -271,6 +335,201 @@ impl Document {
             .lock()
             .map(|warnings| warnings.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    fn resolve_template(
+        &self,
+        id: u64,
+        referring_path: &PackagePath,
+        active: &mut Vec<u64>,
+    ) -> Result<Arc<TemplateData>> {
+        if let Some(position) = active.iter().position(|active_id| *active_id == id) {
+            let mut cycle = active[position..]
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>();
+            cycle.push(id.to_string());
+            return Err(Error::InvalidStructure {
+                path: referring_path.as_str().to_owned(),
+                message: format!("template reference cycle: {}", cycle.join(" -> ")),
+            });
+        }
+        let reference = self
+            .0
+            .templates
+            .get(&id)
+            .ok_or_else(|| Error::InvalidStructure {
+                path: referring_path.as_str().to_owned(),
+                message: format!("unknown template ID {id}"),
+            })?;
+        debug_assert_eq!(reference.id, id);
+        if let Some(data) = reference.cache.get() {
+            return Ok(Arc::clone(data));
+        }
+
+        active.push(id);
+        let loaded = (|| {
+            if active.len() > self.0.limits.max_page_block_depth {
+                return Err(Error::LimitExceeded(format!(
+                    "template reference depth {} exceeds limit {}",
+                    active.len(),
+                    self.0.limits.max_page_block_depth
+                )));
+            }
+            let root: crate::raw::PageRoot =
+                parse_page_xml(&self.0.container, &reference.path, &self.0.limits)?;
+            let (direct_layers, direct_usage) = crate::content::convert_layers(
+                root.content,
+                &self.0.limits,
+                reference.path.as_str(),
+                crate::LayerSource::Template(id),
+            )?;
+            self.merge_effective_layers(
+                root.templates,
+                direct_layers,
+                direct_usage,
+                &reference.path,
+                active,
+            )
+            .map(Arc::new)
+        })();
+        active.pop();
+        let loaded = loaded?;
+        Ok(Arc::clone(
+            reference.cache.get_or_init(|| Arc::clone(&loaded)),
+        ))
+    }
+
+    fn merge_effective_layers(
+        &self,
+        template_references: Vec<crate::raw::TemplateReference>,
+        direct_layers: Vec<crate::Layer>,
+        mut usage: crate::content::ContentUsage,
+        path: &PackagePath,
+        active: &mut Vec<u64>,
+    ) -> Result<TemplateData> {
+        let mut background_templates = Vec::new();
+        let mut foreground_templates = Vec::new();
+        for template in template_references {
+            let id = parse_template_id(&template.template_id, path)?;
+            let declaration = self
+                .0
+                .templates
+                .get(&id)
+                .ok_or_else(|| Error::InvalidStructure {
+                    path: path.as_str().to_owned(),
+                    message: format!("unknown template ID {id}"),
+                })?;
+            let z_order = parse_template_z_order(
+                template.z_order.as_deref(),
+                declaration.default_z_order,
+                path,
+            )?;
+            let resolved = self.resolve_template(id, path, active)?;
+            usage = add_effective_usage(usage, resolved.usage, &self.0.limits)?;
+            match z_order {
+                TemplateZOrder::Background => {
+                    background_templates.extend(resolved.layers.iter().cloned())
+                }
+                TemplateZOrder::Foreground => {
+                    foreground_templates.extend(resolved.layers.iter().cloned())
+                }
+            }
+        }
+
+        validate_effective_usage(usage, &self.0.limits)?;
+        let mut background = Vec::new();
+        let mut body = Vec::new();
+        let mut foreground = Vec::new();
+        for layer in direct_layers {
+            match layer.kind() {
+                crate::LayerType::Background => background.push(layer),
+                crate::LayerType::Body => body.push(layer),
+                crate::LayerType::Foreground => foreground.push(layer),
+            }
+        }
+        background_templates.extend(background);
+        background_templates.extend(body);
+        background_templates.extend(foreground);
+        background_templates.extend(foreground_templates);
+        Ok(TemplateData {
+            layers: background_templates,
+            usage,
+        })
+    }
+}
+
+fn parse_template_id(value: &str, path: &PackagePath) -> Result<u64> {
+    match value.parse::<u64>() {
+        Ok(id) if id != 0 => Ok(id),
+        _ => Err(Error::InvalidValue {
+            field: "template ID",
+            value: value.to_owned(),
+            path: Some(path.as_str().to_owned()),
+        }),
+    }
+}
+
+fn parse_template_z_order(
+    value: Option<&str>,
+    default: TemplateZOrder,
+    path: &PackagePath,
+) -> Result<TemplateZOrder> {
+    match value {
+        None => Ok(default),
+        Some("Background") => Ok(TemplateZOrder::Background),
+        Some("Foreground") => Ok(TemplateZOrder::Foreground),
+        Some(value) => Err(Error::InvalidValue {
+            field: "template ZOrder",
+            value: value.to_owned(),
+            path: Some(path.as_str().to_owned()),
+        }),
+    }
+}
+
+fn add_effective_usage(
+    current: crate::content::ContentUsage,
+    added: crate::content::ContentUsage,
+    limits: &crate::ResourceLimits,
+) -> Result<crate::content::ContentUsage> {
+    let total = current.checked_add(added).ok_or_else(|| {
+        Error::LimitExceeded("effective page resource accounting overflowed".to_owned())
+    })?;
+    validate_effective_usage(total, limits)?;
+    Ok(total)
+}
+
+fn validate_effective_usage(
+    usage: crate::content::ContentUsage,
+    limits: &crate::ResourceLimits,
+) -> Result<()> {
+    if usage.page_objects > limits.max_page_objects {
+        return Err(Error::LimitExceeded(format!(
+            "effective page object count {} exceeds limit {}",
+            usage.page_objects, limits.max_page_objects
+        )));
+    }
+    if usage.path_commands > limits.max_path_commands {
+        return Err(Error::LimitExceeded(format!(
+            "effective page path command count {} exceeds limit {}",
+            usage.path_commands, limits.max_path_commands
+        )));
+    }
+    Ok(())
+}
+
+fn with_error_path(error: Error, path: &PackagePath) -> Error {
+    match error {
+        Error::InvalidValue {
+            field,
+            value,
+            path: None,
+        } => Error::InvalidValue {
+            field,
+            value,
+            path: Some(path.as_str().to_owned()),
+        },
+        error => error,
     }
 }
 
@@ -353,6 +612,8 @@ fn preflight_page_xml(
                 let is_page = elements.is_empty() && name.local_name == "Page";
                 let is_content =
                     matches!(parent, Some(ElementMarker::Page)) && name.local_name == "Content";
+                let is_template_reference =
+                    matches!(parent, Some(ElementMarker::Page)) && name.local_name == "Template";
                 let is_layer =
                     matches!(parent, Some(ElementMarker::Content)) && name.local_name == "Layer";
                 let parent_is_object_container = matches!(
@@ -382,7 +643,13 @@ fn preflight_page_xml(
                         message: format!("unknown graphic unit {}", name.local_name),
                     });
                 }
-                if is_layer || is_graphic_unit || is_clip || is_clip_area || is_clip_child {
+                if is_template_reference
+                    || is_layer
+                    || is_graphic_unit
+                    || is_clip
+                    || is_clip_area
+                    || is_clip_child
+                {
                     if page_object_count >= limits.max_page_objects {
                         return Err(Error::LimitExceeded(format!(
                             "page object count {} exceeds limit {}",

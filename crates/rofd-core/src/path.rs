@@ -54,6 +54,7 @@ fn invalid_path(value: &str) -> Error {
     Error::InvalidValue {
         field: "package path",
         value: value.to_owned(),
+        path: None,
     }
 }
 
