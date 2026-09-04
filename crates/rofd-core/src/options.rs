@@ -27,9 +27,9 @@ pub struct ResourceLimits {
     /// Maximum number of layers, groups, leaf objects, and clip structures on
     /// one page.
     ///
-    /// Each `Clip`, `Area`, and clip `Path` consumes one unit even though
-    /// these structures do not have object IDs. The limit is enforced during
-    /// XML preflight, before recursive deserialization.
+    /// Each `Clip`, `Area`, and immediate clip `Path` or `Text` child consumes
+    /// one unit even though these structures do not have object IDs. The limit
+    /// is enforced during XML preflight, before recursive deserialization.
     pub max_page_objects: usize,
     /// Maximum nesting depth of page blocks on one page.
     pub max_page_block_depth: usize,

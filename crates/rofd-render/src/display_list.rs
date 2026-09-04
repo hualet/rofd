@@ -18,10 +18,17 @@ pub enum Command {
     /// `M`, the new active transform is `M.then(T)`: `M` is applied first,
     /// followed by `T`.
     ConcatTransform(Transform),
-    /// Intersects subsequent drawing with the union of one or more paths.
+    /// Intersects subsequent drawing with the geometric union of area paths.
     ///
-    /// A backend must append all `paths` and apply a single clip operation so
-    /// their filled regions are unioned. Separate commands intersect.
+    /// Each entry is a distinct OFD `Area`. A backend must compute the true
+    /// coverage union of their individually filled regions, then intersect it
+    /// with the prior clip. Appending every entry to one Cairo compound path
+    /// and clipping once is not equivalent: overlapping even-odd paths or
+    /// opposite-winding non-zero paths can cancel. Separate commands continue
+    /// to represent intersection operands.
+    ///
+    /// Task 6 raster backends must include overlap and opposite-winding
+    /// regression images before interpreting this command.
     ClipPath {
         /// Paths whose filled regions form one union operand.
         paths: Vec<ClipPath>,

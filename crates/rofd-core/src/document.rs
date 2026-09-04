@@ -374,15 +374,15 @@ fn preflight_page_xml(
                     matches!(parent, Some(ElementMarker::Clips)) && name.local_name == "Clip";
                 let is_clip_area =
                     matches!(parent, Some(ElementMarker::Clip)) && name.local_name == "Area";
-                let is_clip_path =
-                    matches!(parent, Some(ElementMarker::ClipArea)) && name.local_name == "Path";
+                let is_clip_child = matches!(parent, Some(ElementMarker::ClipArea))
+                    && matches!(name.local_name.as_str(), "Path" | "Text");
                 if parent_is_object_container && !is_graphic_unit {
                     return Err(Error::InvalidStructure {
                         path: path.as_str().to_owned(),
                         message: format!("unknown graphic unit {}", name.local_name),
                     });
                 }
-                if is_layer || is_graphic_unit || is_clip || is_clip_area || is_clip_path {
+                if is_layer || is_graphic_unit || is_clip || is_clip_area || is_clip_child {
                     if page_object_count >= limits.max_page_objects {
                         return Err(Error::LimitExceeded(format!(
                             "page object count {} exceeds limit {}",

@@ -330,10 +330,10 @@ fn lowers_clip_transforms_exactly_with_and_without_the_object_ctm() {
 fn unions_areas_per_clip_and_intersects_clips_in_source_order_before_drawing() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10">
-  <ofd:Clips>
+    <ofd:Clips>
     <ofd:Clip>
-      <ofd:Area><ofd:Path Boundary="0 0 2 2" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 1 0</ofd:AbbreviatedData></ofd:Path></ofd:Area>
-      <ofd:Area><ofd:Path Boundary="0 0 2 2" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 2 0</ofd:AbbreviatedData></ofd:Path></ofd:Area>
+      <ofd:Area CTM="1 0 0 1 2 0"><ofd:Path Boundary="0 0 4 4" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 4 0 L 4 4 L 0 4 C</ofd:AbbreviatedData></ofd:Path></ofd:Area>
+      <ofd:Area CTM="1 0 0 1 4 0"><ofd:Path Boundary="0 0 4 4" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 0 4 L 4 4 L 4 0 C</ofd:AbbreviatedData></ofd:Path></ofd:Area>
     </ofd:Clip>
     <ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 2 2" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 3 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip>
   </ofd:Clips>
@@ -348,8 +348,22 @@ fn unions_areas_per_clip_and_intersects_clips_in_source_order_before_drawing() {
     };
     assert_eq!(*rule, FillRule::NonZero);
     assert_eq!(first.len(), 2);
-    assert_eq!(first[0].path(), &PathData::parse("M 1 0").unwrap());
-    assert_eq!(first[1].path(), &PathData::parse("M 2 0").unwrap());
+    assert_eq!(
+        first[0].path(),
+        &PathData::parse("M 0 0 L 4 0 L 4 4 L 0 4 C").unwrap()
+    );
+    assert_eq!(
+        first[1].path(),
+        &PathData::parse("M 0 0 L 0 4 L 4 4 L 4 0 C").unwrap()
+    );
+    assert_eq!(
+        first[0].transform(),
+        Transform::new(1.0, 0.0, 0.0, 1.0, 2.0, 0.0).unwrap()
+    );
+    assert_eq!(
+        first[1].transform(),
+        Transform::new(1.0, 0.0, 0.0, 1.0, 4.0, 0.0).unwrap()
+    );
     let Command::ClipPath { paths: second, .. } = &display_list.commands()[2] else {
         panic!("expected second intersection operand");
     };

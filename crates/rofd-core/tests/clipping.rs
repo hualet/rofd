@@ -246,3 +246,30 @@ fn clip_elements_count_toward_the_pre_serde_page_object_budget() {
         Err(Error::LimitExceeded(message)) if message.contains("page object count 5 exceeds limit 4")
     ));
 }
+
+#[test]
+fn clip_text_children_count_toward_the_pre_serde_page_object_budget() {
+    let content = path_with_clips(
+        "<ofd:Clips><ofd:Clip><ofd:Area><ofd:Text/><ofd:Text/></ofd:Area></ofd:Clip></ofd:Clips>",
+        "M 0 0",
+    );
+    let exact = ResourceLimits {
+        max_page_objects: 6,
+        ..ResourceLimits::default()
+    };
+    let error = open_page_with_limits(&content, exact).unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidStructure { ref message, .. } if message.contains("Area must contain exactly one Path or Text")),
+        "the exact budget must reach structural validation, got {error:?}"
+    );
+
+    let one_over = ResourceLimits {
+        max_page_objects: 5,
+        ..ResourceLimits::default()
+    };
+    let error = open_page_with_limits(&content, one_over).unwrap_err();
+    assert!(
+        matches!(error, Error::LimitExceeded(ref message) if message.contains("page object count 6 exceeds limit 5")),
+        "the preflight limit must win, got {error:?}"
+    );
+}
