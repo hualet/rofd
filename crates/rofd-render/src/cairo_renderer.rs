@@ -1,11 +1,15 @@
-use std::f64::consts::{FRAC_PI_2, PI};
+use std::f64::consts::PI;
 
-use cairo::{Context, FillRule as CairoFillRule, Format, ImageSurface, Matrix, Operator};
+use cairo::{
+    Context, FillRule as CairoFillRule, Format, ImageSurface, LineCap, LineJoin, Matrix, Operator,
+    Path,
+};
 use rofd_core::{Color, FillRule, Page, PathCommand, PathData, Point, Rect, Transform};
 
 use crate::{ClipPath, Command, DisplayList, Error, RenderDiagnostic, Result};
 
 const MILLIMETRES_PER_INCH: f64 = 25.4;
+const DEFAULT_MITER_LIMIT: f64 = 3.528;
 
 /// Options controlling page rasterization.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,9 +69,23 @@ impl CairoRenderer {
 
     /// Renders a page into a caller-owned Cairo context.
     ///
-    /// The caller's graphics state is restored on both successful rendering
-    /// and recoverable errors.
+    /// The caller's graphics state and current path are restored on both
+    /// successful rendering and recoverable errors. If Cairo enters an error
+    /// state during rendering, restoration is still attempted and concurrent
+    /// cleanup failures are retained in [`Error::Cleanup`].
     pub fn render_page(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+    ) -> Result<RenderReport> {
+        let caller_path = cairo(context.copy_path(), "capture caller path")?;
+        let rendered = self.render_page_preserving_path(page, context, options);
+        let restored_path = restore_path(context, &caller_path);
+        combine_results(rendered, restored_path, "restore caller path")
+    }
+
+    fn render_page_preserving_path(
         &self,
         page: &Page,
         context: &Context,
@@ -89,13 +107,9 @@ impl CairoRenderer {
 
         let rendered = render_saved(context, page.size(), options, &geometry, &display_list);
         let restored = cairo(context.restore(), "restore caller state");
-        match (rendered, restored) {
-            (Err(error), _) => Err(error),
-            (Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(())) => Ok(RenderReport {
-                diagnostics: display_list.diagnostics().to_vec(),
-            }),
-        }
+        combine_results(rendered, restored, "restore caller state").map(|()| RenderReport {
+            diagnostics: display_list.diagnostics().to_vec(),
+        })
     }
 }
 
@@ -108,14 +122,17 @@ fn render_saved(
 ) -> Result<()> {
     context.set_matrix(geometry.page_to_device);
     context.set_operator(Operator::Over);
+    set_stroke_defaults(context)?;
     context.rectangle(page_box.x, page_box.y, page_box.width, page_box.height);
     context.clip();
-    set_source_color(context, options.background);
+    cairo(context.status(), "establish page graphics state")?;
+    set_source_color(context, options.background)?;
     cairo(context.paint(), "paint page background")?;
 
     if let Some(clip) = options.clip {
         context.rectangle(clip.x, clip.y, clip.width, clip.height);
         context.clip();
+        cairo(context.status(), "apply page-space clip")?;
     }
 
     let mut interpreter = Interpreter::new(context, geometry);
@@ -273,11 +290,19 @@ impl<'a> Interpreter<'a> {
     fn run(&mut self, commands: &[Command]) -> Result<()> {
         let result = self.run_commands(commands);
         if result.is_err() {
-            while self.stack.pop().is_some() {
-                let _ = self.context.restore();
-            }
+            let cleanup = self.unwind();
+            return combine_results(result, cleanup, "unwind display state");
         }
         result
+    }
+
+    fn unwind(&mut self) -> Result<()> {
+        let mut cleanup = Ok(());
+        while self.stack.pop().is_some() {
+            let restored = cairo(self.context.restore(), "unwind display state");
+            cleanup = combine_results(cleanup, restored, "continue display-state unwind");
+        }
+        cleanup
     }
 
     fn run_commands(&mut self, commands: &[Command]) -> Result<()> {
@@ -320,11 +345,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if !self.stack.is_empty() {
-            let error = invalid_display_list("unclosed display-list save");
-            while self.stack.pop().is_some() {
-                cairo(self.context.restore(), "unwind display state")?;
-            }
-            return Err(error);
+            return Err(invalid_display_list("unclosed display-list save"));
         }
         Ok(())
     }
@@ -342,6 +363,7 @@ impl<'a> Interpreter<'a> {
         context.set_matrix(self.geometry.page_to_device);
         context.set_fill_rule(cairo_fill_rule(rule));
         context.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+        cairo(context.status(), "initialize clip mask state")?;
 
         for path in paths {
             cairo(context.save(), "save clip path state")?;
@@ -351,13 +373,13 @@ impl<'a> Interpreter<'a> {
                 cairo(context.fill(), "fill clip area")
             })();
             let restored = cairo(context.restore(), "restore clip path state");
-            filled?;
-            restored?;
+            combine_results(filled, restored, "restore clip path state")?;
         }
 
         if let Some(previous) = &self.state.clip_mask {
             context.identity_matrix();
             context.set_operator(Operator::In);
+            cairo(context.status(), "prepare clip-mask intersection")?;
             cairo(
                 context.set_source_surface(previous, 0.0, 0.0),
                 "set prior clip mask",
@@ -365,6 +387,7 @@ impl<'a> Interpreter<'a> {
             cairo(context.paint(), "intersect clip masks")?;
         }
         surface.flush();
+        cairo(surface.status(), "flush clip mask")?;
         Ok(surface)
     }
 
@@ -380,12 +403,16 @@ impl<'a> Interpreter<'a> {
             )?;
             let temporary = cairo(Context::new(&surface), "create clipped drawing context")?;
             temporary.set_matrix(self.context.matrix());
+            set_stroke_defaults(&temporary)?;
+            cairo(temporary.status(), "initialize clipped drawing state")?;
             draw_path_unmasked(&temporary, &self.state, path)?;
             surface.flush();
+            cairo(surface.status(), "flush clipped drawing surface")?;
 
             cairo(self.context.save(), "save clipped composite state")?;
             let composite = (|| {
                 self.context.identity_matrix();
+                cairo(self.context.status(), "prepare clipped composite")?;
                 cairo(
                     self.context.set_source_surface(&surface, 0.0, 0.0),
                     "set clipped drawing source",
@@ -396,9 +423,7 @@ impl<'a> Interpreter<'a> {
                 )
             })();
             let restored = cairo(self.context.restore(), "restore clipped composite state");
-            composite?;
-            restored?;
-            Ok(())
+            combine_results(composite, restored, "restore clipped composite state")
         } else {
             draw_path_unmasked(self.context, &self.state, path)
         }
@@ -409,25 +434,26 @@ fn draw_path_unmasked(context: &Context, state: &PaintState, path: &PathData) ->
     append_path(context, path)?;
     context.set_fill_rule(cairo_fill_rule(state.fill_rule));
     context.set_line_width(state.line_width);
+    cairo(context.status(), "apply path paint state")?;
 
     match (state.fill, state.stroke) {
         (Some(fill), Some(stroke)) => {
-            set_source_color(context, fill);
+            set_source_color(context, fill)?;
             cairo(context.fill_preserve(), "fill path")?;
-            set_source_color(context, stroke);
+            set_source_color(context, stroke)?;
             cairo(context.stroke(), "stroke path")?;
         }
         (Some(fill), None) => {
-            set_source_color(context, fill);
+            set_source_color(context, fill)?;
             cairo(context.fill(), "fill path")?;
         }
         (None, Some(stroke)) => {
-            set_source_color(context, stroke);
+            set_source_color(context, stroke)?;
             cairo(context.stroke(), "stroke path")?;
         }
         (None, None) => context.new_path(),
     }
-    Ok(())
+    cairo(context.status(), "finish drawing path")
 }
 
 fn append_path(context: &Context, path: &PathData) -> Result<()> {
@@ -567,69 +593,25 @@ fn append_arc(
         return Err(invalid_display_list("non-finite derived arc geometry"));
     }
 
-    let segments = (delta.abs() / FRAC_PI_2).ceil().max(1.0) as usize;
-    let step = delta / segments as f64;
-    for segment in 0..segments {
-        let theta1 = start_angle + step * segment as f64;
-        let theta2 = theta1 + step;
-        let tangent = 4.0 / 3.0 * ((theta2 - theta1) / 4.0).tan();
-        let (sin1, cos1) = theta1.sin_cos();
-        let (sin2, cos2) = theta2.sin_cos();
-        let control1 = ellipse_point(
-            cx,
-            cy,
-            rx,
-            ry,
-            cos_phi,
-            sin_phi,
-            cos1 - tangent * sin1,
-            sin1 + tangent * cos1,
-        );
-        let control2 = ellipse_point(
-            cx,
-            cy,
-            rx,
-            ry,
-            cos_phi,
-            sin_phi,
-            cos2 + tangent * sin2,
-            sin2 - tangent * cos2,
-        );
-        let endpoint = ellipse_point(cx, cy, rx, ry, cos_phi, sin_phi, cos2, sin2);
-        if [
-            control1.0, control1.1, control2.0, control2.1, endpoint.0, endpoint.1,
-        ]
-        .iter()
-        .any(|value| !value.is_finite())
-        {
-            return Err(invalid_display_list("non-finite arc approximation"));
+    cairo(context.save(), "save arc transform state")?;
+    let drawn = (|| {
+        context.translate(cx, cy);
+        context.rotate(phi);
+        context.scale(rx, ry);
+        cairo(context.status(), "apply arc ellipse transform")?;
+        if sweep {
+            context.arc(0.0, 0.0, 1.0, start_angle, start_angle + delta);
+        } else {
+            context.arc_negative(0.0, 0.0, 1.0, start_angle, start_angle + delta);
         }
-        context.curve_to(
-            control1.0, control1.1, control2.0, control2.1, endpoint.0, endpoint.1,
-        );
-    }
-    Ok(())
+        cairo(context.status(), "append elliptical arc")
+    })();
+    let restored = cairo(context.restore(), "restore arc transform state");
+    combine_results(drawn, restored, "restore arc transform state")
 }
 
 fn vector_angle(ux: f64, uy: f64, vx: f64, vy: f64) -> f64 {
     (ux * vy - uy * vx).atan2(ux * vx + uy * vy)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ellipse_point(
-    cx: f64,
-    cy: f64,
-    rx: f64,
-    ry: f64,
-    cos_phi: f64,
-    sin_phi: f64,
-    x: f64,
-    y: f64,
-) -> (f64, f64) {
-    (
-        cx + cos_phi * rx * x - sin_phi * ry * y,
-        cy + sin_phi * rx * x + cos_phi * ry * y,
-    )
 }
 
 fn cairo_matrix(transform: Transform) -> Matrix {
@@ -650,13 +632,28 @@ fn cairo_fill_rule(rule: FillRule) -> CairoFillRule {
     }
 }
 
-fn set_source_color(context: &Context, color: Color) {
+fn set_source_color(context: &Context, color: Color) -> Result<()> {
     context.set_source_rgba(
         f64::from(color.red) / 255.0,
         f64::from(color.green) / 255.0,
         f64::from(color.blue) / 255.0,
         f64::from(color.alpha) / 255.0,
     );
+    cairo(context.status(), "set source color")
+}
+
+fn set_stroke_defaults(context: &Context) -> Result<()> {
+    context.set_dash(&[], 0.0);
+    context.set_line_cap(LineCap::Butt);
+    context.set_line_join(LineJoin::Miter);
+    context.set_miter_limit(DEFAULT_MITER_LIMIT);
+    cairo(context.status(), "set default stroke parameters")
+}
+
+fn restore_path(context: &Context, path: &Path) -> Result<()> {
+    context.new_path();
+    context.append_path(path);
+    cairo(context.status(), "restore caller path")
 }
 
 fn invalid_display_list(message: impl Into<String>) -> Error {
@@ -667,4 +664,20 @@ fn invalid_display_list(message: impl Into<String>) -> Error {
 
 fn cairo<T>(result: std::result::Result<T, cairo::Error>, operation: &'static str) -> Result<T> {
     result.map_err(|source| Error::Backend { operation, source })
+}
+
+fn combine_results<T>(
+    primary: Result<T>,
+    cleanup: Result<()>,
+    operation: &'static str,
+) -> Result<T> {
+    match (primary, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(Error::Cleanup {
+            operation,
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }),
+    }
 }

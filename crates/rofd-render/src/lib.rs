@@ -67,6 +67,16 @@ pub enum Error {
         #[source]
         source: cairo::Error,
     },
+    /// A primary failure was followed by another failure while restoring state.
+    #[error("{operation} failed after {primary}: {cleanup}")]
+    Cleanup {
+        /// The cleanup operation that failed.
+        operation: &'static str,
+        /// The error that initiated cleanup.
+        primary: Box<Error>,
+        /// The cleanup error.
+        cleanup: Box<Error>,
+    },
 }
 
 /// A result produced by `rofd-render`.

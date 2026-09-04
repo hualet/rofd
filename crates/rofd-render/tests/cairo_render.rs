@@ -1,6 +1,6 @@
 use std::io::{Cursor, Write};
 
-use cairo::{Context, Format, ImageSurface, Matrix, SolidPattern};
+use cairo::{Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern};
 use rofd_core::{Color, Document, LoadOptions, Rect, UnsupportedObjectKind};
 use rofd_render::{CairoRenderer, Error, RenderOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
@@ -96,6 +96,31 @@ fn assert_white(pixel: [u8; 4]) {
         pixel[0] > 245 && pixel[1] > 245 && pixel[2] > 245,
         "{pixel:?}"
     );
+}
+
+fn assert_green(pixel: [u8; 4]) {
+    assert!(
+        pixel[1] > 220 && pixel[0] < 80 && pixel[2] < 80,
+        "{pixel:?}"
+    );
+}
+
+fn assert_blue(pixel: [u8; 4]) {
+    assert!(
+        pixel[2] > 220 && pixel[0] < 80 && pixel[1] < 80,
+        "{pixel:?}"
+    );
+}
+
+fn assert_magenta(pixel: [u8; 4]) {
+    assert!(
+        pixel[0] > 220 && pixel[2] > 220 && pixel[1] < 180,
+        "{pixel:?}"
+    );
+}
+
+fn path_segments(context: &Context) -> Vec<PathSegment> {
+    context.copy_path().unwrap().iter().collect()
 }
 
 #[test]
@@ -210,20 +235,31 @@ fn rejects_an_image_surface_smaller_than_pixel_size_without_changing_state() {
     ));
 }
 
+fn surface_finished_backend_errors(error: &Error) -> usize {
+    match error {
+        Error::Backend {
+            source: cairo::Error::SurfaceFinished,
+            ..
+        } => 1,
+        Error::Cleanup {
+            primary, cleanup, ..
+        } => surface_finished_backend_errors(primary) + surface_finished_backend_errors(cleanup),
+        _ => 0,
+    }
+}
+
 #[test]
-fn cairo_failures_are_reported_as_backend_errors() {
+fn simultaneous_backend_and_cleanup_failures_are_both_reported() {
     let page = open_page("0 0 20 20", "");
     let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
     let context = Context::new(&surface).unwrap();
     surface.finish();
 
-    assert!(matches!(
-        CairoRenderer.render_page(&page, &context, &options_at_one_pixel_per_mm()),
-        Err(Error::Backend {
-            operation: _,
-            source: cairo::Error::SurfaceFinished,
-        })
-    ));
+    let error = CairoRenderer
+        .render_page(&page, &context, &options_at_one_pixel_per_mm())
+        .unwrap_err();
+    assert!(matches!(error, Error::Cleanup { .. }));
+    assert!(surface_finished_backend_errors(&error) >= 2, "{error:?}");
 }
 
 #[test]
@@ -299,13 +335,18 @@ fn elliptical_arcs_cover_sweep_large_and_rotated_branches() {
 <ofd:PathObject ID="2" Boundary="0 0 50 40" Fill="false" Stroke="true" LineWidth="1"><ofd:StrokeColor Value="255 0 0"/><ofd:AbbreviatedData>M 5 10 A 8 5 0 0 1 19 10</ofd:AbbreviatedData></ofd:PathObject>
 <ofd:PathObject ID="3" Boundary="0 0 50 40" Fill="false" Stroke="true" LineWidth="1"><ofd:StrokeColor Value="0 255 0"/><ofd:AbbreviatedData>M 25 10 A 8 5 0 1 0 39 10</ofd:AbbreviatedData></ofd:PathObject>
 <ofd:PathObject ID="4" Boundary="0 0 50 40" Fill="false" Stroke="true" LineWidth="1"><ofd:StrokeColor Value="0 0 255"/><ofd:AbbreviatedData>M 8 30 A 10 4 45 0 1 24 30</ofd:AbbreviatedData></ofd:PathObject>
+<ofd:PathObject ID="5" Boundary="0 0 50 40" Fill="false" Stroke="true" LineWidth="1"><ofd:StrokeColor Value="255 0 255"/><ofd:AbbreviatedData>M 8 30 A 10 4 -45 0 1 24 30</ofd:AbbreviatedData></ofd:PathObject>
 </ofd:Layer></ofd:Content>"#,
     );
     let mut surface = render(&page, &options_at_one_pixel_per_mm());
 
-    assert!(pixel(&mut surface, 12, 5)[0] > 150);
-    assert!(pixel(&mut surface, 32, 15)[1] > 150);
-    assert!(pixel(&mut surface, 14, 24)[2] > 120 || pixel(&mut surface, 18, 25)[2] > 120);
+    assert_red(pixel(&mut surface, 12, 7));
+    assert_white(pixel(&mut surface, 12, 13));
+    assert_green(pixel(&mut surface, 31, 17));
+    assert_white(pixel(&mut surface, 32, 7));
+    assert_blue(pixel(&mut surface, 8, 18));
+    assert_magenta(pixel(&mut surface, 19, 20));
+    assert_white(pixel(&mut surface, 18, 35));
 }
 
 #[test]
@@ -385,6 +426,24 @@ fn quarter_turns_map_content_from_a_nonzero_page_origin() {
 }
 
 #[test]
+fn half_turn_maps_content_from_a_nonzero_page_origin() {
+    let page = open_page(
+        "10 20 10 20",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="10 20 4 2" Fill="true" Stroke="false">
+  <ofd:FillColor Value="255 0 0"/><ofd:AbbreviatedData>M 0 0 L 4 0 L 4 2 L 0 2 C</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let options = RenderOptions {
+        dpi: 25.4,
+        rotation_degrees: 180,
+        ..RenderOptions::default()
+    };
+    let mut surface = render(&page, &options);
+    assert_red(pixel(&mut surface, 8, 18));
+    assert_white(pixel(&mut surface, 2, 1));
+}
+
+#[test]
 fn caller_context_state_is_restored_on_success_and_option_failure() {
     let page = open_page("0 0 20 20", "");
     let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
@@ -441,4 +500,74 @@ fn caller_operator_does_not_change_renderer_output_and_is_restored() {
     drop(context);
     let mut surface = surface;
     assert_red(pixel(&mut surface, 5, 5));
+}
+
+#[test]
+fn caller_stroke_parameters_do_not_change_output_and_are_restored() {
+    let page = open_page(
+        "0 0 20 20",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 20 20" Fill="false" Stroke="true" LineWidth="2">
+  <ofd:AbbreviatedData>M 2 16 L 10 2 L 18 16</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let baseline = render(&page, &options_at_one_pixel_per_mm());
+    let contaminated = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
+    let context = Context::new(&contaminated).unwrap();
+    context.set_dash(&[1.0, 3.0], 0.75);
+    context.set_line_cap(LineCap::Round);
+    context.set_line_join(LineJoin::Bevel);
+    context.set_miter_limit(1.5);
+
+    CairoRenderer
+        .render_page(&page, &context, &options_at_one_pixel_per_mm())
+        .unwrap();
+    assert_eq!(context.dash(), (vec![1.0, 3.0], 0.75));
+    assert_eq!(context.line_cap(), LineCap::Round);
+    assert_eq!(context.line_join(), LineJoin::Bevel);
+    assert_eq!(context.miter_limit(), 1.5);
+    drop(context);
+
+    baseline.flush();
+    contaminated.flush();
+    let mut baseline_bytes = Vec::new();
+    baseline
+        .with_data(|data| baseline_bytes.extend_from_slice(data))
+        .unwrap();
+    let mut contaminated_bytes = Vec::new();
+    contaminated
+        .with_data(|data| contaminated_bytes.extend_from_slice(data))
+        .unwrap();
+    assert_eq!(baseline_bytes, contaminated_bytes);
+}
+
+#[test]
+fn caller_path_is_preserved_on_success_and_post_save_failure() {
+    let success_page = open_page("0 0 20 20", "");
+    let failure_page = open_page(
+        "0 0 20 20",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 20 20" Fill="false" Stroke="true">
+  <ofd:AbbreviatedData>M 1 1 A 1e308 1e308 0 0 1 10 10</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+
+    for (page, succeeds) in [(&success_page, true), (&failure_page, false)] {
+        let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
+        let context = Context::new(&surface).unwrap();
+        context.move_to(2.0, 3.0);
+        context.line_to(7.0, 11.0);
+        context.curve_to(8.0, 12.0, 9.0, 13.0, 14.0, 15.0);
+        let expected = path_segments(&context);
+        let expected_point = context.current_point().unwrap();
+        let expected_extents = context.path_extents().unwrap();
+
+        assert_eq!(
+            CairoRenderer
+                .render_page(page, &context, &options_at_one_pixel_per_mm())
+                .is_ok(),
+            succeeds
+        );
+        assert_eq!(path_segments(&context), expected);
+        assert_eq!(context.current_point().unwrap(), expected_point);
+        assert_eq!(context.path_extents().unwrap(), expected_extents);
+    }
 }
