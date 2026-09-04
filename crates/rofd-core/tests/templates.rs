@@ -585,6 +585,46 @@ fn failed_template_initialization_is_retryable_without_partial_publication() {
 }
 
 #[test]
+fn unreferenced_missing_and_malformed_templates_remain_lazy() {
+    let declarations = [
+        template_decl("10", "Templates/Missing.xml", None),
+        template_decl("20", "Templates/Malformed.xml", None),
+    ]
+    .join("");
+    let bytes = archive(
+        &document(&declarations),
+        &page(Some("0 0 20 20"), "", &layer(901, "Body", 1901)),
+        &[(
+            "Doc_0/Templates/Malformed.xml",
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content>"#,
+        )],
+    );
+
+    let document = Document::from_bytes(bytes, LoadOptions::default()).unwrap();
+    assert_eq!(sources(&document.page(0).unwrap()).len(), 1);
+}
+
+#[test]
+fn invalid_values_in_template_content_report_the_template_path() {
+    let declarations = template_decl("10", "Templates/A.xml", None);
+    let invalid_template = template("", &layer(101, "body", 1101));
+    let bytes = archive(
+        &document(&declarations),
+        &page(Some("0 0 20 20"), &template_ref("10", None), ""),
+        &[("Doc_0/Templates/A.xml", &invalid_template)],
+    );
+
+    assert!(matches!(
+        Document::from_bytes(bytes, LoadOptions::default()).and_then(|document| document.page(0)),
+        Err(Error::InvalidValue {
+            field: "layer type",
+            ref path,
+            ..
+        }) if path.as_deref() == Some("Doc_0/Templates/A.xml")
+    ));
+}
+
+#[test]
 fn concurrent_pages_share_only_complete_template_cache_results() {
     let declarations = template_decl("10", "Templates/A.xml", None);
     let document_xml = format!(

@@ -299,7 +299,8 @@ impl Document {
             &self.0.limits,
             reference.path.as_str(),
             crate::LayerSource::Page,
-        )?;
+        )
+        .map_err(|error| with_error_path(error, &reference.path))?;
         let layers = self
             .merge_effective_layers(
                 page.templates,
@@ -387,7 +388,8 @@ impl Document {
                 &self.0.limits,
                 reference.path.as_str(),
                 crate::LayerSource::Template(id),
-            )?;
+            )
+            .map_err(|error| with_error_path(error, &reference.path))?;
             self.merge_effective_layers(
                 root.templates,
                 direct_layers,
