@@ -1,8 +1,8 @@
 use std::f64::consts::PI;
 
 use cairo::{
-    Context, FillRule as CairoFillRule, Format, ImageSurface, LineCap, LineJoin, Matrix, Operator,
-    Path,
+    Antialias, Context, FillRule as CairoFillRule, Format, ImageSurface, LineCap, LineJoin, Matrix,
+    Operator, Path,
 };
 use rofd_core::{Color, FillRule, Page, PathCommand, PathData, Point, Rect, Transform};
 
@@ -10,6 +10,9 @@ use crate::{ClipPath, Command, DisplayList, Error, RenderDiagnostic, Result};
 
 const MILLIMETRES_PER_INCH: f64 = 25.4;
 const DEFAULT_MITER_LIMIT: f64 = 3.528;
+const DEFAULT_CURVE_TOLERANCE: f64 = 0.1;
+const MAX_CAIRO_IMAGE_DIMENSION: i32 = 32_767;
+const DEFAULT_MAX_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Options controlling page rasterization.
 #[derive(Clone, Debug, PartialEq)]
@@ -24,6 +27,12 @@ pub struct RenderOptions {
     pub background: Color,
     /// Optional clipping rectangle in absolute page-space millimetres.
     pub clip: Option<Rect>,
+    /// Maximum bytes for all simultaneously live full-page raster surfaces.
+    ///
+    /// Validation conservatively includes the caller's ARGB32 target, one A8
+    /// clip mask, and one ARGB32 clipped-drawing intermediate even when the
+    /// current page does not use clipping.
+    pub max_raster_bytes: u64,
 }
 
 impl Default for RenderOptions {
@@ -39,6 +48,7 @@ impl Default for RenderOptions {
                 alpha: 255,
             },
             clip: None,
+            max_raster_bytes: DEFAULT_MAX_RASTER_BYTES,
         }
     }
 }
@@ -122,6 +132,7 @@ fn render_saved(
 ) -> Result<()> {
     context.set_matrix(geometry.page_to_device);
     context.set_operator(Operator::Over);
+    set_raster_defaults(context)?;
     set_stroke_defaults(context)?;
     context.rectangle(page_box.x, page_box.y, page_box.width, page_box.height);
     context.clip();
@@ -188,10 +199,19 @@ impl RenderGeometry {
             || !height.is_finite()
             || width < 1.0
             || height < 1.0
-            || width > i32::MAX as f64
-            || height > i32::MAX as f64
+            || width > f64::from(MAX_CAIRO_IMAGE_DIMENSION)
+            || height > f64::from(MAX_CAIRO_IMAGE_DIMENSION)
         {
             return Err(Error::InvalidSurfaceSize { width, height });
+        }
+
+        let required_bytes = worst_case_surface_bytes(width as i32, height as i32)
+            .ok_or(Error::InvalidSurfaceSize { width, height })?;
+        if required_bytes > options.max_raster_bytes {
+            return Err(Error::RasterBudgetExceeded {
+                required_bytes,
+                max_bytes: options.max_raster_bytes,
+            });
         }
 
         let x = page_box.x;
@@ -240,6 +260,19 @@ impl RenderGeometry {
             page_to_device,
         })
     }
+}
+
+fn worst_case_surface_bytes(width: i32, height: i32) -> Option<u64> {
+    let width = u32::try_from(width).ok()?;
+    let height = u64::try_from(height).ok()?;
+    let argb_stride = u64::try_from(Format::ARgb32.stride_for_width(width).ok()?).ok()?;
+    let mask_stride = u64::try_from(Format::A8.stride_for_width(width).ok()?).ok()?;
+
+    // Main ARGB32 target + retained A8 clip mask + clipped ARGB32 temporary.
+    argb_stride
+        .checked_mul(height)?
+        .checked_mul(2)?
+        .checked_add(mask_stride.checked_mul(height)?)
 }
 
 fn invalid_option(field: &'static str, value: f64) -> Error {
@@ -361,6 +394,7 @@ impl<'a> Interpreter<'a> {
         )?;
         let context = cairo(Context::new(&surface), "create clip mask context")?;
         context.set_matrix(self.geometry.page_to_device);
+        set_raster_defaults(&context)?;
         context.set_fill_rule(cairo_fill_rule(rule));
         context.set_source_rgba(1.0, 1.0, 1.0, 1.0);
         cairo(context.status(), "initialize clip mask state")?;
@@ -403,6 +437,7 @@ impl<'a> Interpreter<'a> {
             )?;
             let temporary = cairo(Context::new(&surface), "create clipped drawing context")?;
             temporary.set_matrix(self.context.matrix());
+            set_raster_defaults(&temporary)?;
             set_stroke_defaults(&temporary)?;
             cairo(temporary.status(), "initialize clipped drawing state")?;
             draw_path_unmasked(&temporary, &self.state, path)?;
@@ -538,7 +573,10 @@ fn append_arc(
         return Ok(());
     }
     if !rx.is_finite() || !ry.is_finite() || !rotation_degrees.is_finite() {
-        return Err(invalid_display_list("non-finite arc geometry"));
+        return Err(invalid_arc_geometry(
+            "input radii or rotation",
+            format!("rx={rx}, ry={ry}, rotation={rotation_degrees}"),
+        ));
     }
     rx = rx.abs();
     ry = ry.abs();
@@ -550,7 +588,10 @@ fn append_arc(
     let y1 = -sin_phi * dx + cos_phi * dy;
     let radii_scale = x1 * x1 / (rx * rx) + y1 * y1 / (ry * ry);
     if !radii_scale.is_finite() {
-        return Err(invalid_display_list("non-finite arc radius correction"));
+        return Err(invalid_arc_geometry(
+            "radius correction",
+            radii_scale.to_string(),
+        ));
     }
     if radii_scale > 1.0 {
         let scale = radii_scale.sqrt();
@@ -564,7 +605,10 @@ fn append_arc(
     let y12 = y1 * y1;
     let denominator = rx2 * y12 + ry2 * x12;
     if !denominator.is_finite() {
-        return Err(invalid_display_list("non-finite arc center denominator"));
+        return Err(invalid_arc_geometry(
+            "center denominator",
+            denominator.to_string(),
+        ));
     }
     if denominator == 0.0 {
         context.line_to(end.x(), end.y());
@@ -590,7 +634,10 @@ fn append_arc(
         delta -= 2.0 * PI;
     }
     if !cx.is_finite() || !cy.is_finite() || !start_angle.is_finite() || !delta.is_finite() {
-        return Err(invalid_display_list("non-finite derived arc geometry"));
+        return Err(invalid_arc_geometry(
+            "derived center or angle",
+            format!("center=({cx}, {cy}), start={start_angle}, sweep={delta}"),
+        ));
     }
 
     cairo(context.save(), "save arc transform state")?;
@@ -650,6 +697,12 @@ fn set_stroke_defaults(context: &Context) -> Result<()> {
     cairo(context.status(), "set default stroke parameters")
 }
 
+fn set_raster_defaults(context: &Context) -> Result<()> {
+    context.set_antialias(Antialias::Gray);
+    context.set_tolerance(DEFAULT_CURVE_TOLERANCE);
+    cairo(context.status(), "set default raster parameters")
+}
+
 fn restore_path(context: &Context, path: &Path) -> Result<()> {
     context.new_path();
     context.append_path(path);
@@ -659,6 +712,14 @@ fn restore_path(context: &Context, path: &Path) -> Result<()> {
 fn invalid_display_list(message: impl Into<String>) -> Error {
     Error::InvalidDisplayList {
         message: message.into(),
+    }
+}
+
+fn invalid_arc_geometry(field: &'static str, value: impl Into<String>) -> Error {
+    Error::InvalidGeometry {
+        primitive: "arc",
+        field,
+        value: value.into(),
     }
 }
 

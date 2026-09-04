@@ -1,6 +1,8 @@
 use std::io::{Cursor, Write};
 
-use cairo::{Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern};
+use cairo::{
+    Antialias, Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern,
+};
 use rofd_core::{Color, Document, LoadOptions, Rect, UnsupportedObjectKind};
 use rofd_render::{CairoRenderer, Error, RenderOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
@@ -139,6 +141,7 @@ fn defaults_and_pixel_size_cover_nonzero_page_origins_and_quarter_turns() {
         }
     );
     assert_eq!(defaults.clip, None);
+    assert_eq!(defaults.max_raster_bytes, 256 * 1024 * 1024);
 
     let page = open_page("10 20 30 40", "");
     let mut options = options_at_one_pixel_per_mm();
@@ -157,6 +160,67 @@ fn defaults_and_pixel_size_cover_nonzero_page_origins_and_quarter_turns() {
         CairoRenderer::pixel_size(&page, &options).unwrap(),
         (80, 60)
     );
+}
+
+#[test]
+fn pixel_size_rejects_cairo_dimension_and_worst_case_surface_budget_limits() {
+    let cairo_maximum = open_page("0 0 32767 1", "");
+    let cairo_too_wide = open_page("0 0 32768 1", "");
+    let unlimited = RenderOptions {
+        max_raster_bytes: u64::MAX,
+        ..options_at_one_pixel_per_mm()
+    };
+    assert_eq!(
+        CairoRenderer::pixel_size(&cairo_maximum, &unlimited).unwrap(),
+        (32_767, 1)
+    );
+    assert!(matches!(
+        CairoRenderer::pixel_size(&cairo_too_wide, &unlimited),
+        Err(Error::InvalidSurfaceSize { .. })
+    ));
+
+    let huge_allocation = open_page("0 0 20000 20000", "");
+    assert!(matches!(
+        CairoRenderer::pixel_size(&huge_allocation, &options_at_one_pixel_per_mm()),
+        Err(Error::RasterBudgetExceeded {
+            required_bytes: 3_600_000_000,
+            max_bytes: 268_435_456,
+        })
+    ));
+
+    let boundary = open_page("0 0 100 100", "");
+    let exact = RenderOptions {
+        max_raster_bytes: 90_000,
+        ..options_at_one_pixel_per_mm()
+    };
+    assert_eq!(
+        CairoRenderer::pixel_size(&boundary, &exact).unwrap(),
+        (100, 100)
+    );
+    let one_under = RenderOptions {
+        max_raster_bytes: 89_999,
+        ..exact
+    };
+    assert!(matches!(
+        CairoRenderer::pixel_size(&boundary, &one_under),
+        Err(Error::RasterBudgetExceeded {
+            required_bytes: 90_000,
+            max_bytes: 89_999,
+        })
+    ));
+
+    let padded_mask_stride = open_page("0 0 1 100", "");
+    let misses_a8_padding = RenderOptions {
+        max_raster_bytes: 1_199,
+        ..options_at_one_pixel_per_mm()
+    };
+    assert!(matches!(
+        CairoRenderer::pixel_size(&padded_mask_stride, &misses_a8_padding),
+        Err(Error::RasterBudgetExceeded {
+            required_bytes: 1_200,
+            max_bytes: 1_199,
+        })
+    ));
 }
 
 #[test]
@@ -366,7 +430,11 @@ fn rejects_arc_geometry_that_overflows_during_endpoint_conversion() {
             &context,
             &options_at_one_pixel_per_mm()
         ),
-        Err(Error::InvalidDisplayList { ref message }) if message.contains("arc")
+        Err(Error::InvalidGeometry {
+            primitive: "arc",
+            field,
+            ..
+        }) if field == "center denominator"
     ));
     assert!(matches!(
         context.restore(),
@@ -538,6 +606,62 @@ fn caller_stroke_parameters_do_not_change_output_and_are_restored() {
         .with_data(|data| contaminated_bytes.extend_from_slice(data))
         .unwrap();
     assert_eq!(baseline_bytes, contaminated_bytes);
+}
+
+#[test]
+fn caller_raster_parameters_do_not_change_output_and_are_restored() {
+    let page = open_page(
+        "0 0 20 20",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 20 20" Fill="false" Stroke="true" LineWidth="1">
+  <ofd:AbbreviatedData>M 2.25 17.5 B 5.5 1.25 14.5 18.75 18 2.5</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let baseline = render(&page, &options_at_one_pixel_per_mm());
+    let contaminated = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
+    let context = Context::new(&contaminated).unwrap();
+    context.set_antialias(Antialias::None);
+    context.set_tolerance(8.0);
+
+    CairoRenderer
+        .render_page(&page, &context, &options_at_one_pixel_per_mm())
+        .unwrap();
+    assert_eq!(context.antialias(), Antialias::None);
+    assert_eq!(context.tolerance(), 8.0);
+    drop(context);
+
+    baseline.flush();
+    contaminated.flush();
+    assert_eq!(surface_bytes(&baseline), surface_bytes(&contaminated));
+}
+
+#[test]
+fn nonrestrictive_clip_does_not_change_path_rasterization() {
+    let unclipped = open_page(
+        "0 0 20 20",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 20 20" Fill="false" Stroke="true" LineWidth="1">
+  <ofd:AbbreviatedData>M 2.25 17.5 B 5.5 1.25 14.5 18.75 18 2.5</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let clipped = open_page(
+        "0 0 20 20",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 20 20" Fill="false" Stroke="true" LineWidth="1">
+  <ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 20 20" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 20 0 L 20 20 L 0 20 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>
+  <ofd:AbbreviatedData>M 2.25 17.5 B 5.5 1.25 14.5 18.75 18 2.5</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let baseline = render(&unclipped, &options_at_one_pixel_per_mm());
+    let masked = render(&clipped, &options_at_one_pixel_per_mm());
+    baseline.flush();
+    masked.flush();
+    assert_eq!(surface_bytes(&baseline), surface_bytes(&masked));
+}
+
+fn surface_bytes(surface: &ImageSurface) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    surface
+        .with_data(|data| bytes.extend_from_slice(data))
+        .unwrap();
+    bytes
 }
 
 #[test]

@@ -58,6 +58,24 @@ pub enum Error {
         /// A description of the invalid sequence.
         message: String,
     },
+    /// A geometric primitive cannot be represented numerically by the backend.
+    #[error("invalid {primitive} geometry in {field}: {value}")]
+    InvalidGeometry {
+        /// The primitive whose geometry failed, such as `arc`.
+        primitive: &'static str,
+        /// The input or derived field that was invalid.
+        field: &'static str,
+        /// A description of the invalid value.
+        value: String,
+    },
+    /// The configured memory budget cannot contain the renderer's worst-case surfaces.
+    #[error("raster surfaces require {required_bytes} bytes but the limit is {max_bytes}")]
+    RasterBudgetExceeded {
+        /// Worst-case simultaneously live bytes required for this page.
+        required_bytes: u64,
+        /// Configured maximum simultaneously live raster bytes.
+        max_bytes: u64,
+    },
     /// Cairo rejected a rendering operation.
     #[error("Cairo {operation} failed: {source}")]
     Backend {
