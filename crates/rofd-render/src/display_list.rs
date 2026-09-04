@@ -6,10 +6,16 @@ use crate::{Error, Result};
 
 /// A backend-neutral display-list command.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Command {
     /// Saves the current graphics state.
     Save,
     /// Concatenates an affine transform with the current transform.
+    ///
+    /// The command transform maps new local coordinates into the prior user
+    /// space. If the prior active transform is `T` and this command contains
+    /// `M`, the new active transform is `M.then(T)`: `M` is applied first,
+    /// followed by `T`.
     ConcatTransform(Transform),
     /// Clips subsequent drawing to a path.
     ///
@@ -25,6 +31,8 @@ pub enum Command {
     SetStroke(Option<Color>),
     /// Sets or disables the fill paint.
     SetFill(Option<Color>),
+    /// Sets the rule used to fill paths.
+    SetFillRule(FillRule),
     /// Sets the stroke width in millimetres.
     SetLineWidth(f64),
     /// Draws a validated path.
@@ -105,15 +113,20 @@ impl DisplayList {
                     value: error.to_string(),
                 }
             })?;
+        let object_to_page =
+            path.transform()
+                .then(translation)
+                .map_err(|error| Error::InvalidModel {
+                    object_id: path.object_id(),
+                    field: "object-to-page transform",
+                    value: error.to_string(),
+                })?;
 
         self.commands.push(Command::Save);
-        self.commands.push(Command::ConcatTransform(translation));
-        if path.transform() != Transform::IDENTITY {
-            self.commands
-                .push(Command::ConcatTransform(path.transform()));
-        }
+        self.commands.push(Command::ConcatTransform(object_to_page));
         self.commands.push(Command::SetStroke(path.stroke()));
         self.commands.push(Command::SetFill(path.fill()));
+        self.commands.push(Command::SetFillRule(path.fill_rule()));
         self.commands.push(Command::SetLineWidth(line_width));
         self.commands
             .push(Command::DrawPath(path.path_data().clone()));

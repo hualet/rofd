@@ -1,7 +1,7 @@
 use std::io::{Cursor, Write};
 
 use rofd_core::{
-    Color, Document, FillRule, LoadOptions, PathData, Transform, UnsupportedObjectKind,
+    Color, Document, FillRule, LoadOptions, PathData, Point, Transform, UnsupportedObjectKind,
 };
 use rofd_render::{Command, DisplayList};
 use zip::{write::SimpleFileOptions, ZipWriter};
@@ -79,7 +79,7 @@ fn lowers_path_to_exact_backend_neutral_command_sequence() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject
   ID="2" Boundary="-2 3 4 5" CTM="1 0.5 0 1 6 7" Stroke="true" Fill="true"
-  LineWidth="1.25">
+  LineWidth="1.25" Rule="Even-Odd">
   <ofd:StrokeColor Value="10 20 30" Alpha="40"/>
   <ofd:FillColor Value="50 60 70" Alpha="80"/>
   <ofd:AbbreviatedData>M 1 2 L 3 4 C</ofd:AbbreviatedData>
@@ -92,8 +92,7 @@ fn lowers_path_to_exact_backend_neutral_command_sequence() {
         display_list.commands(),
         [
             Command::Save,
-            Command::ConcatTransform(Transform::new(1.0, 0.0, 0.0, 1.0, -2.0, 3.0).unwrap()),
-            Command::ConcatTransform(Transform::new(1.0, 0.5, 0.0, 1.0, 6.0, 7.0).unwrap()),
+            Command::ConcatTransform(Transform::new(1.0, 0.5, 0.0, 1.0, 4.0, 10.0).unwrap()),
             Command::SetStroke(Some(Color {
                 red: 10,
                 green: 20,
@@ -106,6 +105,7 @@ fn lowers_path_to_exact_backend_neutral_command_sequence() {
                 blue: 70,
                 alpha: 80,
             })),
+            Command::SetFillRule(FillRule::EvenOdd),
             Command::SetLineWidth(1.25),
             Command::DrawPath(PathData::parse("M 1 2 L 3 4 C").unwrap()),
             Command::Restore,
@@ -115,7 +115,7 @@ fn lowers_path_to_exact_backend_neutral_command_sequence() {
 }
 
 #[test]
-fn always_emits_boundary_translation_but_omits_identity_object_transform() {
+fn identity_object_transform_leaves_boundary_translation_as_the_effective_transform() {
     let page = open_page(&format!(
         "<ofd:Content><ofd:Layer ID=\"1\">{}</ofd:Layer></ofd:Content>",
         path(2, "M 0 0")
@@ -123,7 +123,7 @@ fn always_emits_boundary_translation_but_omits_identity_object_transform() {
 
     let display_list = DisplayList::from_page(&page).unwrap();
 
-    assert_eq!(display_list.commands().len(), 7);
+    assert_eq!(display_list.commands().len(), 8);
     assert_eq!(display_list.commands()[0], Command::Save);
     assert_eq!(
         display_list.commands()[1],
@@ -134,9 +134,57 @@ fn always_emits_boundary_translation_but_omits_identity_object_transform() {
         Command::SetStroke(Some(Color::BLACK))
     );
     assert_eq!(display_list.commands()[3], Command::SetFill(None));
-    assert_eq!(display_list.commands()[4], Command::SetLineWidth(0.353));
-    assert!(matches!(display_list.commands()[5], Command::DrawPath(_)));
-    assert_eq!(display_list.commands()[6], Command::Restore);
+    assert_eq!(
+        display_list.commands()[4],
+        Command::SetFillRule(FillRule::NonZero)
+    );
+    assert_eq!(display_list.commands()[5], Command::SetLineWidth(0.353));
+    assert!(matches!(display_list.commands()[6], Command::DrawPath(_)));
+    assert_eq!(display_list.commands()[7], Command::Restore);
+}
+
+#[test]
+fn precomposed_transform_applies_non_commuting_ctm_before_boundary_translation() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject
+  ID="2" Boundary="10 20 4 5" CTM="2 1 0.5 3 4 5">
+  <ofd:AbbreviatedData>M 2 3</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+
+    let display_list = DisplayList::from_page(&page).unwrap();
+    let Command::ConcatTransform(transform) = display_list.commands()[1] else {
+        panic!("expected a precomposed object-to-page transform");
+    };
+
+    assert_eq!(
+        transform.apply(Point::new(2.0, 3.0).unwrap()).unwrap(),
+        Point::new(19.5, 36.0).unwrap()
+    );
+    assert_eq!(
+        display_list
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, Command::ConcatTransform(_)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn preserves_even_odd_fill_rule() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject
+  ID="2" Boundary="0 0 4 5" Rule="Even-Odd">
+  <ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData>
+</ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+
+    let display_list = DisplayList::from_page(&page).unwrap();
+
+    assert!(display_list
+        .commands()
+        .contains(&Command::SetFillRule(FillRule::EvenOdd)));
 }
 
 #[test]
@@ -158,7 +206,7 @@ fn recursively_flattens_nested_groups_in_source_order_without_group_state() {
 
     let display_list = DisplayList::from_page(&page).unwrap();
 
-    assert_eq!(display_list.commands().len(), 4 * 7);
+    assert_eq!(display_list.commands().len(), 4 * 8);
     assert_eq!(
         drawn_paths(&display_list),
         ["M 2 0", "M 4 0", "M 6 0", "M 7 0"]
