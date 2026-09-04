@@ -81,11 +81,12 @@ pub struct DisplayList {
 }
 
 impl DisplayList {
-    /// Lowers a validated page into source-ordered display commands.
+    /// Lowers a validated page into effective-paint-order display commands.
     ///
-    /// Layers retain their current source order. Page groups are recursively
-    /// flattened in source order; their depth is bounded by `rofd-core`'s page
-    /// object validation limit.
+    /// The page has already merged template and direct layers. Source order is
+    /// retained within each effective layer category. Page groups are
+    /// recursively flattened in source order; their depth is bounded by
+    /// `rofd-core`'s page object validation limit.
     pub fn from_page(page: &Page) -> Result<Self> {
         let mut display_list = Self::default();
         for layer in page.layers() {
@@ -101,7 +102,7 @@ impl DisplayList {
         &self.commands
     }
 
-    /// Returns non-fatal lowering diagnostics in source order.
+    /// Returns non-fatal lowering diagnostics in effective paint order.
     pub fn diagnostics(&self) -> &[RenderDiagnostic] {
         &self.diagnostics
     }

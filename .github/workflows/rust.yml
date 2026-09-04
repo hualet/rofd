@@ -10,19 +10,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  core-and-render:
+    name: Core and renderer
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: Setup
+    - name: Install Cairo development files
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libcairo2-dev
-    - name: Format
+        sudo apt-get install -y libcairo2-dev
+    - name: Check formatting
       run: cargo fmt --all -- --check
-    - name: Lint core
-      run: cargo clippy -p rofd-core --all-targets -- -D warnings
-    - name: Test core
-      run: cargo test -p rofd-core
+    - name: Lint core and renderer
+      run: cargo clippy -p rofd-core -p rofd-render --all-targets -- -D warnings
+    - name: Test core and renderer
+      run: cargo test -p rofd-core -p rofd-render
