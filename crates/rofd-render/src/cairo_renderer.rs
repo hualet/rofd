@@ -60,7 +60,7 @@ pub struct RenderReport {
 }
 
 impl RenderReport {
-    /// Returns non-fatal display-list diagnostics in source order.
+    /// Returns non-fatal display-list diagnostics in effective paint order.
     pub fn diagnostics(&self) -> &[RenderDiagnostic] {
         &self.diagnostics
     }
