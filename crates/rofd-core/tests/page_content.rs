@@ -1,6 +1,7 @@
 mod support;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
 
 use rofd_core::{
     Color, Document, Error, FillRule, LayerType, LoadOptions, PageObject, Rect, ResourceLimits,
@@ -143,10 +144,10 @@ fn alpha_combination_rounds_to_the_nearest_integer() {
 }
 
 #[test]
-fn enabled_fill_without_color_defaults_to_black_with_object_alpha() {
+fn absent_paint_colors_apply_object_alpha_to_their_distinct_defaults() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject
-  ID="2" Boundary="0 0 1 1" Stroke="false" Fill="true" Alpha="128">
+  ID="2" Boundary="0 0 1 1" Fill="true" Alpha="128">
   <ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData>
 </ofd:PathObject></ofd:Layer></ofd:Content>"#,
     )
@@ -156,12 +157,45 @@ fn enabled_fill_without_color_defaults_to_black_with_object_alpha() {
     };
 
     assert_eq!(
-        path.fill(),
+        path.stroke(),
         Some(Color {
             alpha: 128,
             ..Color::BLACK
         })
     );
+    assert_eq!(
+        path.fill(),
+        Some(Color {
+            alpha: 0,
+            ..Color::BLACK
+        })
+    );
+}
+
+#[test]
+fn accepts_xml_schema_numeric_boolean_attributes() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1">
+  <ofd:PathObject ID="2" Boundary="0 0 1 1" Stroke="1" Fill="0">
+    <ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData>
+  </ofd:PathObject>
+  <ofd:PathObject ID="3" Boundary="0 0 1 1" Stroke="0" Fill="1">
+    <ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData>
+  </ofd:PathObject>
+</ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap();
+
+    let PageObject::Path(first) = &page.layers()[0].objects()[0] else {
+        panic!("expected first path object");
+    };
+    assert_eq!(first.stroke(), Some(Color::BLACK));
+    assert_eq!(first.fill(), None);
+    let PageObject::Path(second) = &page.layers()[0].objects()[1] else {
+        panic!("expected second path object");
+    };
+    assert_eq!(second.stroke(), None);
+    assert_eq!(second.fill().unwrap().alpha, 0);
 }
 
 #[test]
@@ -275,7 +309,7 @@ fn rejects_nonpositive_or_nonfinite_line_width() {
 
 #[test]
 fn rejects_invalid_stroke_and_fill_attributes() {
-    for (attribute, field) in [("Stroke=\"yes\"", "stroke"), ("Fill=\"1\"", "fill")] {
+    for (attribute, field) in [("Stroke=\"yes\"", "stroke"), ("Fill=\"off\"", "fill")] {
         let content = format!(
             r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1" {attribute}><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
         );
@@ -338,6 +372,68 @@ fn rejects_invalid_boundary_transform_path_and_enabled_color() {
 }
 
 #[test]
+fn boundary_allows_negative_origins_but_requires_positive_dimensions() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="-1 -2 10 10"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap();
+    let PageObject::Path(path) = &page.layers()[0].objects()[0] else {
+        panic!("expected path object");
+    };
+    assert_eq!(path.boundary().x, -1.0);
+    assert_eq!(path.boundary().y, -2.0);
+
+    for boundary in [
+        "0 0 0 1",
+        "0 0 1 0",
+        "0 0 -1 1",
+        "0 0 1 -1",
+        "NaN 0 1 1",
+        "0 inf 1 1",
+    ] {
+        let content = format!(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="{boundary}"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+        );
+        let error = open_page(&content).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::InvalidValue {
+                    field: "boundary",
+                    ..
+                }
+            ),
+            "expected invalid boundary, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_zero_or_malformed_layer_group_and_leaf_ids() {
+    let cases = [
+        r#"<ofd:Content><ofd:Layer ID="0"/></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="not-an-id"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="not-an-id" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="0"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:ImageObject ID="not-an-id"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="0"/></ofd:Layer></ofd:Content>"#,
+    ];
+    for content in cases {
+        let error = open_page(content).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::InvalidValue {
+                    field: "object ID",
+                    ..
+                }
+            ),
+            "expected invalid object ID, got {error:?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_duplicate_ids_anywhere_on_a_page() {
     let error = open_page(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:TextObject ID="3"/></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
@@ -382,6 +478,38 @@ fn page_object_limit_accepts_exactly_one_layer_one_group_and_one_leaf() {
     };
     assert_eq!(group.object_id(), 2);
     assert_eq!(group.objects()[0].object_id(), 3);
+}
+
+#[test]
+fn page_object_limit_rejects_flat_oversize_before_raw_deserialization() {
+    let limits = ResourceLimits {
+        max_page_objects: 1,
+        ..ResourceLimits::default()
+    };
+    let error = open_page_with_limits(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject/></ofd:Layer></ofd:Content>"#,
+        limits,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, Error::LimitExceeded(message) if message.contains("page object count 2 exceeds limit 1"))
+    );
+}
+
+#[test]
+fn page_object_limit_ignores_object_names_inside_unsupported_payload() {
+    let limits = ResourceLimits {
+        max_page_objects: 2,
+        ..ResourceLimits::default()
+    };
+    let page = open_page_with_limits(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload><ofd:PathObject/><ofd:ImageObject/></ofd:Payload></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        limits,
+    )
+    .unwrap();
+
+    assert_eq!(page.layers()[0].objects()[0].object_id(), 2);
 }
 
 #[test]
@@ -449,6 +577,80 @@ fn page_block_depth_limit_accepts_the_exact_nesting_depth() {
         panic!("expected outer page group");
     };
     assert!(matches!(outer.objects()[0], PageObject::Group(_)));
+}
+
+#[test]
+fn page_block_depth_ignores_page_block_names_inside_unsupported_payload() {
+    let limits = ResourceLimits {
+        max_page_block_depth: 0,
+        ..ResourceLimits::default()
+    };
+    let page = open_page_with_limits(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload><ofd:PageBlock/></ofd:Payload></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        limits,
+    )
+    .unwrap();
+
+    assert_eq!(page.layers()[0].objects()[0].object_id(), 2);
+}
+
+#[test]
+fn xml_depth_limit_rejects_deep_ignored_payload_before_deserialization() {
+    let limits = ResourceLimits {
+        max_xml_depth: 5,
+        ..ResourceLimits::default()
+    };
+    let error = open_page_with_limits(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload><ofd:A><ofd:B/></ofd:A></ofd:Payload></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        limits,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, Error::LimitExceeded(message) if message.contains("XML depth 6 exceeds limit 5"))
+    );
+}
+
+#[test]
+fn xml_depth_limit_accepts_the_exact_nesting_depth() {
+    let limits = ResourceLimits {
+        max_xml_depth: 5,
+        ..ResourceLimits::default()
+    };
+    let page = open_page_with_limits(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload/></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        limits,
+    )
+    .unwrap();
+
+    assert_eq!(page.layers()[0].objects()[0].object_id(), 2);
+}
+
+#[test]
+fn concurrent_lazy_page_initialization_records_one_fallback_warning() {
+    let page_without_area = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Content><ofd:Layer ID="1"/></ofd:Content>
+</ofd:Page>"#;
+    let document =
+        Document::from_bytes(minimal_ofd(page_without_area), LoadOptions::default()).unwrap();
+    let worker_count = 8;
+    let barrier = Arc::new(Barrier::new(worker_count));
+    let workers = (0..worker_count)
+        .map(|_| {
+            let document = document.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                document.page(0).unwrap().size()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for worker in workers {
+        assert_eq!(worker.join().unwrap().width, 210.0);
+    }
+    assert_eq!(document.warnings().len(), 1);
 }
 
 #[test]

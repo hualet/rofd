@@ -80,7 +80,7 @@ pub(crate) struct PageContent {
 #[derive(Debug, Deserialize)]
 pub(crate) struct Layer {
     #[serde(rename = "ID")]
-    pub(crate) id: u64,
+    pub(crate) id: String,
     #[serde(rename = "Type")]
     pub(crate) kind: Option<String>,
     #[serde(rename = "$value", default)]
@@ -104,7 +104,7 @@ pub(crate) enum GraphicUnit {
 #[derive(Debug, Deserialize)]
 pub(crate) struct PageBlock {
     #[serde(rename = "ID")]
-    pub(crate) id: u64,
+    pub(crate) id: String,
     #[serde(rename = "$value", default)]
     pub(crate) objects: Vec<GraphicUnit>,
 }
@@ -112,13 +112,13 @@ pub(crate) struct PageBlock {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ObjectReference {
     #[serde(rename = "ID")]
-    pub(crate) id: u64,
+    pub(crate) id: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PathObject {
     #[serde(rename = "ID")]
-    pub(crate) id: u64,
+    pub(crate) id: String,
     #[serde(rename = "Boundary")]
     pub(crate) boundary: String,
     #[serde(rename = "CTM")]

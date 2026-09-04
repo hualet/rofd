@@ -28,6 +28,8 @@ pub struct ResourceLimits {
     pub max_page_objects: usize,
     /// Maximum nesting depth of page blocks on one page.
     pub max_page_block_depth: usize,
+    /// Maximum nesting depth of elements in any parsed XML document.
+    pub max_xml_depth: usize,
 }
 
 impl Default for ResourceLimits {
@@ -39,6 +41,7 @@ impl Default for ResourceLimits {
             max_path_commands: 250_000,
             max_page_objects: 100_000,
             max_page_block_depth: 64,
+            max_xml_depth: 256,
         }
     }
 }

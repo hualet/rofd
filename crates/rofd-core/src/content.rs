@@ -138,7 +138,7 @@ impl PathObject {
         self.object_id
     }
 
-    /// Returns the non-negative object boundary in millimetres.
+    /// Returns the object boundary with a finite origin and positive dimensions.
     pub fn boundary(&self) -> Rect {
         self.boundary
     }
@@ -190,7 +190,8 @@ pub(crate) fn convert_layers(
     };
     let mut layers = Vec::new();
     for layer in content.layers {
-        context.register_id(layer.id)?;
+        let object_id = parse_object_id(&layer.id)?;
+        context.register_id(object_id)?;
         let kind = match layer.kind.as_deref() {
             None | Some("Body") => LayerType::Body,
             Some("Background") => LayerType::Background,
@@ -199,7 +200,7 @@ pub(crate) fn convert_layers(
         };
         let objects = context.convert_objects(layer.objects)?;
         layers.push(Layer {
-            object_id: layer.id,
+            object_id,
             kind,
             objects,
         });
@@ -237,25 +238,24 @@ impl ConversionContext<'_> {
         for object in objects {
             let object = match object {
                 raw::GraphicUnit::Path(path) => {
-                    self.register_id(path.id)?;
-                    PageObject::Path(self.convert_path(*path)?)
+                    let object_id = parse_object_id(&path.id)?;
+                    self.register_id(object_id)?;
+                    PageObject::Path(self.convert_path(*path, object_id)?)
                 }
                 raw::GraphicUnit::Group(group) => {
-                    self.register_id(group.id)?;
+                    let object_id = parse_object_id(&group.id)?;
+                    self.register_id(object_id)?;
                     let objects = self.convert_objects(group.objects)?;
-                    PageObject::Group(PageGroup {
-                        object_id: group.id,
-                        objects,
-                    })
+                    PageObject::Group(PageGroup { object_id, objects })
                 }
                 raw::GraphicUnit::Text(object) => {
-                    self.unsupported(object.id, UnsupportedObjectKind::Text)?
+                    self.unsupported(&object.id, UnsupportedObjectKind::Text)?
                 }
                 raw::GraphicUnit::Image(object) => {
-                    self.unsupported(object.id, UnsupportedObjectKind::Image)?
+                    self.unsupported(&object.id, UnsupportedObjectKind::Image)?
                 }
                 raw::GraphicUnit::Composite(object) => {
-                    self.unsupported(object.id, UnsupportedObjectKind::Composite)?
+                    self.unsupported(&object.id, UnsupportedObjectKind::Composite)?
                 }
             };
             converted.push(object);
@@ -263,7 +263,8 @@ impl ConversionContext<'_> {
         Ok(converted)
     }
 
-    fn unsupported(&mut self, id: u64, kind: UnsupportedObjectKind) -> Result<PageObject> {
+    fn unsupported(&mut self, value: &str, kind: UnsupportedObjectKind) -> Result<PageObject> {
+        let id = parse_object_id(value)?;
         self.register_id(id)?;
         Ok(PageObject::Unsupported(UnsupportedObject {
             object_id: id,
@@ -271,13 +272,10 @@ impl ConversionContext<'_> {
         }))
     }
 
-    fn convert_path(&mut self, path: raw::PathObject) -> Result<PathObject> {
+    fn convert_path(&mut self, path: raw::PathObject, object_id: u64) -> Result<PathObject> {
         let boundary =
             Rect::parse(&path.boundary).map_err(|_| invalid_value("boundary", &path.boundary))?;
-        if [boundary.x, boundary.y, boundary.width, boundary.height]
-            .iter()
-            .any(|value| *value < 0.0)
-        {
+        if boundary.width <= 0.0 || boundary.height <= 0.0 {
             return Err(invalid_value("boundary", &path.boundary));
         }
         let transform = path
@@ -290,10 +288,19 @@ impl ConversionContext<'_> {
         let fill_enabled = parse_bool(path.fill.as_deref(), false, "fill")?;
         let object_alpha = parse_alpha(path.alpha.as_deref())?;
         let stroke = stroke_enabled
-            .then(|| paint_color(path.stroke_color.as_ref(), object_alpha))
+            .then(|| paint_color(path.stroke_color.as_ref(), Color::BLACK, object_alpha))
             .transpose()?;
         let fill = fill_enabled
-            .then(|| paint_color(path.fill_color.as_ref(), object_alpha))
+            .then(|| {
+                paint_color(
+                    path.fill_color.as_ref(),
+                    Color {
+                        alpha: 0,
+                        ..Color::BLACK
+                    },
+                    object_alpha,
+                )
+            })
             .transpose()?;
         let line_width = match path.line_width.as_deref() {
             Some(value) => {
@@ -320,7 +327,7 @@ impl ConversionContext<'_> {
             .ok_or_else(|| Error::LimitExceeded("page path command budget exhausted".to_owned()))?;
 
         Ok(PathObject {
-            object_id: path.id,
+            object_id,
             boundary,
             transform,
             path_data,
@@ -335,8 +342,8 @@ impl ConversionContext<'_> {
 fn parse_bool(value: Option<&str>, default: bool, field: &'static str) -> Result<bool> {
     match value {
         None => Ok(default),
-        Some("true") => Ok(true),
-        Some("false") => Ok(false),
+        Some("true" | "1") => Ok(true),
+        Some("false" | "0") => Ok(false),
         Some(value) => Err(invalid_value(field, value)),
     }
 }
@@ -349,13 +356,20 @@ fn parse_alpha(value: Option<&str>) -> Result<u8> {
         .map(|alpha| alpha.unwrap_or(255))
 }
 
-fn paint_color(color: Option<&raw::PaintColor>, object_alpha: u8) -> Result<Color> {
+fn paint_color(color: Option<&raw::PaintColor>, default: Color, object_alpha: u8) -> Result<Color> {
     let mut color = match color {
         Some(color) => Color::parse_rgb(&color.value, color.alpha.as_deref())?,
-        None => Color::BLACK,
+        None => default,
     };
     color.alpha = ((u16::from(color.alpha) * u16::from(object_alpha) + 127) / 255) as u8;
     Ok(color)
+}
+
+fn parse_object_id(value: &str) -> Result<u64> {
+    match value.parse::<u64>() {
+        Ok(id) if id != 0 => Ok(id),
+        _ => Err(invalid_value("object ID", value)),
+    }
 }
 
 fn invalid_value(field: &'static str, value: &str) -> Error {
