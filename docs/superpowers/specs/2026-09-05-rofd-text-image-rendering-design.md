@@ -46,8 +46,8 @@ the resource file's `BaseLoc`.
   graphics;
 - `TextObject`: boundary, CTM, font ID, size, fill/stroke state, alpha, clips,
   character transforms, and ordered `TextCode` runs;
-- `ImageObject`: boundary, CTM, resource ID, alpha, substitution color, and
-  clips.
+- `ImageObject`: boundary, CTM, primary resource ID, optional substitution and
+  image-mask resource IDs, alpha, and clips.
 
 `TextCode` retains the original Unicode string plus validated `X`, `Y`,
 `DeltaX`, and `DeltaY`. Repeated-delta syntax is expanded with checked counts.
@@ -98,7 +98,10 @@ it does not trust only the XML extension or `Format` string.
 Images map their full pixel rectangle into the OFD object boundary and then
 apply the object CTM. Interpolation is deterministic and selected through a
 render option with a documented default. Object alpha, page rotation, optional
-page clip, and OFD clips apply to image composition.
+page clip, and OFD clips apply to image composition. Phase 3 retains
+`Substitution` and `ImageMask` resource references but reports them as explicit
+unsupported-image diagnostics; high-resolution substitution selection and
+binary image-mask composition are deferred rather than silently misrendered.
 
 Decoding occurs before mutating the caller's Cairo context. Decoded images are
 cached by resource ID. Corrupt data, dimension overflow, allocation failure,
