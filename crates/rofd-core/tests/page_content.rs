@@ -654,6 +654,46 @@ fn concurrent_lazy_page_initialization_records_one_fallback_warning() {
 }
 
 #[test]
+fn failed_concurrent_page_initialization_does_not_publish_fallback_warnings() {
+    let page_without_area = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 0 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>
+</ofd:Page>"#;
+    let document =
+        Document::from_bytes(minimal_ofd(page_without_area), LoadOptions::default()).unwrap();
+    let worker_count = 8;
+    let barrier = Arc::new(Barrier::new(worker_count));
+    let workers = (0..worker_count)
+        .map(|_| {
+            let document = document.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                document.page(0).unwrap_err()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for worker in workers {
+        assert!(matches!(
+            worker.join().unwrap(),
+            Error::InvalidValue {
+                field: "boundary",
+                ..
+            }
+        ));
+    }
+    assert!(matches!(
+        document.page(0).unwrap_err(),
+        Error::InvalidValue {
+            field: "boundary",
+            ..
+        }
+    ));
+    assert!(document.warnings().is_empty());
+}
+
+#[test]
 fn rejects_unknown_graphic_units_instead_of_discarding_them() {
     let error = open_page(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:VideoObject ID="2"/></ofd:Layer></ofd:Content>"#,

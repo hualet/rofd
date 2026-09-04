@@ -224,34 +224,37 @@ impl Document {
 
         let page: crate::raw::PageRoot =
             parse_page_xml(&self.0.container, &reference.path, &self.0.limits)?;
-        let area = match page.area {
-            Some(area) => area,
+        let (area, pending_warning) = match page.area {
+            Some(area) => (area, None),
             None if self.0.strictness == crate::Strictness::Strict => {
                 return Err(Error::InvalidStructure {
                     path: reference.path.as_str().to_owned(),
                     message: "Page.Area is missing".to_owned(),
                 });
             }
-            None => {
-                self.0
-                    .warnings
-                    .lock()
-                    .map_err(|_| Error::InvalidStructure {
-                        path: reference.path.as_str().to_owned(),
-                        message: "warning store lock is poisoned".to_owned(),
-                    })?
-                    .push(Warning {
-                        code: WarningCode::PageAreaFallback,
-                        path: reference.path.as_str().to_owned(),
-                        message: "Page.Area is missing; inherited Document PageArea".to_owned(),
-                    });
-                self.0.default_page_area.clone()
-            }
+            None => (
+                self.0.default_page_area.clone(),
+                Some(Warning {
+                    code: WarningCode::PageAreaFallback,
+                    path: reference.path.as_str().to_owned(),
+                    message: "Page.Area is missing; inherited Document PageArea".to_owned(),
+                }),
+            ),
         };
         let size = crate::Rect::parse(&area.physical_box)?;
         let layers =
             crate::content::convert_layers(page.content, &self.0.limits, reference.path.as_str())?;
         let parsed = Arc::new(PageData { size, layers });
+        if let Some(warning) = pending_warning {
+            self.0
+                .warnings
+                .lock()
+                .map_err(|_| Error::InvalidStructure {
+                    path: reference.path.as_str().to_owned(),
+                    message: "warning store lock is poisoned".to_owned(),
+                })?
+                .push(warning);
+        }
         let data = reference.cache.get_or_init(|| Arc::clone(&parsed));
         Ok(Page {
             _document: Arc::clone(&self.0),
