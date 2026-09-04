@@ -29,11 +29,11 @@ pub enum PathCommand {
         rx: f64,
         /// The non-negative vertical radius.
         ry: f64,
-        /// The ellipse rotation in degrees.
+        /// The ellipse's clockwise rotation in degrees in OFD's y-down space.
         rotation: f64,
         /// Whether to select the larger arc.
         large: bool,
-        /// Whether to draw the arc in the positive-angle direction.
+        /// Whether to draw clockwise (`true`) or counter-clockwise (`false`).
         sweep: bool,
         /// The arc's end point.
         end: Point,

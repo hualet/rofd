@@ -1,0 +1,670 @@
+use std::f64::consts::{FRAC_PI_2, PI};
+
+use cairo::{Context, FillRule as CairoFillRule, Format, ImageSurface, Matrix, Operator};
+use rofd_core::{Color, FillRule, Page, PathCommand, PathData, Point, Rect, Transform};
+
+use crate::{ClipPath, Command, DisplayList, Error, RenderDiagnostic, Result};
+
+const MILLIMETRES_PER_INCH: f64 = 25.4;
+
+/// Options controlling page rasterization.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderOptions {
+    /// Output resolution in pixels per inch.
+    pub dpi: f64,
+    /// Additional positive output scale factor.
+    pub scale: f64,
+    /// Clockwise page rotation in degrees: 0, 90, 180, or 270.
+    pub rotation_degrees: u16,
+    /// Color painted behind the page content.
+    pub background: Color,
+    /// Optional clipping rectangle in absolute page-space millimetres.
+    pub clip: Option<Rect>,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            dpi: 96.0,
+            scale: 1.0,
+            rotation_degrees: 0,
+            background: Color {
+                red: 255,
+                green: 255,
+                blue: 255,
+                alpha: 255,
+            },
+            clip: None,
+        }
+    }
+}
+
+/// Information produced while rendering one page.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenderReport {
+    diagnostics: Vec<RenderDiagnostic>,
+}
+
+impl RenderReport {
+    /// Returns non-fatal display-list diagnostics in source order.
+    pub fn diagnostics(&self) -> &[RenderDiagnostic] {
+        &self.diagnostics
+    }
+}
+
+/// Rasterizes validated pages by interpreting their display lists with Cairo.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CairoRenderer;
+
+impl CairoRenderer {
+    /// Returns the required output dimensions in pixels.
+    pub fn pixel_size(page: &Page, options: &RenderOptions) -> Result<(i32, i32)> {
+        let geometry = RenderGeometry::new(page.size(), options)?;
+        Ok((geometry.pixel_width, geometry.pixel_height))
+    }
+
+    /// Renders a page into a caller-owned Cairo context.
+    ///
+    /// The caller's graphics state is restored on both successful rendering
+    /// and recoverable errors.
+    pub fn render_page(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+    ) -> Result<RenderReport> {
+        let geometry = RenderGeometry::new(page.size(), options)?;
+        let display_list = DisplayList::from_page(page)?;
+        if let Ok(surface) = ImageSurface::try_from(context.target()) {
+            if surface.width() < geometry.pixel_width || surface.height() < geometry.pixel_height {
+                return Err(Error::SurfaceTooSmall {
+                    required_width: geometry.pixel_width,
+                    required_height: geometry.pixel_height,
+                    actual_width: surface.width(),
+                    actual_height: surface.height(),
+                });
+            }
+        }
+        cairo(context.save(), "save caller state")?;
+
+        let rendered = render_saved(context, page.size(), options, &geometry, &display_list);
+        let restored = cairo(context.restore(), "restore caller state");
+        match (rendered, restored) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(RenderReport {
+                diagnostics: display_list.diagnostics().to_vec(),
+            }),
+        }
+    }
+}
+
+fn render_saved(
+    context: &Context,
+    page_box: Rect,
+    options: &RenderOptions,
+    geometry: &RenderGeometry,
+    display_list: &DisplayList,
+) -> Result<()> {
+    context.set_matrix(geometry.page_to_device);
+    context.set_operator(Operator::Over);
+    context.rectangle(page_box.x, page_box.y, page_box.width, page_box.height);
+    context.clip();
+    set_source_color(context, options.background);
+    cairo(context.paint(), "paint page background")?;
+
+    if let Some(clip) = options.clip {
+        context.rectangle(clip.x, clip.y, clip.width, clip.height);
+        context.clip();
+    }
+
+    let mut interpreter = Interpreter::new(context, geometry);
+    interpreter.run(display_list.commands())
+}
+
+struct RenderGeometry {
+    pixel_width: i32,
+    pixel_height: i32,
+    page_to_device: Matrix,
+}
+
+impl RenderGeometry {
+    fn new(page_box: Rect, options: &RenderOptions) -> Result<Self> {
+        if !options.dpi.is_finite() || options.dpi <= 0.0 {
+            return Err(invalid_option("dpi", options.dpi));
+        }
+        if !options.scale.is_finite() || options.scale <= 0.0 {
+            return Err(invalid_option("scale", options.scale));
+        }
+        if !matches!(options.rotation_degrees, 0 | 90 | 180 | 270) {
+            return Err(Error::InvalidOption {
+                field: "rotation_degrees",
+                value: options.rotation_degrees.to_string(),
+            });
+        }
+        if let Some(clip) = options.clip {
+            if !clip.x.is_finite()
+                || !clip.y.is_finite()
+                || !clip.width.is_finite()
+                || !clip.height.is_finite()
+                || clip.width <= 0.0
+                || clip.height <= 0.0
+            {
+                return Err(Error::InvalidOption {
+                    field: "clip",
+                    value: format!("{} {} {} {}", clip.x, clip.y, clip.width, clip.height),
+                });
+            }
+        }
+        let pixels_per_mm = options.dpi / MILLIMETRES_PER_INCH * options.scale;
+        if !pixels_per_mm.is_finite() || pixels_per_mm <= 0.0 {
+            return Err(invalid_option("dpi and scale", pixels_per_mm));
+        }
+        let (width_mm, height_mm) = if matches!(options.rotation_degrees, 90 | 270) {
+            (page_box.height, page_box.width)
+        } else {
+            (page_box.width, page_box.height)
+        };
+        let width = (width_mm * pixels_per_mm).ceil();
+        let height = (height_mm * pixels_per_mm).ceil();
+        if !width.is_finite()
+            || !height.is_finite()
+            || width < 1.0
+            || height < 1.0
+            || width > i32::MAX as f64
+            || height > i32::MAX as f64
+        {
+            return Err(Error::InvalidSurfaceSize { width, height });
+        }
+
+        let x = page_box.x;
+        let y = page_box.y;
+        let w = page_box.width;
+        let h = page_box.height;
+        let page_to_device = match options.rotation_degrees {
+            0 => Matrix::new(
+                pixels_per_mm,
+                0.0,
+                0.0,
+                pixels_per_mm,
+                -pixels_per_mm * x,
+                -pixels_per_mm * y,
+            ),
+            90 => Matrix::new(
+                0.0,
+                pixels_per_mm,
+                -pixels_per_mm,
+                0.0,
+                pixels_per_mm * (y + h),
+                -pixels_per_mm * x,
+            ),
+            180 => Matrix::new(
+                -pixels_per_mm,
+                0.0,
+                0.0,
+                -pixels_per_mm,
+                pixels_per_mm * (x + w),
+                pixels_per_mm * (y + h),
+            ),
+            270 => Matrix::new(
+                0.0,
+                -pixels_per_mm,
+                pixels_per_mm,
+                0.0,
+                -pixels_per_mm * y,
+                pixels_per_mm * (x + w),
+            ),
+            _ => unreachable!("rotation validated"),
+        };
+
+        Ok(Self {
+            pixel_width: width as i32,
+            pixel_height: height as i32,
+            page_to_device,
+        })
+    }
+}
+
+fn invalid_option(field: &'static str, value: f64) -> Error {
+    Error::InvalidOption {
+        field,
+        value: value.to_string(),
+    }
+}
+
+#[derive(Clone)]
+struct PaintState {
+    stroke: Option<Color>,
+    fill: Option<Color>,
+    fill_rule: FillRule,
+    line_width: f64,
+    clip_mask: Option<ImageSurface>,
+}
+
+impl Default for PaintState {
+    fn default() -> Self {
+        Self {
+            stroke: None,
+            fill: None,
+            fill_rule: FillRule::NonZero,
+            line_width: 1.0,
+            clip_mask: None,
+        }
+    }
+}
+
+struct Interpreter<'a> {
+    context: &'a Context,
+    geometry: &'a RenderGeometry,
+    state: PaintState,
+    stack: Vec<PaintState>,
+}
+
+impl<'a> Interpreter<'a> {
+    fn new(context: &'a Context, geometry: &'a RenderGeometry) -> Self {
+        Self {
+            context,
+            geometry,
+            state: PaintState::default(),
+            stack: Vec::new(),
+        }
+    }
+
+    fn run(&mut self, commands: &[Command]) -> Result<()> {
+        let result = self.run_commands(commands);
+        if result.is_err() {
+            while self.stack.pop().is_some() {
+                let _ = self.context.restore();
+            }
+        }
+        result
+    }
+
+    fn run_commands(&mut self, commands: &[Command]) -> Result<()> {
+        for command in commands {
+            match command {
+                Command::Save => {
+                    cairo(self.context.save(), "save display state")?;
+                    self.stack.push(self.state.clone());
+                }
+                Command::Restore => {
+                    let Some(state) = self.stack.last().cloned() else {
+                        return Err(invalid_display_list("restore without matching save"));
+                    };
+                    cairo(self.context.restore(), "restore display state")?;
+                    self.stack.pop();
+                    self.state = state;
+                }
+                Command::ConcatTransform(transform) => {
+                    self.context.transform(cairo_matrix(*transform));
+                    cairo(self.context.status(), "concatenate transform")?;
+                }
+                Command::ClipPath { paths, rule } => {
+                    if paths.is_empty() {
+                        return Err(invalid_display_list("empty clip union operand"));
+                    }
+                    self.state.clip_mask = Some(self.create_clip_mask(paths, *rule)?);
+                }
+                Command::SetStroke(color) => self.state.stroke = *color,
+                Command::SetFill(color) => self.state.fill = *color,
+                Command::SetFillRule(rule) => self.state.fill_rule = *rule,
+                Command::SetLineWidth(width) => {
+                    if !width.is_finite() || *width <= 0.0 {
+                        return Err(invalid_display_list(
+                            "non-positive or non-finite line width",
+                        ));
+                    }
+                    self.state.line_width = *width;
+                }
+                Command::DrawPath(path) => self.draw_path(path)?,
+            }
+        }
+        if !self.stack.is_empty() {
+            let error = invalid_display_list("unclosed display-list save");
+            while self.stack.pop().is_some() {
+                cairo(self.context.restore(), "unwind display state")?;
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn create_clip_mask(&self, paths: &[ClipPath], rule: FillRule) -> Result<ImageSurface> {
+        let surface = cairo(
+            ImageSurface::create(
+                Format::A8,
+                self.geometry.pixel_width,
+                self.geometry.pixel_height,
+            ),
+            "create clip mask",
+        )?;
+        let context = cairo(Context::new(&surface), "create clip mask context")?;
+        context.set_matrix(self.geometry.page_to_device);
+        context.set_fill_rule(cairo_fill_rule(rule));
+        context.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+
+        for path in paths {
+            cairo(context.save(), "save clip path state")?;
+            let filled = (|| {
+                context.transform(cairo_matrix(path.transform()));
+                append_path(&context, path.path())?;
+                cairo(context.fill(), "fill clip area")
+            })();
+            let restored = cairo(context.restore(), "restore clip path state");
+            filled?;
+            restored?;
+        }
+
+        if let Some(previous) = &self.state.clip_mask {
+            context.identity_matrix();
+            context.set_operator(Operator::In);
+            cairo(
+                context.set_source_surface(previous, 0.0, 0.0),
+                "set prior clip mask",
+            )?;
+            cairo(context.paint(), "intersect clip masks")?;
+        }
+        surface.flush();
+        Ok(surface)
+    }
+
+    fn draw_path(&self, path: &PathData) -> Result<()> {
+        if let Some(mask) = &self.state.clip_mask {
+            let surface = cairo(
+                ImageSurface::create(
+                    Format::ARgb32,
+                    self.geometry.pixel_width,
+                    self.geometry.pixel_height,
+                ),
+                "create clipped drawing surface",
+            )?;
+            let temporary = cairo(Context::new(&surface), "create clipped drawing context")?;
+            temporary.set_matrix(self.context.matrix());
+            draw_path_unmasked(&temporary, &self.state, path)?;
+            surface.flush();
+
+            cairo(self.context.save(), "save clipped composite state")?;
+            let composite = (|| {
+                self.context.identity_matrix();
+                cairo(
+                    self.context.set_source_surface(&surface, 0.0, 0.0),
+                    "set clipped drawing source",
+                )?;
+                cairo(
+                    self.context.mask_surface(mask, 0.0, 0.0),
+                    "apply clip union mask",
+                )
+            })();
+            let restored = cairo(self.context.restore(), "restore clipped composite state");
+            composite?;
+            restored?;
+            Ok(())
+        } else {
+            draw_path_unmasked(self.context, &self.state, path)
+        }
+    }
+}
+
+fn draw_path_unmasked(context: &Context, state: &PaintState, path: &PathData) -> Result<()> {
+    append_path(context, path)?;
+    context.set_fill_rule(cairo_fill_rule(state.fill_rule));
+    context.set_line_width(state.line_width);
+
+    match (state.fill, state.stroke) {
+        (Some(fill), Some(stroke)) => {
+            set_source_color(context, fill);
+            cairo(context.fill_preserve(), "fill path")?;
+            set_source_color(context, stroke);
+            cairo(context.stroke(), "stroke path")?;
+        }
+        (Some(fill), None) => {
+            set_source_color(context, fill);
+            cairo(context.fill(), "fill path")?;
+        }
+        (None, Some(stroke)) => {
+            set_source_color(context, stroke);
+            cairo(context.stroke(), "stroke path")?;
+        }
+        (None, None) => context.new_path(),
+    }
+    Ok(())
+}
+
+fn append_path(context: &Context, path: &PathData) -> Result<()> {
+    context.new_path();
+    let mut current: Option<Point> = None;
+    let mut subpath_start: Option<Point> = None;
+    for command in path.commands() {
+        match *command {
+            PathCommand::MoveTo(point) => {
+                context.move_to(point.x(), point.y());
+                current = Some(point);
+                subpath_start = Some(point);
+            }
+            PathCommand::LineTo(point) => {
+                context.line_to(point.x(), point.y());
+                current = Some(point);
+            }
+            PathCommand::QuadraticTo { control, end } => {
+                let start =
+                    current.ok_or_else(|| invalid_display_list("quadratic without start"))?;
+                context.curve_to(
+                    start.x() + (control.x() - start.x()) * 2.0 / 3.0,
+                    start.y() + (control.y() - start.y()) * 2.0 / 3.0,
+                    end.x() + (control.x() - end.x()) * 2.0 / 3.0,
+                    end.y() + (control.y() - end.y()) * 2.0 / 3.0,
+                    end.x(),
+                    end.y(),
+                );
+                current = Some(end);
+            }
+            PathCommand::CubicTo {
+                control1,
+                control2,
+                end,
+            } => {
+                context.curve_to(
+                    control1.x(),
+                    control1.y(),
+                    control2.x(),
+                    control2.y(),
+                    end.x(),
+                    end.y(),
+                );
+                current = Some(end);
+            }
+            PathCommand::ArcTo {
+                rx,
+                ry,
+                rotation,
+                large,
+                sweep,
+                end,
+            } => {
+                let start = current.ok_or_else(|| invalid_display_list("arc without start"))?;
+                append_arc(context, start, rx, ry, rotation, large, sweep, end)?;
+                current = Some(end);
+            }
+            PathCommand::Close => {
+                context.close_path();
+                current = subpath_start;
+            }
+        }
+    }
+    cairo(context.status(), "construct path")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_arc(
+    context: &Context,
+    start: Point,
+    mut rx: f64,
+    mut ry: f64,
+    rotation_degrees: f64,
+    large: bool,
+    sweep: bool,
+    end: Point,
+) -> Result<()> {
+    if rx == 0.0 || ry == 0.0 || (start.x() == end.x() && start.y() == end.y()) {
+        if start.x() != end.x() || start.y() != end.y() {
+            context.line_to(end.x(), end.y());
+        }
+        return Ok(());
+    }
+    if !rx.is_finite() || !ry.is_finite() || !rotation_degrees.is_finite() {
+        return Err(invalid_display_list("non-finite arc geometry"));
+    }
+    rx = rx.abs();
+    ry = ry.abs();
+    let phi = rotation_degrees.to_radians().rem_euclid(2.0 * PI);
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    let dx = (start.x() - end.x()) / 2.0;
+    let dy = (start.y() - end.y()) / 2.0;
+    let x1 = cos_phi * dx + sin_phi * dy;
+    let y1 = -sin_phi * dx + cos_phi * dy;
+    let radii_scale = x1 * x1 / (rx * rx) + y1 * y1 / (ry * ry);
+    if !radii_scale.is_finite() {
+        return Err(invalid_display_list("non-finite arc radius correction"));
+    }
+    if radii_scale > 1.0 {
+        let scale = radii_scale.sqrt();
+        rx *= scale;
+        ry *= scale;
+    }
+
+    let rx2 = rx * rx;
+    let ry2 = ry * ry;
+    let x12 = x1 * x1;
+    let y12 = y1 * y1;
+    let denominator = rx2 * y12 + ry2 * x12;
+    if !denominator.is_finite() {
+        return Err(invalid_display_list("non-finite arc center denominator"));
+    }
+    if denominator == 0.0 {
+        context.line_to(end.x(), end.y());
+        return Ok(());
+    }
+    let numerator = (rx2 * ry2 - denominator).max(0.0);
+    let sign = if large == sweep { -1.0 } else { 1.0 };
+    let coefficient = sign * (numerator / denominator).sqrt();
+    let cx1 = coefficient * (rx * y1 / ry);
+    let cy1 = coefficient * (-ry * x1 / rx);
+    let cx = cos_phi * cx1 - sin_phi * cy1 + (start.x() + end.x()) / 2.0;
+    let cy = sin_phi * cx1 + cos_phi * cy1 + (start.y() + end.y()) / 2.0;
+
+    let ux = (x1 - cx1) / rx;
+    let uy = (y1 - cy1) / ry;
+    let vx = (-x1 - cx1) / rx;
+    let vy = (-y1 - cy1) / ry;
+    let start_angle = uy.atan2(ux);
+    let mut delta = vector_angle(ux, uy, vx, vy);
+    if sweep && delta < 0.0 {
+        delta += 2.0 * PI;
+    } else if !sweep && delta > 0.0 {
+        delta -= 2.0 * PI;
+    }
+    if !cx.is_finite() || !cy.is_finite() || !start_angle.is_finite() || !delta.is_finite() {
+        return Err(invalid_display_list("non-finite derived arc geometry"));
+    }
+
+    let segments = (delta.abs() / FRAC_PI_2).ceil().max(1.0) as usize;
+    let step = delta / segments as f64;
+    for segment in 0..segments {
+        let theta1 = start_angle + step * segment as f64;
+        let theta2 = theta1 + step;
+        let tangent = 4.0 / 3.0 * ((theta2 - theta1) / 4.0).tan();
+        let (sin1, cos1) = theta1.sin_cos();
+        let (sin2, cos2) = theta2.sin_cos();
+        let control1 = ellipse_point(
+            cx,
+            cy,
+            rx,
+            ry,
+            cos_phi,
+            sin_phi,
+            cos1 - tangent * sin1,
+            sin1 + tangent * cos1,
+        );
+        let control2 = ellipse_point(
+            cx,
+            cy,
+            rx,
+            ry,
+            cos_phi,
+            sin_phi,
+            cos2 + tangent * sin2,
+            sin2 - tangent * cos2,
+        );
+        let endpoint = ellipse_point(cx, cy, rx, ry, cos_phi, sin_phi, cos2, sin2);
+        if [
+            control1.0, control1.1, control2.0, control2.1, endpoint.0, endpoint.1,
+        ]
+        .iter()
+        .any(|value| !value.is_finite())
+        {
+            return Err(invalid_display_list("non-finite arc approximation"));
+        }
+        context.curve_to(
+            control1.0, control1.1, control2.0, control2.1, endpoint.0, endpoint.1,
+        );
+    }
+    Ok(())
+}
+
+fn vector_angle(ux: f64, uy: f64, vx: f64, vy: f64) -> f64 {
+    (ux * vy - uy * vx).atan2(ux * vx + uy * vy)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ellipse_point(
+    cx: f64,
+    cy: f64,
+    rx: f64,
+    ry: f64,
+    cos_phi: f64,
+    sin_phi: f64,
+    x: f64,
+    y: f64,
+) -> (f64, f64) {
+    (
+        cx + cos_phi * rx * x - sin_phi * ry * y,
+        cy + sin_phi * rx * x + cos_phi * ry * y,
+    )
+}
+
+fn cairo_matrix(transform: Transform) -> Matrix {
+    Matrix::new(
+        transform.a(),
+        transform.b(),
+        transform.c(),
+        transform.d(),
+        transform.e(),
+        transform.f(),
+    )
+}
+
+fn cairo_fill_rule(rule: FillRule) -> CairoFillRule {
+    match rule {
+        FillRule::NonZero => CairoFillRule::Winding,
+        FillRule::EvenOdd => CairoFillRule::EvenOdd,
+    }
+}
+
+fn set_source_color(context: &Context, color: Color) {
+    context.set_source_rgba(
+        f64::from(color.red) / 255.0,
+        f64::from(color.green) / 255.0,
+        f64::from(color.blue) / 255.0,
+        f64::from(color.alpha) / 255.0,
+    );
+}
+
+fn invalid_display_list(message: impl Into<String>) -> Error {
+    Error::InvalidDisplayList {
+        message: message.into(),
+    }
+}
+
+fn cairo<T>(result: std::result::Result<T, cairo::Error>, operation: &'static str) -> Result<T> {
+    result.map_err(|source| Error::Backend { operation, source })
+}

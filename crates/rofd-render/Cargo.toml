@@ -4,9 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Backend-neutral OFD display-list lowering"
+description = "Backend-neutral OFD display-list lowering and Cairo rendering"
 
 [dependencies]
+cairo-rs = "0.20.7"
 rofd-core = { path = "../rofd-core" }
 thiserror.workspace = true
 

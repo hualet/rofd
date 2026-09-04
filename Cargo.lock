@@ -939,6 +939,7 @@ dependencies = [
 name = "rofd-render"
 version = "0.1.0"
 dependencies = [
+ "cairo-rs",
  "rofd-core",
  "thiserror 2.0.20",
  "zip",
