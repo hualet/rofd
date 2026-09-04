@@ -103,7 +103,14 @@ fn resource_ids_are_one_atomic_document_wide_space() {
     for id in [9, 999] {
         assert!(matches!(
             doc.font_resource(id),
-            Err(Error::InvalidStructure { ref message, .. }) if message.contains("duplicate resource ID 9")
+            Err(Error::DuplicateResourceId {
+                object_id: 9,
+                ref first_path,
+                first_kind: ResourceKind::Font,
+                ref duplicate_path,
+                duplicate_kind: ResourceKind::Image,
+            }) if first_path == "Doc_0/Res/Public.xml"
+                && duplicate_path == "Doc_0/Res/Document.xml"
         ));
     }
 
@@ -131,7 +138,14 @@ fn resource_ids_are_one_atomic_document_wide_space() {
     );
     assert!(matches!(
         duplicate.font_resource(4),
-        Err(Error::InvalidStructure { ref message, .. }) if message.contains("duplicate resource ID 4")
+        Err(Error::DuplicateResourceId {
+            object_id: 4,
+            ref first_path,
+            first_kind: ResourceKind::Font,
+            ref duplicate_path,
+            duplicate_kind: ResourceKind::Font,
+        }) if first_path == "Doc_0/Res/Public.xml"
+            && duplicate_path == "Doc_0/Res/Public.xml"
     ));
 }
 

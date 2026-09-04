@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::container::Container;
 use crate::path::PackagePath;
@@ -106,6 +106,7 @@ struct FontRecord {
     family_name: Option<String>,
     charset: Option<String>,
     file: Option<Asset>,
+    declaration_path: String,
 }
 
 #[derive(Debug)]
@@ -113,12 +114,14 @@ struct ImageRecord {
     id: u64,
     format: ImageFormat,
     file: Asset,
+    declaration_path: String,
 }
 
 #[derive(Debug)]
 struct Asset {
     path: PackagePath,
     bytes: OnceLock<Arc<[u8]>>,
+    initialization: Mutex<()>,
 }
 
 impl Asset {
@@ -126,14 +129,32 @@ impl Asset {
         Self {
             path,
             bytes: OnceLock::new(),
+            initialization: Mutex::new(()),
         }
     }
 
     fn load(&self, container: &Container, limit: u64, label: &str) -> Result<Arc<[u8]>> {
+        self.load_with(|| container.read_with_limit(&self.path, limit, label))
+    }
+
+    fn load_with<F>(&self, loader: F) -> Result<Arc<[u8]>>
+    where
+        F: FnOnce() -> Result<Vec<u8>>,
+    {
         if let Some(bytes) = self.bytes.get() {
             return Ok(Arc::clone(bytes));
         }
-        let bytes: Arc<[u8]> = container.read_with_limit(&self.path, limit, label)?.into();
+        let _initialization = self
+            .initialization
+            .lock()
+            .map_err(|_| Error::InvalidStructure {
+                path: self.path.as_str().to_owned(),
+                message: "asset initialization lock is poisoned".to_owned(),
+            })?;
+        if let Some(bytes) = self.bytes.get() {
+            return Ok(Arc::clone(bytes));
+        }
+        let bytes: Arc<[u8]> = loader()?.into();
         Ok(Arc::clone(self.bytes.get_or_init(|| Arc::clone(&bytes))))
     }
 }
@@ -242,6 +263,7 @@ impl ResourceCatalog {
                 family_name: entry.family_name,
                 charset: entry.charset,
                 file,
+                declaration_path: catalog_path.as_str().to_owned(),
             }),
             catalog_path,
         )
@@ -284,19 +306,44 @@ impl ResourceCatalog {
                 id,
                 format,
                 file: Asset::new(path),
+                declaration_path: catalog_path.as_str().to_owned(),
             }),
             catalog_path,
         )
     }
 
     fn insert(&mut self, id: u64, entry: ResourceEntry, path: &PackagePath) -> Result<()> {
-        if self.entries.insert(id, entry).is_some() {
-            return Err(Error::InvalidStructure {
-                path: path.as_str().to_owned(),
-                message: format!("duplicate resource ID {id}"),
-            });
+        use std::collections::hash_map::Entry;
+
+        match self.entries.entry(id) {
+            Entry::Vacant(slot) => {
+                slot.insert(entry);
+                Ok(())
+            }
+            Entry::Occupied(slot) => Err(Error::DuplicateResourceId {
+                object_id: id,
+                first_path: slot.get().declaration_path().to_owned(),
+                first_kind: slot.get().kind(),
+                duplicate_path: path.as_str().to_owned(),
+                duplicate_kind: entry.kind(),
+            }),
         }
-        Ok(())
+    }
+}
+
+impl ResourceEntry {
+    fn kind(&self) -> ResourceKind {
+        match self {
+            Self::Font(_) => ResourceKind::Font,
+            Self::Image(_) => ResourceKind::Image,
+        }
+    }
+
+    fn declaration_path(&self) -> &str {
+        match self {
+            Self::Font(font) => &font.declaration_path,
+            Self::Image(image) => &image.declaration_path,
+        }
     }
 }
 
@@ -452,5 +499,68 @@ fn kind_mismatch(id: u64, expected: ResourceKind, actual: ResourceKind) -> Error
         object_id: id,
         expected,
         actual,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    use super::Asset;
+    use crate::path::PackagePath;
+    use crate::{Error, Result};
+
+    #[test]
+    fn concurrent_cold_asset_loads_are_single_flight() {
+        let asset = Arc::new(Asset::new(PackagePath::new("asset").unwrap()));
+        let barrier = Arc::new(Barrier::new(8));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handles = (0..8)
+            .map(|_| {
+                let asset = Arc::clone(&asset);
+                let barrier = Arc::clone(&barrier);
+                let calls = Arc::clone(&calls);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    asset
+                        .load_with(|| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(b"font".to_vec())
+                        })
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(results
+            .iter()
+            .skip(1)
+            .all(|bytes| Arc::ptr_eq(&results[0], bytes)));
+    }
+
+    #[test]
+    fn failed_asset_load_is_not_cached_or_poisoned() {
+        let asset = Asset::new(PackagePath::new("missing").unwrap());
+        let calls = AtomicUsize::new(0);
+        let first = asset.load_with(|| -> Result<Vec<u8>> {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(Error::MissingEntry("missing".to_owned()))
+        });
+        assert!(matches!(first, Err(Error::MissingEntry(_))));
+
+        let second = asset
+            .load_with(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(b"available".to_vec())
+            })
+            .unwrap();
+        assert_eq!(&*second, b"available");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

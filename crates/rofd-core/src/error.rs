@@ -69,6 +69,22 @@ pub enum Error {
         /// Kind declared in the catalog.
         actual: crate::ResourceKind,
     },
+    /// Two resource declarations use the same document-wide object identifier.
+    #[error(
+        "duplicate resource object ID {object_id}: first declared as {first_kind:?} in {first_path}, then as {duplicate_kind:?} in {duplicate_path}"
+    )]
+    DuplicateResourceId {
+        /// Repeated OFD object identifier.
+        object_id: u64,
+        /// Package path of the first declaration.
+        first_path: String,
+        /// Resource kind of the first declaration.
+        first_kind: crate::ResourceKind,
+        /// Package path of the later declaration.
+        duplicate_path: String,
+        /// Resource kind of the later declaration.
+        duplicate_kind: crate::ResourceKind,
+    },
     /// A resource declaration is invalid or unsupported.
     #[error("invalid resource{resource_id} in {path}: {field}: {message}", resource_id = optional_resource_id(*.object_id))]
     InvalidResource {
