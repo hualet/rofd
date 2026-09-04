@@ -41,8 +41,58 @@ pub(crate) struct DocumentRoot {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct CommonData {
     pub(crate) page_area: PageArea,
+    pub(crate) public_res: Option<String>,
+    pub(crate) document_res: Option<String>,
     #[serde(rename = "TemplatePage", default)]
     pub(crate) template_pages: Vec<TemplatePage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ResourceRoot {
+    #[serde(rename = "BaseLoc")]
+    pub(crate) base_loc: Option<String>,
+    #[serde(rename = "Fonts")]
+    pub(crate) fonts: Option<Fonts>,
+    #[serde(rename = "MultiMedias")]
+    pub(crate) multi_medias: Option<MultiMedias>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Fonts {
+    #[serde(rename = "Font", default)]
+    pub(crate) entries: Vec<FontEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FontEntry {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "FontName")]
+    pub(crate) font_name: Option<String>,
+    #[serde(rename = "FamilyName")]
+    pub(crate) family_name: Option<String>,
+    #[serde(rename = "Charset")]
+    pub(crate) charset: Option<String>,
+    #[serde(rename = "FontFile")]
+    pub(crate) font_file: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MultiMedias {
+    #[serde(rename = "MultiMedia", default)]
+    pub(crate) entries: Vec<MultiMediaEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MultiMediaEntry {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "Type")]
+    pub(crate) kind: Option<String>,
+    #[serde(rename = "Format")]
+    pub(crate) format: Option<String>,
+    #[serde(rename = "MediaFile")]
+    pub(crate) media_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

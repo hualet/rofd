@@ -53,12 +53,44 @@ pub enum Error {
         /// Available page count.
         page_count: usize,
     },
+    /// A resource object identifier is not declared by this document.
+    #[error("unknown resource object ID {object_id}")]
+    UnknownResource {
+        /// Requested OFD object identifier.
+        object_id: u64,
+    },
+    /// A resource exists but is not of the requested kind.
+    #[error("resource object ID {object_id} is {actual:?}, expected {expected:?}")]
+    ResourceKindMismatch {
+        /// Requested OFD object identifier.
+        object_id: u64,
+        /// Kind required by the lookup operation.
+        expected: crate::ResourceKind,
+        /// Kind declared in the catalog.
+        actual: crate::ResourceKind,
+    },
+    /// A resource declaration is invalid or unsupported.
+    #[error("invalid resource{resource_id} in {path}: {field}: {message}", resource_id = optional_resource_id(*.object_id))]
+    InvalidResource {
+        /// Resource catalog path.
+        path: String,
+        /// Declared object identifier, if it could be parsed.
+        object_id: Option<u64>,
+        /// Invalid field name.
+        field: &'static str,
+        /// Validation diagnostic.
+        message: String,
+    },
     /// A configured resource limit was exceeded.
     #[error("resource limit exceeded: {0}")]
     LimitExceeded(String),
     /// The document uses a feature that this version cannot process correctly.
     #[error("unsupported OFD feature: {0}")]
     UnsupportedFeature(String),
+}
+
+fn optional_resource_id(id: Option<u64>) -> String {
+    id.map(|id| format!(" object ID {id}")).unwrap_or_default()
 }
 
 fn invalid_value_location(path: &Option<String>) -> String {

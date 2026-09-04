@@ -10,6 +10,7 @@ use crate::{Error, ResourceLimits, Result};
 pub(crate) struct Container {
     archive: Mutex<ZipArchive<Cursor<Vec<u8>>>>,
     indexes: HashMap<PackagePath, usize>,
+    sizes: HashMap<PackagePath, u64>,
     limits: ResourceLimits,
 }
 
@@ -36,6 +37,7 @@ impl Container {
         }
 
         let mut indexes = HashMap::new();
+        let mut sizes = HashMap::new();
         let mut names = HashSet::new();
         let mut total_size = 0_u64;
         for index in 0..archive.len() {
@@ -65,22 +67,49 @@ impl Container {
                     limits.max_total_size
                 )));
             }
+            sizes.insert(path.clone(), entry.size());
             indexes.insert(path, index);
         }
 
         Ok(Self {
             archive: Mutex::new(archive),
             indexes,
+            sizes,
             limits,
         })
     }
 
     pub(crate) fn read(&self, path: &PackagePath) -> Result<Vec<u8>> {
+        self.read_with_limit(path, self.limits.max_entry_size, "entry")
+    }
+
+    pub(crate) fn read_with_limit(
+        &self,
+        path: &PackagePath,
+        max_bytes: u64,
+        resource_name: &str,
+    ) -> Result<Vec<u8>> {
         let index = self
             .indexes
             .get(path)
             .copied()
             .ok_or_else(|| Error::MissingEntry(path.as_str().to_owned()))?;
+        let declared_size = *self
+            .sizes
+            .get(path)
+            .ok_or_else(|| Error::Container("ZIP size index is inconsistent".to_owned()))?;
+        if declared_size > max_bytes {
+            return Err(Error::LimitExceeded(format!(
+                "{resource_name} {} is {declared_size} bytes, exceeding limit {max_bytes}",
+                path.as_str()
+            )));
+        }
+        let capacity = usize::try_from(declared_size).map_err(|_| {
+            Error::LimitExceeded(format!(
+                "{resource_name} {} is too large for this platform",
+                path.as_str()
+            ))
+        })?;
         let mut archive = self
             .archive
             .lock()
@@ -88,17 +117,19 @@ impl Container {
         let mut entry = archive
             .by_index(index)
             .map_err(|error| Error::Container(error.to_string()))?;
-        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        let mut bytes = Vec::with_capacity(capacity);
+        let read_limit = max_bytes.saturating_add(1);
         entry
             .by_ref()
-            .take(self.limits.max_entry_size + 1)
+            .take(read_limit)
             .read_to_end(&mut bytes)
             .map_err(|error| Error::Container(error.to_string()))?;
-        if bytes.len() as u64 > self.limits.max_entry_size {
+        let actual_size = u64::try_from(bytes.len())
+            .map_err(|_| Error::LimitExceeded(format!("{resource_name} size exceeds u64")))?;
+        if actual_size > max_bytes {
             return Err(Error::LimitExceeded(format!(
-                "entry {} exceeded {} bytes while reading",
+                "{resource_name} {} exceeded {max_bytes} bytes while reading",
                 path.as_str(),
-                self.limits.max_entry_size
             )));
         }
         Ok(bytes)

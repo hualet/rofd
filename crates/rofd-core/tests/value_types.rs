@@ -11,6 +11,15 @@ fn default_limits_are_finite_and_non_zero() {
     assert_eq!(options.limits.max_page_objects, 100_000);
     assert_eq!(options.limits.max_page_block_depth, 64);
     assert_eq!(options.limits.max_xml_depth, 256);
+    assert_eq!(options.limits.max_resource_files, 32);
+    assert_eq!(options.limits.max_resources, 100_000);
+    assert_eq!(options.limits.max_font_bytes, 64 * 1024 * 1024);
+    assert_eq!(options.limits.max_encoded_image_bytes, 64 * 1024 * 1024);
+    assert_eq!(options.limits.max_decoded_image_pixels, 100_000_000);
+    assert_eq!(options.limits.max_decoded_image_bytes, 400 * 1024 * 1024);
+    assert_eq!(options.limits.max_text_characters_per_page, 1_000_000);
+    assert_eq!(options.limits.max_glyphs_per_page, 1_000_000);
+    assert_eq!(options.limits.max_text_expansion_entries, 2_000_000);
 }
 
 #[test]

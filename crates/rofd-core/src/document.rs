@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 
 use crate::container::Container;
 use crate::path::PackagePath;
-use crate::raw::{DocumentRoot, OfdRoot};
+use crate::raw::{CommonData, DocumentRoot, OfdRoot};
 use crate::{Error, LoadOptions, Result};
 
 /// Descriptive metadata stored in an OFD document.
@@ -77,6 +77,7 @@ struct TemplateReference {
 #[derive(Debug)]
 struct DocumentInner {
     container: Container,
+    document_path: PackagePath,
     limits: crate::ResourceLimits,
     metadata: Metadata,
     default_page_area: crate::raw::PageArea,
@@ -84,6 +85,9 @@ struct DocumentInner {
     templates: HashMap<u64, TemplateReference>,
     strictness: crate::Strictness,
     warnings: Mutex<Vec<Warning>>,
+    resource_paths: Vec<PackagePath>,
+    resource_catalog: OnceLock<Arc<crate::resources::ResourceCatalog>>,
+    resource_initialization: Mutex<()>,
 }
 
 /// A read-only OFD document.
@@ -168,6 +172,27 @@ impl Document {
             })?;
         let document_path = entry_path.resolve(&body.doc_root)?;
         let root: DocumentRoot = parse_xml(&container, &document_path, limits.max_xml_depth)?;
+        let CommonData {
+            page_area,
+            public_res,
+            document_res,
+            template_pages,
+        } = root.common_data;
+        let mut resource_paths = Vec::new();
+        for declaration in [public_res, document_res].into_iter().flatten() {
+            if resource_paths.len() >= limits.max_resource_files {
+                return Err(Error::LimitExceeded(format!(
+                    "resource file count {} exceeds limit {}",
+                    resource_paths.len().saturating_add(1),
+                    limits.max_resource_files
+                )));
+            }
+            resource_paths.push(
+                document_path
+                    .resolve(&declaration)
+                    .map_err(|error| with_error_path(error, &document_path))?,
+            );
+        }
         let pages = root
             .pages
             .pages
@@ -182,7 +207,7 @@ impl Document {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut templates = HashMap::new();
-        for template in root.common_data.template_pages {
+        for template in template_pages {
             let id = parse_template_id(&template.id, &document_path)?;
             if templates.contains_key(&id) {
                 return Err(Error::InvalidStructure {
@@ -211,6 +236,7 @@ impl Document {
         let info = body.doc_info;
         Ok(Self(Arc::new(DocumentInner {
             container,
+            document_path,
             limits,
             metadata: Metadata {
                 document_id: info.document_id,
@@ -223,11 +249,14 @@ impl Document {
                 creation_date: info.creation_date,
                 modification_date: info.mod_date,
             },
-            default_page_area: root.common_data.page_area,
+            default_page_area: page_area,
             pages,
             templates,
             strictness,
             warnings: Mutex::new(Vec::new()),
+            resource_paths,
+            resource_catalog: OnceLock::new(),
+            resource_initialization: Mutex::new(()),
         })))
     }
 
@@ -239,6 +268,27 @@ impl Document {
     /// Returns the number of indexed pages.
     pub fn page_count(&self) -> usize {
         self.0.pages.len()
+    }
+
+    /// Looks up a font resource after atomically validating all declared catalogs.
+    ///
+    /// An optional embedded font file is read only when its font is requested
+    /// and is bounded by [`crate::ResourceLimits::max_font_bytes`].
+    pub fn font_resource(&self, object_id: u64) -> Result<crate::FontResource> {
+        self.resource_catalog()?
+            .font(object_id, &self.0.container, self.0.limits.max_font_bytes)
+    }
+
+    /// Looks up an image resource after atomically validating all declared catalogs.
+    ///
+    /// Encoded bytes are read only when the image is requested and are bounded
+    /// by [`crate::ResourceLimits::max_encoded_image_bytes`].
+    pub fn image_resource(&self, object_id: u64) -> Result<crate::ImageResource> {
+        self.resource_catalog()?.image(
+            object_id,
+            &self.0.container,
+            self.0.limits.max_encoded_image_bytes,
+        )
     }
 
     /// Loads and returns a page by zero-based index.
@@ -337,6 +387,29 @@ impl Document {
             .lock()
             .map(|warnings| warnings.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    fn resource_catalog(&self) -> Result<&Arc<crate::resources::ResourceCatalog>> {
+        if let Some(catalog) = self.0.resource_catalog.get() {
+            return Ok(catalog);
+        }
+        let _initialization =
+            self.0
+                .resource_initialization
+                .lock()
+                .map_err(|_| Error::InvalidStructure {
+                    path: self.0.document_path.as_str().to_owned(),
+                    message: "resource catalog initialization lock is poisoned".to_owned(),
+                })?;
+        if let Some(catalog) = self.0.resource_catalog.get() {
+            return Ok(catalog);
+        }
+        let parsed = Arc::new(crate::resources::ResourceCatalog::load(
+            &self.0.container,
+            &self.0.resource_paths,
+            &self.0.limits,
+        )?);
+        Ok(self.0.resource_catalog.get_or_init(|| Arc::clone(&parsed)))
     }
 
     fn resolve_template(

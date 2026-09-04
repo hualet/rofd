@@ -36,6 +36,24 @@ pub struct ResourceLimits {
     pub max_page_block_depth: usize,
     /// Maximum nesting depth of elements in any parsed XML document.
     pub max_xml_depth: usize,
+    /// Maximum number of resource catalog files declared by one document.
+    pub max_resource_files: usize,
+    /// Maximum total number of resources across all document catalogs.
+    pub max_resources: usize,
+    /// Maximum encoded byte length of one embedded font.
+    pub max_font_bytes: u64,
+    /// Maximum encoded byte length of one image.
+    pub max_encoded_image_bytes: u64,
+    /// Maximum decoded pixel count of one image, reserved for image decoding.
+    pub max_decoded_image_pixels: u64,
+    /// Maximum decoded byte length of one image, reserved for image decoding.
+    pub max_decoded_image_bytes: u64,
+    /// Maximum text characters expanded on one page, reserved for text rendering.
+    pub max_text_characters_per_page: usize,
+    /// Maximum glyph count on one page, reserved for text rendering.
+    pub max_glyphs_per_page: usize,
+    /// Maximum text expansion entries on one page, reserved for text rendering.
+    pub max_text_expansion_entries: usize,
 }
 
 impl Default for ResourceLimits {
@@ -48,6 +66,15 @@ impl Default for ResourceLimits {
             max_page_objects: 100_000,
             max_page_block_depth: 64,
             max_xml_depth: 256,
+            max_resource_files: 32,
+            max_resources: 100_000,
+            max_font_bytes: 64 * 1024 * 1024,
+            max_encoded_image_bytes: 64 * 1024 * 1024,
+            max_decoded_image_pixels: 100_000_000,
+            max_decoded_image_bytes: 400 * 1024 * 1024,
+            max_text_characters_per_page: 1_000_000,
+            max_glyphs_per_page: 1_000_000,
+            max_text_expansion_entries: 2_000_000,
         }
     }
 }
@@ -57,7 +84,7 @@ impl Default for ResourceLimits {
 pub struct LoadOptions {
     /// Conformance handling mode.
     pub strictness: Strictness,
-    /// ZIP resource limits.
+    /// Package, resource, page, and XML parsing limits.
     pub limits: ResourceLimits,
 }
 
