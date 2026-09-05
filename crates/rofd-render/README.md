@@ -53,8 +53,26 @@ unsupported Cairo dimensions, insufficient target surfaces, and budget excesses
 are returned as structured errors. Rendering preserves the caller's Cairo
 graphics state and current path on both success and recoverable failure.
 
-Text and image objects are deliberately deferred to phase 3. They are omitted
-from drawing and reported through display-list and render-report diagnostics,
-including their object kind, object identifier, and page/template source.
-Fonts, document resources, composite objects, annotations, and signatures are
-also not rendered in this phase.
+## Font resolution and glyph positioning
+
+`SystemFontResolver` owns one configured `fontdb` snapshot, so callers may use
+an empty or custom database for reproducible output or explicitly request a
+one-time system scan. `position_glyph_runs` resolves an embedded font before a
+declared system family/name, then tries configured fallback families per
+character. It returns exact, unshaped `GlyphRun` values in OFD object-space
+millimetres. CGTransform glyph identifiers override character-map lookup;
+explicit deltas, including zero, remain authoritative, while an absent axis
+uses the selected face's FreeType advance. Returned sources and errors use
+stable identities and never expose host font paths.
+
+Resolved encoded bytes and face metadata are cached per resolver with
+single-flight initialization. System font bytes are checked against the
+resolver's configured limit before ownership. Cache failures are retryable,
+and constructing a new resolver is how callers observe a newer installed-font
+snapshot.
+
+Text and image objects remain omitted from Cairo drawing and are reported
+through display-list and render-report diagnostics, including object kind,
+identifier, and page/template source. Phase 3 will later connect positioned
+glyphs and decoded images to the display list and Cairo backend. Composite
+objects, annotations, and signatures are also not rendered yet.

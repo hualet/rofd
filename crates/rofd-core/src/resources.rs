@@ -66,6 +66,11 @@ impl FontResource {
     pub fn encoded_bytes(&self) -> Option<&[u8]> {
         self.bytes.as_deref()
     }
+
+    /// Returns a shared owner for the bounded encoded font file, when embedded.
+    pub fn encoded_bytes_arc(&self) -> Option<Arc<[u8]>> {
+        self.bytes.as_ref().map(Arc::clone)
+    }
 }
 
 /// Immutable metadata and encoded bytes for an OFD image resource.

@@ -95,6 +95,10 @@ fn exposes_validated_text_runs_glyph_maps_clips_and_effective_style() {
     assert_eq!((text.runs()[0].x(), text.runs()[0].y()), (1.0, 2.0));
     assert_eq!(text.runs()[0].delta_x(), [1.0, 0.5, 0.5, 0.5]);
     assert_eq!(text.runs()[0].delta_y(), [0.0, 0.0, 0.0, 0.0]);
+    assert!(text.runs()[0].has_explicit_delta_x());
+    assert!(text.runs()[0].has_explicit_delta_y());
+    assert!(!text.runs()[1].has_explicit_delta_x());
+    assert!(!text.runs()[1].has_explicit_delta_y());
     assert_eq!((text.runs()[1].x(), text.runs()[1].y()), (1.0, 7.0));
     assert_eq!(text.glyph_maps().len(), 1);
     assert_eq!(text.glyph_maps()[0].code_position(), 1);

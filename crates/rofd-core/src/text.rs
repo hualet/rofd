@@ -8,6 +8,8 @@ pub struct TextCode {
     pub(crate) y: f64,
     pub(crate) delta_x: Vec<f64>,
     pub(crate) delta_y: Vec<f64>,
+    pub(crate) has_delta_x: bool,
+    pub(crate) has_delta_y: bool,
 }
 
 impl TextCode {
@@ -34,6 +36,16 @@ impl TextCode {
     /// Returns one y displacement slot per scalar, with omitted trailing values zero-filled.
     pub fn delta_y(&self) -> &[f64] {
         &self.delta_y
+    }
+
+    /// Returns whether the source run explicitly supplied `DeltaX`.
+    pub fn has_explicit_delta_x(&self) -> bool {
+        self.has_delta_x
+    }
+
+    /// Returns whether the source run explicitly supplied `DeltaY`.
+    pub fn has_explicit_delta_y(&self) -> bool {
+        self.has_delta_y
     }
 }
 

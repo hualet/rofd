@@ -4,9 +4,14 @@
 
 mod cairo_renderer;
 mod display_list;
+mod fonts;
 
 pub use cairo_renderer::{CairoRenderer, RenderOptions, RenderReport};
 pub use display_list::{ClipPath, Command, DisplayList, RenderDiagnostic};
+pub use fonts::{
+    position_glyph_runs, FontDiagnostic, FontResolver, FontSource, GlyphRun, PositionedGlyph,
+    ResolvedFont, SystemFontResolver,
+};
 
 /// An error encountered while lowering or rendering a validated page.
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +99,50 @@ pub enum Error {
         primary: Box<Error>,
         /// The cleanup error.
         cleanup: Box<Error>,
+    },
+    /// Font bytes or a selected face cannot be used safely.
+    #[error("invalid font {identity}: {message}")]
+    InvalidFont {
+        /// Stable non-path identity of the font.
+        identity: String,
+        /// Backend validation detail.
+        message: String,
+    },
+    /// An explicit OFD glyph identifier is outside the selected face.
+    #[error("glyph ID {glyph_id} is invalid for font {identity} with {glyph_count} glyphs")]
+    InvalidGlyph {
+        /// Stable non-path identity of the font.
+        identity: String,
+        /// Invalid glyph identifier.
+        glyph_id: u32,
+        /// Number of glyphs advertised by the selected face.
+        glyph_count: u32,
+    },
+    /// Text positioning produced an invalid value or exceeded a semantic bound.
+    #[error("invalid text layout for object {object_id} in {field}: {message}")]
+    InvalidTextLayout {
+        /// OFD text object identifier.
+        object_id: u64,
+        /// Stable field or budget name.
+        field: &'static str,
+        /// Validation detail.
+        message: String,
+    },
+    /// A system font exceeds the configured encoded-byte limit.
+    #[error("font {identity} has {actual_bytes} bytes but the limit is {max_bytes}")]
+    FontBytesExceeded {
+        /// Stable non-path font identity.
+        identity: String,
+        /// Encoded byte length.
+        actual_bytes: u64,
+        /// Configured maximum encoded byte length.
+        max_bytes: u64,
+    },
+    /// Internal font cache synchronization failed.
+    #[error("font cache unavailable: {message}")]
+    FontCache {
+        /// Synchronization detail.
+        message: String,
     },
 }
 

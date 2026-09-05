@@ -36,6 +36,9 @@ license = "MIT"
 repository = "https://github.com/hualet/rofd"
 
 [workspace.dependencies]
+cairo-rs = { version = "0.20.7", features = ["freetype"] }
+fontdb = "0.23.0"
+freetype-rs = "0.37.0"
 serde = { version = "1.0.217", features = ["derive"] }
 serde-xml-rs = "0.6.0"
 thiserror = "2.0.20"
