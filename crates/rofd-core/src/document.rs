@@ -922,6 +922,7 @@ fn preflight_page_xml(
     let mut elements: Vec<ElementMarker> = Vec::new();
     let mut page_block_depth = 0usize;
     let mut page_object_count = 0usize;
+    let mut text_expansion_node_count = 0usize;
     for event in EventReader::new(bytes) {
         match event.map_err(|error| xml_error(path, error))? {
             XmlEvent::StartElement { name, .. } => {
@@ -963,6 +964,8 @@ fn preflight_page_xml(
                         name.local_name.as_str(),
                         "FillColor" | "StrokeColor" | "Clips" | "TextCode" | "CGTransform"
                     );
+                let is_text_expansion_node = matches!(parent, Some(ElementMarker::TextObject))
+                    && matches!(name.local_name.as_str(), "TextCode" | "CGTransform");
                 let is_image_child = matches!(parent, Some(ElementMarker::ImageObject))
                     && matches!(name.local_name.as_str(), "Clips" | "Border");
                 let is_path_child = matches!(parent, Some(ElementMarker::PathObject))
@@ -1027,6 +1030,16 @@ fn preflight_page_xml(
                         )));
                     }
                     page_object_count += 1;
+                }
+                if is_text_expansion_node {
+                    if text_expansion_node_count >= limits.max_text_expansion_entries {
+                        return Err(Error::LimitExceeded(format!(
+                            "XML text expansion node count {} exceeds limit {}",
+                            text_expansion_node_count.saturating_add(1),
+                            limits.max_text_expansion_entries
+                        )));
+                    }
+                    text_expansion_node_count += 1;
                 }
                 let is_page_block = is_graphic_unit && name.local_name == "PageBlock";
                 if is_page_block {

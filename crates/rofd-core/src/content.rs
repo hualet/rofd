@@ -1,4 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+static GLYPH_RANGE_NEIGHBOR_CHECKS: AtomicUsize = AtomicUsize::new(0);
 
 use crate::paint::PaintParameters;
 use crate::raw;
@@ -391,12 +396,12 @@ impl ContentUsage {
                 self.text_expansion_entries += text
                     .runs
                     .iter()
-                    .map(|run| run.delta_x.len() + run.delta_y.len())
+                    .map(|run| 1 + run.delta_x.len() + run.delta_y.len())
                     .sum::<usize>()
                     + text
                         .glyph_maps
                         .iter()
-                        .map(|map| map.glyphs.len())
+                        .map(|map| 1 + map.glyphs.len())
                         .sum::<usize>();
                 self.add_clips(&text.clips);
             }
@@ -715,6 +720,11 @@ impl ConversionContext<'_> {
         let mut inherited_x = None;
         let mut inherited_y = None;
         for (index, run) in raw_runs.into_iter().enumerate() {
+            consume(
+                &mut self.remaining_text_expansion_entries,
+                1,
+                "page text run",
+            )?;
             let explicit_x =
                 parse_optional_finite(run.x.as_deref(), "TextCode.X", self.path, object_id)?;
             let explicit_y =
@@ -774,8 +784,13 @@ impl ConversionContext<'_> {
         object_id: u64,
     ) -> Result<Vec<CharacterGlyphMap>> {
         let mut maps = Vec::with_capacity(raw_maps.len());
-        let mut ranges = Vec::with_capacity(raw_maps.len());
+        let mut ranges = BTreeMap::new();
         for raw in raw_maps {
+            consume(
+                &mut self.remaining_text_expansion_entries,
+                1,
+                "page glyph mapping",
+            )?;
             let code_position = parse_usize(
                 required_object_field(
                     raw.code_position.as_deref(),
@@ -853,10 +868,7 @@ impl ConversionContext<'_> {
                     format!("range {code_position}..{end} exceeds {character_count} characters"),
                 ));
             }
-            if ranges
-                .iter()
-                .any(|&(start, prior_end)| code_position < prior_end && start < end)
-            {
+            if glyph_range_overlaps(&ranges, code_position, end) {
                 return Err(object_error(
                     self.path,
                     object_id,
@@ -864,7 +876,7 @@ impl ConversionContext<'_> {
                     "CGTransform character ranges overlap".to_owned(),
                 ));
             }
-            ranges.push((code_position, end));
+            ranges.insert(code_position, end);
             maps.push(CharacterGlyphMap {
                 code_position,
                 code_count,
@@ -1125,6 +1137,22 @@ impl ConversionContext<'_> {
             fill_rule,
         })
     }
+}
+
+fn glyph_range_overlaps(ranges: &BTreeMap<usize, usize>, start: usize, end: usize) -> bool {
+    let overlaps = |prior_start: usize, prior_end: usize| {
+        #[cfg(test)]
+        GLYPH_RANGE_NEIGHBOR_CHECKS.fetch_add(1, Ordering::Relaxed);
+        start < prior_end && prior_start < end
+    };
+    ranges
+        .range(..=start)
+        .next_back()
+        .is_some_and(|(&prior_start, &prior_end)| overlaps(prior_start, prior_end))
+        || ranges
+            .range(start..)
+            .next()
+            .is_some_and(|(&next_start, &next_end)| overlaps(next_start, next_end))
 }
 
 fn parse_bool(value: Option<&str>, default: bool, field: &'static str) -> Result<bool> {
@@ -1510,5 +1538,22 @@ fn invalid_value(field: &'static str, value: &str) -> Error {
         field,
         value: value.to_owned(),
         path: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{glyph_range_overlaps, GLYPH_RANGE_NEIGHBOR_CHECKS};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn glyph_range_overlap_checks_only_adjacent_intervals() {
+        GLYPH_RANGE_NEIGHBOR_CHECKS.store(0, Ordering::Relaxed);
+        let mut ranges = std::collections::BTreeMap::new();
+        for start in 0..4_096 {
+            assert!(!glyph_range_overlaps(&ranges, start, start + 1));
+            ranges.insert(start, start + 1);
+        }
+        assert!(GLYPH_RANGE_NEIGHBOR_CHECKS.load(Ordering::Relaxed) <= 8_192);
     }
 }

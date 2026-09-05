@@ -52,7 +52,7 @@ pub struct ResourceLimits {
     pub max_text_characters_per_page: usize,
     /// Maximum glyph count on one page, reserved for text rendering.
     pub max_glyphs_per_page: usize,
-    /// Maximum text expansion entries on one page, reserved for text rendering.
+    /// Maximum text-run, glyph-map, expanded-delta, and glyph entries on one page.
     pub max_text_expansion_entries: usize,
 }
 

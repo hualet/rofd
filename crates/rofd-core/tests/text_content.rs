@@ -125,6 +125,32 @@ fn draw_parameters_resolve_relative_then_object_reference_then_local_values() {
 }
 
 #[test]
+fn many_objects_share_one_deep_drawparam_chain() {
+    let mut entries = String::from(r#"<DrawParam ID="20" LineWidth="1"/>"#);
+    for id in 21..=531 {
+        entries.push_str(&format!(r#"<DrawParam ID="{id}" Relative="{}"/>"#, id - 1));
+    }
+    let resources = font_catalog(&format!("<DrawParams>{entries}</DrawParams>"));
+    let objects = (1_000..1_512)
+        .map(|id| {
+            format!(
+                r#"<ofd:PathObject ID="{id}" Boundary="0 0 1 1" DrawParam="531"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject>"#
+            )
+        })
+        .collect::<String>();
+    let page = package(&objects, &resources, ResourceLimits::default())
+        .page(0)
+        .unwrap();
+    assert_eq!(page.layers()[0].objects().len(), 512);
+    for object in page.layers()[0].objects() {
+        let PageObject::Path(path) = object else {
+            panic!("expected path object");
+        };
+        assert_eq!(path.line_width(), 1.0);
+    }
+}
+
+#[test]
 fn path_children_are_accepted_in_source_order_inside_a_group() {
     let objects = r#"<ofd:PageBlock ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:StrokeColor Value="1 2 3"/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject><ofd:PathObject ID="4" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock>"#;
     let document = package(objects, &font_catalog(""), ResourceLimits::default());
@@ -406,11 +432,11 @@ fn text_limits_have_exact_unicode_glyph_and_expansion_boundaries() {
         ),
         (
             ResourceLimits {
-                max_text_expansion_entries: 6,
+                max_text_expansion_entries: 7,
                 ..ResourceLimits::default()
             },
             ResourceLimits {
-                max_text_expansion_entries: 5,
+                max_text_expansion_entries: 6,
                 ..ResourceLimits::default()
             },
         ),
@@ -421,6 +447,53 @@ fn text_limits_have_exact_unicode_glyph_and_expansion_boundaries() {
             Err(Error::LimitExceeded(_))
         ));
     }
+}
+
+#[test]
+fn text_run_and_glyph_map_nodes_have_exact_expansion_budget_boundaries() {
+    let empty_runs = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="0" Y="0"/><ofd:TextCode/><ofd:TextCode/><ofd:TextCode/></ofd:TextObject>"#;
+    for (limit, succeeds) in [(4, true), (3, false)] {
+        let result = page_result(
+            empty_runs,
+            &font_catalog(""),
+            ResourceLimits {
+                max_text_expansion_entries: limit,
+                ..ResourceLimits::default()
+            },
+        );
+        assert_eq!(result.is_ok(), succeeds, "empty-run limit {limit}");
+    }
+
+    let mappings = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="0" Y="0">ABCD</ofd:TextCode><ofd:CGTransform CodePosition="0"><ofd:Glyphs>10</ofd:Glyphs></ofd:CGTransform><ofd:CGTransform CodePosition="1"><ofd:Glyphs>11</ofd:Glyphs></ofd:CGTransform><ofd:CGTransform CodePosition="2"><ofd:Glyphs>12</ofd:Glyphs></ofd:CGTransform><ofd:CGTransform CodePosition="3"><ofd:Glyphs>13</ofd:Glyphs></ofd:CGTransform></ofd:TextObject>"#;
+    for (limit, succeeds) in [(17, true), (16, false)] {
+        let result = page_result(
+            mappings,
+            &font_catalog(""),
+            ResourceLimits {
+                max_text_expansion_entries: limit,
+                ..ResourceLimits::default()
+            },
+        );
+        assert_eq!(result.is_ok(), succeeds, "mapping limit {limit}");
+    }
+}
+
+#[test]
+fn text_run_nodes_exceeding_the_expansion_budget_fail_during_xml_preflight() {
+    let empty_runs = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="0" Y="0"/><ofd:TextCode/><ofd:TextCode/></ofd:TextObject>"#;
+    let error = page_result(
+        empty_runs,
+        &font_catalog(""),
+        ResourceLimits {
+            max_text_expansion_entries: 2,
+            ..ResourceLimits::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::LimitExceeded(ref message) if message.contains("XML text expansion node count 3 exceeds limit 2")),
+        "expected preflight text-node limit, got {error:?}"
+    );
 }
 
 #[test]
@@ -440,6 +513,24 @@ fn cgtransform_replaces_character_glyphs_instead_of_double_counting_them() {
         page_result(object, &font_catalog(""), one_over),
         Err(Error::LimitExceeded(_))
     ));
+}
+
+#[test]
+fn cgtransform_overlap_index_preserves_source_order() {
+    let object = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="0" Y="0">ABC</ofd:TextCode><ofd:CGTransform CodePosition="2"><ofd:Glyphs>20</ofd:Glyphs></ofd:CGTransform><ofd:CGTransform CodePosition="0"><ofd:Glyphs>10</ofd:Glyphs></ofd:CGTransform></ofd:TextObject>"#;
+    let page = package(object, &font_catalog(""), ResourceLimits::default())
+        .page(0)
+        .unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+    assert_eq!(
+        text.glyph_maps()
+            .iter()
+            .map(|mapping| mapping.code_position())
+            .collect::<Vec<_>>(),
+        [2, 0]
+    );
 }
 
 #[test]
@@ -562,7 +653,7 @@ fn repeated_nested_template_text_accounting_is_cache_order_independent() {
             limits: ResourceLimits {
                 max_text_characters_per_page: 4,
                 max_glyphs_per_page: 4,
-                max_text_expansion_entries: 8,
+                max_text_expansion_entries: 10,
                 ..ResourceLimits::default()
             },
             ..LoadOptions::default()
@@ -571,6 +662,19 @@ fn repeated_nested_template_text_accounting_is_cache_order_independent() {
     .unwrap();
     assert!(exact.page(0).is_ok());
     assert!(exact.page(1).is_ok());
+
+    let expansion_over = LoadOptions {
+        limits: ResourceLimits {
+            max_text_expansion_entries: 9,
+            ..ResourceLimits::default()
+        },
+        ..LoadOptions::default()
+    };
+    let warmed = Document::from_bytes(bytes.clone(), expansion_over.clone()).unwrap();
+    assert!(warmed.page(0).is_ok());
+    assert!(matches!(warmed.page(1), Err(Error::LimitExceeded(_))));
+    let cold = Document::from_bytes(bytes.clone(), expansion_over).unwrap();
+    assert!(matches!(cold.page(1), Err(Error::LimitExceeded(_))));
 
     let over_options = LoadOptions {
         limits: ResourceLimits {

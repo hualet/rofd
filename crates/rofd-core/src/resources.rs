@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::container::Container;
@@ -94,6 +96,9 @@ impl ImageResource {
 #[derive(Debug)]
 pub(crate) struct ResourceCatalog {
     entries: HashMap<u64, ResourceEntry>,
+    draw_param_initialization: Mutex<()>,
+    #[cfg(test)]
+    draw_param_visits: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -127,6 +132,7 @@ struct DrawParamRecord {
     relative: Option<u64>,
     values: PaintParameters,
     declaration_path: String,
+    resolved: OnceLock<PaintParameters>,
 }
 
 #[derive(Debug)]
@@ -175,6 +181,9 @@ impl ResourceCatalog {
     pub(crate) fn empty() -> Self {
         Self {
             entries: HashMap::new(),
+            draw_param_initialization: Mutex::new(()),
+            #[cfg(test)]
+            draw_param_visits: AtomicUsize::new(0),
         }
     }
 
@@ -375,6 +384,7 @@ impl ResourceCatalog {
                 relative,
                 values,
                 declaration_path: path.as_str().to_owned(),
+                resolved: OnceLock::new(),
             }),
             path,
         )
@@ -396,9 +406,29 @@ impl ResourceCatalog {
     }
 
     pub(crate) fn draw_param(&self, id: u64) -> Result<PaintParameters> {
+        let requested = match self.entries.get(&id) {
+            Some(ResourceEntry::DrawParam(record)) => record,
+            Some(other) => return Err(kind_mismatch(id, ResourceKind::DrawParam, other.kind())),
+            None => return Err(Error::UnknownResource { object_id: id }),
+        };
+        if let Some(resolved) = requested.resolved.get() {
+            return Ok(resolved.clone());
+        }
+        let _initialization =
+            self.draw_param_initialization
+                .lock()
+                .map_err(|_| Error::InvalidStructure {
+                    path: requested.declaration_path.clone(),
+                    message: "DrawParam initialization lock is poisoned".to_owned(),
+                })?;
+        if let Some(resolved) = requested.resolved.get() {
+            return Ok(resolved.clone());
+        }
+
         let mut positions = HashMap::new();
         let mut chain = Vec::new();
         let mut current = id;
+        let mut resolved = None;
         loop {
             if let Some(position) = positions.insert(current, chain.len()) {
                 let mut cycle = chain[position..]
@@ -427,7 +457,13 @@ impl ResourceCatalog {
                     entry.kind(),
                 ));
             };
+            #[cfg(test)]
+            self.draw_param_visits.fetch_add(1, Ordering::Relaxed);
             debug_assert_eq!(record.id, current);
+            if let Some(cached) = record.resolved.get() {
+                resolved = Some(cached.clone());
+                break;
+            }
             chain.push(record);
             match record.relative {
                 Some(relative) => current = relative,
@@ -435,9 +471,10 @@ impl ResourceCatalog {
             }
         }
 
-        let mut resolved = PaintParameters::default();
+        let mut resolved = resolved.unwrap_or_default();
         for record in chain.into_iter().rev() {
             resolved.inherit(&record.values);
+            record.resolved.get_or_init(|| resolved.clone());
         }
         Ok(resolved)
     }
@@ -774,11 +811,32 @@ fn kind_mismatch(id: u64, expected: ResourceKind, actual: ResourceKind) -> Error
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, OnceLock};
 
-    use super::Asset;
+    use super::{Asset, DrawParamRecord, ResourceCatalog, ResourceEntry};
+    use crate::paint::PaintParameters;
     use crate::path::PackagePath;
     use crate::{Error, Result};
+
+    fn draw_param_catalog(length: u64) -> ResourceCatalog {
+        let mut catalog = ResourceCatalog::empty();
+        for id in 1..=length {
+            catalog.entries.insert(
+                id,
+                ResourceEntry::DrawParam(DrawParamRecord {
+                    id,
+                    relative: (id > 1).then_some(id - 1),
+                    values: PaintParameters {
+                        line_width: Some(id as f64),
+                        ..PaintParameters::default()
+                    },
+                    declaration_path: "Doc_0/Res.xml".to_owned(),
+                    resolved: OnceLock::new(),
+                }),
+            );
+        }
+        catalog
+    }
 
     #[test]
     fn concurrent_cold_asset_loads_are_single_flight() {
@@ -831,5 +889,98 @@ mod tests {
             .unwrap();
         assert_eq!(&*second, b"available");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn repeated_draw_param_resolution_visits_each_chain_node_once() {
+        let catalog = draw_param_catalog(1_024);
+
+        for _ in 0..16 {
+            assert_eq!(catalog.draw_param(1_024).unwrap().line_width, Some(1_024.0));
+        }
+        assert_eq!(catalog.draw_param_visits.load(Ordering::Relaxed), 1_024);
+    }
+
+    #[test]
+    fn concurrent_draw_param_resolution_is_single_flight() {
+        let catalog = Arc::new(draw_param_catalog(1_024));
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let catalog = Arc::clone(&catalog);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    catalog.draw_param(1_024).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().line_width, Some(1_024.0));
+        }
+        assert_eq!(catalog.draw_param_visits.load(Ordering::Relaxed), 1_024);
+    }
+
+    #[test]
+    fn failed_draw_param_resolution_is_deterministic_and_retryable() {
+        let mut catalog = draw_param_catalog(2);
+        let ResourceEntry::DrawParam(record) = catalog.entries.get_mut(&1).unwrap() else {
+            panic!("expected DrawParam");
+        };
+        record.relative = Some(99);
+
+        for expected_visits in [2, 4] {
+            let error = catalog.draw_param(2).unwrap_err();
+            assert!(matches!(error, Error::UnknownResource { object_id: 99 }));
+            assert_eq!(
+                catalog.draw_param_visits.load(Ordering::Relaxed),
+                expected_visits
+            );
+            assert!(catalog
+                .entries
+                .values()
+                .filter_map(|entry| match entry {
+                    ResourceEntry::DrawParam(record) => Some(record),
+                    _ => None,
+                })
+                .all(|record| record.resolved.get().is_none()));
+        }
+    }
+
+    #[test]
+    fn concurrent_failed_draw_param_resolution_is_consistent_and_unpublished() {
+        let mut catalog = draw_param_catalog(2);
+        let ResourceEntry::DrawParam(record) = catalog.entries.get_mut(&1).unwrap() else {
+            panic!("expected DrawParam");
+        };
+        record.relative = Some(99);
+        let catalog = Arc::new(catalog);
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let catalog = Arc::clone(&catalog);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    catalog.draw_param(2).unwrap_err()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            assert!(matches!(
+                handle.join().unwrap(),
+                Error::UnknownResource { object_id: 99 }
+            ));
+        }
+        assert_eq!(catalog.draw_param_visits.load(Ordering::Relaxed), 16);
+        assert!(catalog
+            .entries
+            .values()
+            .filter_map(|entry| match entry {
+                ResourceEntry::DrawParam(record) => Some(record),
+                _ => None,
+            })
+            .all(|record| record.resolved.get().is_none()));
     }
 }
