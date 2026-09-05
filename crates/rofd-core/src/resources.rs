@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fmt;
+use std::hash::{Hash, Hasher};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -31,9 +33,49 @@ pub enum ImageFormat {
     Jpeg,
 }
 
+/// Opaque process-local identity of one validated resource declaration.
+///
+/// Clones of a resource preserve this identity. Equal numeric OFD identifiers
+/// from different documents receive distinct identities. The token has no
+/// package-path or backend meaning and is suitable for constant-size cache keys.
+#[derive(Clone)]
+pub struct ResourceIdentity(Arc<ResourceIdentityMarker>);
+
+#[derive(Debug)]
+struct ResourceIdentityMarker {
+    _nonce: u8,
+}
+
+impl ResourceIdentity {
+    fn new() -> Self {
+        Self(Arc::new(ResourceIdentityMarker { _nonce: 0 }))
+    }
+}
+
+impl fmt::Debug for ResourceIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResourceIdentity(..)")
+    }
+}
+
+impl PartialEq for ResourceIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ResourceIdentity {}
+
+impl Hash for ResourceIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
 /// Immutable metadata and optional embedded bytes for an OFD font resource.
 #[derive(Clone, Debug)]
 pub struct FontResource {
+    identity: ResourceIdentity,
     id: u64,
     font_name: String,
     family_name: Option<String>,
@@ -42,6 +84,11 @@ pub struct FontResource {
 }
 
 impl FontResource {
+    /// Returns the opaque identity of this resource declaration.
+    pub fn identity(&self) -> ResourceIdentity {
+        self.identity.clone()
+    }
+
     /// Returns the document-wide OFD object identifier.
     pub fn id(&self) -> u64 {
         self.id
@@ -115,6 +162,7 @@ enum ResourceEntry {
 
 #[derive(Debug)]
 struct FontRecord {
+    identity: ResourceIdentity,
     id: u64,
     font_name: String,
     family_name: Option<String>,
@@ -236,6 +284,7 @@ impl ResourceCatalog {
     pub(crate) fn font(&self, id: u64, container: &Container, limit: u64) -> Result<FontResource> {
         match self.entries.get(&id) {
             Some(ResourceEntry::Font(font)) => Ok(FontResource {
+                identity: font.identity.clone(),
                 id: font.id,
                 font_name: font.font_name.clone(),
                 family_name: font.family_name.clone(),
@@ -301,6 +350,7 @@ impl ResourceCatalog {
         self.insert(
             id,
             ResourceEntry::Font(FontRecord {
+                identity: ResourceIdentity::new(),
                 id,
                 font_name,
                 family_name: entry.family_name,

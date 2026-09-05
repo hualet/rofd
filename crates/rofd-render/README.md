@@ -66,10 +66,13 @@ uses the selected face's FreeType advance. Returned sources and errors use
 stable identities and never expose host font paths.
 
 Resolved encoded bytes and face metadata are cached per resolver with
-single-flight initialization. System font bytes are checked against the
-resolver's configured limit before ownership. Cache failures are retryable,
-and constructing a new resolver is how callers observe a newer installed-font
-snapshot.
+per-face single-flight initialization. The default cache retains at most 64
+successfully resolved faces with deterministic least-recently-used eviction;
+`SystemFontResolver::from_database_with_cache_capacity` configures another
+positive finite bound. Eviction does not invalidate returned `ResolvedFont`
+clones. System font bytes are checked against the resolver's configured limit
+before ownership. Cache failures are retryable, and constructing a new resolver
+is how callers observe a newer installed-font snapshot.
 
 Text and image objects remain omitted from Cairo drawing and are reported
 through display-list and render-report diagnostics, including object kind,

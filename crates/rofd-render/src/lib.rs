@@ -9,8 +9,8 @@ mod fonts;
 pub use cairo_renderer::{CairoRenderer, RenderOptions, RenderReport};
 pub use display_list::{ClipPath, Command, DisplayList, RenderDiagnostic};
 pub use fonts::{
-    position_glyph_runs, FontDiagnostic, FontResolver, FontSource, GlyphRun, PositionedGlyph,
-    ResolvedFont, SystemFontResolver,
+    position_glyph_runs, FontDiagnostic, FontIdentity, FontResolver, FontSource, GlyphRun,
+    PositionedGlyph, ResolvedFont, SystemFontResolver,
 };
 
 /// An error encountered while lowering or rendering a validated page.
@@ -143,6 +143,18 @@ pub enum Error {
     FontCache {
         /// Synchronization detail.
         message: String,
+    },
+    /// A font resource was paired with a text object referencing another identifier.
+    #[error(
+        "text object {text_object_id} references font {expected_font_id}, not resource {actual_resource_id}"
+    )]
+    FontResourceMismatch {
+        /// OFD text object identifier.
+        text_object_id: u64,
+        /// Font identifier referenced by the text object.
+        expected_font_id: u64,
+        /// Font resource identifier supplied by the caller.
+        actual_resource_id: u64,
     },
 }
 

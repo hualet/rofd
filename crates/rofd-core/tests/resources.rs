@@ -76,6 +76,21 @@ fn resolves_normalized_catalog_base_and_asset_paths() {
     );
 
     let embedded = document.font_resource(1).unwrap();
+    let embedded_again = document.font_resource(1).unwrap();
+    assert_eq!(embedded.identity(), embedded_again.identity());
+    let other_document = open(
+        "<ofd:PublicRes>Res/Public.xml</ofd:PublicRes>",
+        &[
+            ("Doc_0/Res/Public.xml", catalog),
+            ("Doc_0/Res/Assets/Fonts/a.otf", b"font"),
+            ("Doc_0/Res/Assets/Images/a.png", b"png"),
+            ("Doc_0/Res/Assets/Images/b.jpg", b"jpeg"),
+        ],
+    );
+    assert_ne!(
+        embedded.identity(),
+        other_document.font_resource(1).unwrap().identity()
+    );
     assert_eq!(embedded.id(), 1);
     assert_eq!(embedded.font_name(), "Embedded");
     assert_eq!(embedded.family_name(), Some("Family"));

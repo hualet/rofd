@@ -1,11 +1,13 @@
 use std::io::{Cursor, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 
 use fontdb::Database;
 use rofd_core::{Document, LoadOptions, PageObject, ResourceLimits};
 use rofd_render::{
-    position_glyph_runs, Error, FontDiagnostic, FontSource, ResolvedFont, SystemFontResolver,
+    position_glyph_runs, Error, FontDiagnostic, FontIdentity, FontResolver, FontSource,
+    ResolvedFont, SystemFontResolver,
 };
 use zip::{write::SimpleFileOptions, ZipWriter};
 
@@ -36,6 +38,7 @@ fn package_with_names(
     let resource = format!(
         r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Fonts>
           <ofd:Font ID="10" FontName="{font_name}"{family_name}>{font_file_element}</ofd:Font>
+          <ofd:Font ID="11" FontName="Other"/>
         </ofd:Fonts></ofd:Res>"#
     );
     let page = format!(
@@ -270,6 +273,10 @@ fn fallback_is_selected_per_character_and_missing_uses_a_synthetic_box() {
         runs[0].glyphs()[1].font_source(),
         FontSource::ConfiguredFallback { .. }
     ));
+    assert_eq!(
+        runs[0].glyphs()[1].font().unwrap().source(),
+        runs[0].glyphs()[1].font_source()
+    );
 
     let visible_replacement = package(
         Some(LATIN_FONT),
@@ -308,6 +315,7 @@ fn fallback_is_selected_per_character_and_missing_uses_a_synthetic_box() {
     .unwrap();
     assert_eq!(runs[0].glyphs()[0].font_source(), &FontSource::Missing);
     assert!(runs[0].glyphs()[0].is_synthetic_box());
+    assert!(runs[0].glyphs()[0].font().is_none());
     assert!(matches!(
         runs[0].diagnostics()[0],
         FontDiagnostic::MissingGlyph {
@@ -517,14 +525,7 @@ fn invalid_embedded_data_and_face_index_are_structured_errors() {
         Err(Error::InvalidFont { .. })
     ));
     assert!(matches!(
-        ResolvedFont::from_bytes(
-            Arc::from(FONT),
-            99,
-            "fixture".to_owned(),
-            FontSource::System {
-                identity: "fixture".to_owned()
-            }
-        ),
+        ResolvedFont::from_system_bytes(Arc::from(FONT), 99, FontIdentity::new("fixture").unwrap(),),
         Err(Error::InvalidFont { .. })
     ));
 }
@@ -532,22 +533,16 @@ fn invalid_embedded_data_and_face_index_are_structured_errors() {
 #[test]
 fn controlled_collection_selects_face_index_and_exposes_lookup_and_advance() {
     let owned: Arc<[u8]> = Arc::from(COLLECTION.to_vec());
-    let latin = ResolvedFont::from_bytes(
+    let latin = ResolvedFont::from_system_bytes(
         Arc::clone(&owned),
         0,
-        "collection-face-0".to_owned(),
-        FontSource::System {
-            identity: "collection-face-0".to_owned(),
-        },
+        FontIdentity::new("collection-face-0").unwrap(),
     )
     .unwrap();
-    let cjk = ResolvedFont::from_bytes(
+    let cjk = ResolvedFont::from_system_bytes(
         Arc::clone(&owned),
         1,
-        "collection-face-1".to_owned(),
-        FontSource::System {
-            identity: "collection-face-1".to_owned(),
-        },
+        FontIdentity::new("collection-face-1").unwrap(),
     )
     .unwrap();
 
@@ -561,16 +556,108 @@ fn controlled_collection_selects_face_index_and_exposes_lookup_and_advance() {
     assert!(Arc::ptr_eq(&cjk.encoded_bytes_arc(), &owned));
 
     assert!(matches!(
-        ResolvedFont::from_bytes(
-            owned,
-            2,
-            "collection-face-2".to_owned(),
-            FontSource::System {
-                identity: "collection-face-2".to_owned(),
-            }
-        ),
+        ResolvedFont::from_system_bytes(owned, 2, FontIdentity::new("collection-face-2").unwrap(),),
         Err(Error::InvalidFont { .. })
     ));
+}
+
+#[test]
+fn constrained_font_constructors_keep_sources_consistent_and_reject_path_identities() {
+    assert!(FontIdentity::new("").is_err());
+    assert!(FontIdentity::new("/host/font.ttf").is_err());
+    assert!(FontIdentity::new(r"C:\\host\\font.ttf").is_err());
+
+    let document = package(
+        Some(FONT),
+        r#"<ofd:TextCode X="0" Y="0">A</ofd:TextCode>"#,
+        "",
+    );
+    let embedded =
+        ResolvedFont::from_embedded_resource(&document.font_resource(10).unwrap(), 0).unwrap();
+    assert_eq!(embedded.source(), &FontSource::Embedded { resource_id: 10 });
+    assert!(ResolvedFont::from_embedded_resource(&document.font_resource(11).unwrap(), 0).is_err());
+    let system = ResolvedFont::from_system_bytes(
+        Arc::from(FONT),
+        0,
+        FontIdentity::new("controlled-system").unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(system.source(), FontSource::System { .. }));
+    let fallback = ResolvedFont::from_configured_fallback_bytes(
+        Arc::from(FONT),
+        0,
+        FontIdentity::new("controlled-fallback").unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        fallback.source(),
+        FontSource::ConfiguredFallback { .. }
+    ));
+    assert!(SystemFontResolver::from_database_with_cache_capacity(
+        Database::new(),
+        Vec::new(),
+        1 << 20,
+        0,
+    )
+    .is_err());
+}
+
+#[test]
+fn mismatched_resource_and_budgets_fail_before_resolver_invocation() {
+    struct CountingResolver(AtomicUsize);
+    impl FontResolver for CountingResolver {
+        fn resolve_primary(
+            &self,
+            _resource: &rofd_core::FontResource,
+        ) -> rofd_render::Result<Option<ResolvedFont>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn resolve_fallback(&self, _character: char) -> rofd_render::Result<Option<ResolvedFont>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+    }
+
+    let document = package(
+        Some(FONT),
+        r#"<ofd:TextCode X="0" Y="0">A</ofd:TextCode>"#,
+        "",
+    );
+    let resolver = CountingResolver(AtomicUsize::new(0));
+    assert!(matches!(
+        position_glyph_runs(
+            &resolver,
+            &document.font_resource(11).unwrap(),
+            &text_object(&document),
+            &ResourceLimits::default(),
+        ),
+        Err(Error::FontResourceMismatch {
+            expected_font_id: 10,
+            actual_resource_id: 11,
+            ..
+        })
+    ));
+    assert_eq!(resolver.0.load(Ordering::SeqCst), 0);
+
+    let limits = ResourceLimits {
+        max_text_characters_per_page: 0,
+        ..ResourceLimits::default()
+    };
+    assert!(matches!(
+        position_glyph_runs(
+            &resolver,
+            &document.font_resource(10).unwrap(),
+            &text_object(&document),
+            &limits,
+        ),
+        Err(Error::InvalidTextLayout {
+            field: "max_text_characters_per_page",
+            ..
+        })
+    ));
+    assert_eq!(resolver.0.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -616,4 +703,50 @@ fn concurrent_resolution_reuses_the_same_stable_font_identity() {
     assert!(resolved
         .iter()
         .all(|(_, bytes)| Arc::ptr_eq(bytes, &resolved[0].1)));
+}
+
+#[test]
+fn equal_resource_ids_from_distinct_documents_do_not_share_cache_entries() {
+    let latin_document = package(
+        Some(LATIN_FONT),
+        r#"<ofd:TextCode X="0" Y="0">中</ofd:TextCode>"#,
+        "",
+    );
+    let cjk_document = package(
+        Some(FONT),
+        r#"<ofd:TextCode X="0" Y="0">中</ofd:TextCode>"#,
+        "",
+    );
+    let latin_resource = latin_document.font_resource(10).unwrap();
+    let cjk_resource = cjk_document.font_resource(10).unwrap();
+    assert_ne!(latin_resource.identity(), cjk_resource.identity());
+
+    let resolver = SystemFontResolver::empty(Vec::new(), 1 << 20);
+    let latin = position_glyph_runs(
+        &resolver,
+        &latin_resource,
+        &text_object(&latin_document),
+        &ResourceLimits::default(),
+    )
+    .unwrap();
+    let cjk = position_glyph_runs(
+        &resolver,
+        &cjk_resource,
+        &text_object(&cjk_document),
+        &ResourceLimits::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        latin[0].diagnostics()[0],
+        FontDiagnostic::MissingGlyph {
+            character: '中',
+            ..
+        }
+    ));
+    assert!(cjk[0].diagnostics().is_empty());
+    assert_ne!(
+        latin[0].glyphs()[0].glyph_id(),
+        cjk[0].glyphs()[0].glyph_id()
+    );
 }
