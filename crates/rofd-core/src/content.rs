@@ -565,7 +565,7 @@ impl ConversionContext<'_> {
             .remaining_path_commands
             .checked_sub(path_data.commands().len())
             .ok_or_else(|| Error::LimitExceeded("page path command budget exhausted".to_owned()))?;
-        let clips = self.convert_clips(path.clips)?;
+        let clips = self.convert_clips(path.clips, object_id)?;
 
         Ok(PathObject {
             object_id,
@@ -592,14 +592,36 @@ impl ConversionContext<'_> {
     }
 
     fn convert_text(&mut self, text: raw::TextObject, object_id: u64) -> Result<TextObject> {
-        let boundary = parse_positive_boundary(&text.boundary, self.path, object_id)?;
+        let boundary = parse_positive_boundary(
+            required_object_field(text.boundary.as_deref(), "Boundary", self.path, object_id)?,
+            self.path,
+            object_id,
+        )?;
         let transform = parse_transform(text.transform.as_deref(), self.path, object_id)?;
-        let font_id = parse_nonzero_id(&text.font, "Font", self.path, object_id)?;
+        let font_id = parse_nonzero_id(
+            required_object_field(text.font.as_deref(), "Font", self.path, object_id)?,
+            "Font",
+            self.path,
+            object_id,
+        )?;
         self.require_resource_kind(font_id, ResourceKind::Font, object_id, "Font")?;
-        let font_size = parse_positive_number(&text.size, "Size", self.path, object_id)?;
-        let stroke_enabled = parse_bool(text.stroke.as_deref(), false, "stroke")?;
-        let fill_enabled = parse_bool(text.fill.as_deref(), true, "fill")?;
-        let object_alpha = parse_alpha(text.alpha.as_deref())?;
+        let font_size = parse_positive_number(
+            required_object_field(text.size.as_deref(), "Size", self.path, object_id)?,
+            "Size",
+            self.path,
+            object_id,
+        )?;
+        let stroke_enabled = parse_object_bool(
+            text.stroke.as_deref(),
+            false,
+            "Stroke",
+            self.path,
+            object_id,
+        )?;
+        let fill_enabled =
+            parse_object_bool(text.fill.as_deref(), true, "Fill", self.path, object_id)?;
+        let object_alpha =
+            parse_object_alpha(text.alpha.as_deref(), self.path, object_id, "Alpha")?;
         let mut parameters = self.resolve_draw_param(text.draw_param.as_deref(), object_id)?;
         apply_local_stroke_style(
             &mut parameters,
@@ -648,7 +670,7 @@ impl ConversionContext<'_> {
                 )
             })
             .transpose()?;
-        let clips = self.convert_clips(text.clips)?;
+        let clips = self.convert_clips(text.clips, object_id)?;
         let runs = self.convert_text_runs(text.text_codes, object_id)?;
         let character_count = runs
             .iter()
@@ -755,7 +777,12 @@ impl ConversionContext<'_> {
         let mut ranges = Vec::with_capacity(raw_maps.len());
         for raw in raw_maps {
             let code_position = parse_usize(
-                &raw.code_position,
+                required_object_field(
+                    raw.code_position.as_deref(),
+                    "CodePosition",
+                    self.path,
+                    object_id,
+                )?,
                 "CodePosition",
                 self.path,
                 object_id,
@@ -848,9 +875,23 @@ impl ConversionContext<'_> {
     }
 
     fn convert_image(&mut self, image: raw::ImageObject, object_id: u64) -> Result<ImageObject> {
-        let boundary = parse_positive_boundary(&image.boundary, self.path, object_id)?;
+        let boundary = parse_positive_boundary(
+            required_object_field(image.boundary.as_deref(), "Boundary", self.path, object_id)?,
+            self.path,
+            object_id,
+        )?;
         let transform = parse_transform(image.transform.as_deref(), self.path, object_id)?;
-        let resource_id = parse_nonzero_id(&image.resource_id, "ResourceID", self.path, object_id)?;
+        let resource_id = parse_nonzero_id(
+            required_object_field(
+                image.resource_id.as_deref(),
+                "ResourceID",
+                self.path,
+                object_id,
+            )?,
+            "ResourceID",
+            self.path,
+            object_id,
+        )?;
         let resource_format = self
             .document
             .image_resource_format(resource_id)
@@ -859,9 +900,9 @@ impl ConversionContext<'_> {
             self.optional_image_id(image.substitution.as_deref(), object_id, "Substitution")?;
         let image_mask_id =
             self.optional_image_id(image.image_mask.as_deref(), object_id, "ImageMask")?;
-        let alpha = parse_alpha(image.alpha.as_deref())?;
+        let alpha = parse_object_alpha(image.alpha.as_deref(), self.path, object_id, "Alpha")?;
         let _ = self.resolve_draw_param(image.draw_param.as_deref(), object_id)?;
-        let clips = self.convert_clips(image.clips)?;
+        let clips = self.convert_clips(image.clips, object_id)?;
         Ok(ImageObject {
             object_id,
             boundary,
@@ -913,7 +954,7 @@ impl ConversionContext<'_> {
         Ok(())
     }
 
-    fn convert_clips(&mut self, clips: Option<raw::Clips>) -> Result<Vec<Clip>> {
+    fn convert_clips(&mut self, clips: Option<raw::Clips>, object_id: u64) -> Result<Vec<Clip>> {
         let Some(clips) = clips else {
             return Ok(Vec::new());
         };
@@ -923,8 +964,13 @@ impl ConversionContext<'_> {
                 message: "Clips must contain at least one Clip".to_owned(),
             });
         }
-        let affected_by_object_transform =
-            parse_bool(clips.trans_flag.as_deref(), false, "clip transform flag")?;
+        let affected_by_object_transform = parse_object_bool(
+            clips.trans_flag.as_deref(),
+            false,
+            "Clips.TransFlag",
+            self.path,
+            object_id,
+        )?;
         clips
             .clips
             .into_iter()
@@ -1039,6 +1085,62 @@ fn parse_alpha(value: Option<&str>) -> Result<u8> {
         .map(str::parse::<u8>)
         .transpose()
         .map_err(|_| invalid_value("alpha", value.unwrap_or_default()))
+        .map(|alpha| alpha.unwrap_or(255))
+}
+
+fn required_object_field<'a>(
+    value: Option<&'a str>,
+    field: &'static str,
+    path: &str,
+    object_id: u64,
+) -> Result<&'a str> {
+    value.ok_or_else(|| {
+        object_error(
+            path,
+            object_id,
+            field,
+            "required attribute is missing".to_owned(),
+        )
+    })
+}
+
+fn parse_object_bool(
+    value: Option<&str>,
+    default: bool,
+    field: &'static str,
+    path: &str,
+    object_id: u64,
+) -> Result<bool> {
+    match value {
+        None => Ok(default),
+        Some("true" | "1") => Ok(true),
+        Some("false" | "0") => Ok(false),
+        Some(value) => Err(object_error(
+            path,
+            object_id,
+            field,
+            format!("invalid boolean {value}"),
+        )),
+    }
+}
+
+fn parse_object_alpha(
+    value: Option<&str>,
+    path: &str,
+    object_id: u64,
+    field: &'static str,
+) -> Result<u8> {
+    value
+        .map(str::parse::<u8>)
+        .transpose()
+        .map_err(|_| {
+            object_error(
+                path,
+                object_id,
+                field,
+                format!("invalid alpha {}", value.unwrap_or_default()),
+            )
+        })
         .map(|alpha| alpha.unwrap_or(255))
 }
 

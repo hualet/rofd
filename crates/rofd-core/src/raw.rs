@@ -280,13 +280,13 @@ pub(crate) struct TextObject {
     #[serde(rename = "ID")]
     pub(crate) id: String,
     #[serde(rename = "Boundary")]
-    pub(crate) boundary: String,
+    pub(crate) boundary: Option<String>,
     #[serde(rename = "CTM")]
     pub(crate) transform: Option<String>,
     #[serde(rename = "Font")]
-    pub(crate) font: String,
+    pub(crate) font: Option<String>,
     #[serde(rename = "Size")]
-    pub(crate) size: String,
+    pub(crate) size: Option<String>,
     #[serde(rename = "Stroke")]
     pub(crate) stroke: Option<String>,
     #[serde(rename = "Fill")]
@@ -336,7 +336,7 @@ pub(crate) struct TextCode {
 #[derive(Debug, Deserialize)]
 pub(crate) struct CgTransform {
     #[serde(rename = "CodePosition")]
-    pub(crate) code_position: String,
+    pub(crate) code_position: Option<String>,
     #[serde(rename = "CodeCount")]
     pub(crate) code_count: Option<String>,
     #[serde(rename = "GlyphCount")]
@@ -350,11 +350,11 @@ pub(crate) struct ImageObject {
     #[serde(rename = "ID")]
     pub(crate) id: String,
     #[serde(rename = "Boundary")]
-    pub(crate) boundary: String,
+    pub(crate) boundary: Option<String>,
     #[serde(rename = "CTM")]
     pub(crate) transform: Option<String>,
     #[serde(rename = "ResourceID")]
-    pub(crate) resource_id: String,
+    pub(crate) resource_id: Option<String>,
     #[serde(rename = "Alpha")]
     pub(crate) alpha: Option<String>,
     #[serde(rename = "DrawParam")]

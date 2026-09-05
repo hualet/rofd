@@ -695,7 +695,15 @@ fn extract_rich_objects(
         Image,
     }
 
-    let mut capture = None::<(Kind, usize, xml::EventWriter<Vec<u8>>)>;
+    struct Capture {
+        kind: Kind,
+        depth: usize,
+        writer: xml::EventWriter<Vec<u8>>,
+        text_codes: Vec<String>,
+        current_text_code: Option<String>,
+    }
+
+    let mut capture = None::<Capture>;
     let mut texts = Vec::new();
     let mut images = Vec::new();
     let mut elements = Vec::<String>::new();
@@ -715,36 +723,85 @@ fn extract_rich_objects(
                     })
                     .flatten();
                 if let Some(kind) = kind {
-                    capture = Some((kind, 0, xml::EventWriter::new(Vec::new())));
+                    capture = Some(Capture {
+                        kind,
+                        depth: 0,
+                        writer: xml::EventWriter::new(Vec::new()),
+                        text_codes: Vec::new(),
+                        current_text_code: None,
+                    });
                 }
             }
         }
         if let XmlEvent::StartElement { name, .. } = &event {
             elements.push(name.local_name.clone());
         }
-        if let Some((_, depth, writer)) = &mut capture {
-            if matches!(event, XmlEvent::StartElement { .. }) {
-                *depth += 1;
+        if let Some(active) = &mut capture {
+            if let XmlEvent::StartElement { name, .. } = &event {
+                if matches!(active.kind, Kind::Text)
+                    && active.depth == 1
+                    && name.local_name == "TextCode"
+                {
+                    active.current_text_code = Some(String::new());
+                }
+                active.depth += 1;
+            }
+            if let Some(text) = &mut active.current_text_code {
+                match &event {
+                    XmlEvent::Characters(value)
+                    | XmlEvent::Whitespace(value)
+                    | XmlEvent::CData(value) => text.push_str(value),
+                    _ => {}
+                }
             }
             if let Some(writer_event) = event.as_writer_event() {
-                writer.write(writer_event).map_err(|error| Error::Xml {
-                    path: path.as_str().to_owned(),
-                    message: error.to_string(),
-                })?;
+                active
+                    .writer
+                    .write(writer_event)
+                    .map_err(|error| Error::Xml {
+                        path: path.as_str().to_owned(),
+                        message: error.to_string(),
+                    })?;
             }
-            if matches!(event, XmlEvent::EndElement { .. }) {
-                *depth -= 1;
-                if *depth == 0 {
-                    let (kind, _, writer) = capture.take().expect("capture exists");
-                    let xml = writer.into_inner();
+            if let XmlEvent::EndElement { name } = &event {
+                if matches!(active.kind, Kind::Text)
+                    && active.depth == 2
+                    && name.local_name == "TextCode"
+                {
+                    active
+                        .text_codes
+                        .push(active.current_text_code.take().unwrap_or_default());
+                }
+                active.depth -= 1;
+                if active.depth == 0 {
+                    let completed = capture.take().expect("capture exists");
+                    let xml = completed.writer.into_inner();
                     let mut deserializer =
                         serde_xml_rs::Deserializer::new_from_reader(xml.as_slice())
                             .non_contiguous_seq_elements(true);
-                    match kind {
-                        Kind::Text => texts.push(raw::TextObject::deserialize(&mut deserializer)),
-                        Kind::Image => {
-                            images.push(raw::ImageObject::deserialize(&mut deserializer))
+                    let map_error = |error: serde_xml_rs::Error| Error::Xml {
+                        path: path.as_str().to_owned(),
+                        message: error.to_string(),
+                    };
+                    match completed.kind {
+                        Kind::Text => {
+                            let mut text = raw::TextObject::deserialize(&mut deserializer)
+                                .map_err(map_error)?;
+                            if text.text_codes.len() != completed.text_codes.len() {
+                                return Err(Error::InvalidStructure {
+                                    path: path.as_str().to_owned(),
+                                    message: "TextCode extraction count mismatch".to_owned(),
+                                });
+                            }
+                            for (run, value) in text.text_codes.iter_mut().zip(completed.text_codes)
+                            {
+                                run.text = value;
+                            }
+                            texts.push(text);
                         }
+                        Kind::Image => images.push(
+                            raw::ImageObject::deserialize(&mut deserializer).map_err(map_error)?,
+                        ),
                     }
                 }
             }
@@ -753,20 +810,7 @@ fn extract_rich_objects(
             elements.pop();
         }
     }
-    let map_error = |error: serde_xml_rs::Error| Error::Xml {
-        path: path.as_str().to_owned(),
-        message: error.to_string(),
-    };
-    Ok((
-        texts
-            .into_iter()
-            .collect::<std::result::Result<_, _>>()
-            .map_err(map_error)?,
-        images
-            .into_iter()
-            .collect::<std::result::Result<_, _>>()
-            .map_err(map_error)?,
-    ))
+    Ok((texts, images))
 }
 
 fn inject_rich_objects(

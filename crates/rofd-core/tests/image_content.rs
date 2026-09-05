@@ -106,6 +106,43 @@ fn image_resource_references_are_nonzero_known_images_with_object_context() {
 }
 
 #[test]
+fn image_required_fields_and_alpha_have_object_context() {
+    let catalog = r#"<Res><MultiMedias><MultiMedia ID="10" Type="Image" Format="PNG"><MediaFile>a.png</MediaFile></MultiMedia></MultiMedias></Res>"#;
+    for (object, expected_field) in [
+        (r#"<ofd:ImageObject ID="2" ResourceID="10"/>"#, "Boundary"),
+        (
+            r#"<ofd:ImageObject ID="2" Boundary="0 0 1 1"/>"#,
+            "ResourceID",
+        ),
+        (
+            r#"<ofd:ImageObject ID="2" Boundary="0 0 1 1" ResourceID="10" Alpha="-1"/>"#,
+            "Alpha",
+        ),
+    ] {
+        let error = image_page(object, catalog).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidPageObject { object_id: 2, field, ref path, .. } if field == expected_field && path.ends_with("Content.xml")),
+            "expected {expected_field}, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn malformed_image_object_does_not_consume_following_siblings() {
+    let catalog = r#"<Res><MultiMedias><MultiMedia ID="10" Type="Image" Format="PNG"><MediaFile>a.png</MediaFile></MultiMedia></MultiMedias></Res>"#;
+    let objects = r#"<ofd:ImageObject ID="2" ResourceID="10"/><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject>"#;
+    let error = image_page(objects, catalog).unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidPageObject {
+            object_id: 2,
+            field: "Boundary",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn unknown_image_children_fail_closed_while_border_is_retained() {
     let catalog = r#"<Res><MultiMedias><MultiMedia ID="10" Type="Image" Format="PNG"><MediaFile>a.png</MediaFile></MultiMedia></MultiMedias></Res>"#;
     let object = r#"<ofd:ImageObject ID="2" Boundary="0 0 1 1" ResourceID="10"><ofd:Unknown/></ofd:ImageObject>"#;

@@ -173,6 +173,106 @@ fn deltas_use_unicode_scalars_zero_fill_and_standard_g_character_span() {
 }
 
 #[test]
+fn text_code_preserves_whitespace_entities_cdata_and_scalar_accounting() {
+    let objects = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="0" Y="0" DeltaX="g 8 1">  edge  </ofd:TextCode><ofd:TextCode DeltaX="g 3 2">   </ofd:TextCode><ofd:TextCode DeltaX="g 5 3">A&amp;<![CDATA[ B]]>C</ofd:TextCode></ofd:TextObject>"#;
+    let limits = ResourceLimits {
+        max_text_characters_per_page: 16,
+        ..ResourceLimits::default()
+    };
+    let page = page_result(objects, &font_catalog(""), limits).unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+    assert_eq!(text.runs()[0].text(), "  edge  ");
+    assert_eq!(text.runs()[1].text(), "   ");
+    assert_eq!(text.runs()[2].text(), "A& BC");
+    assert_eq!(text.runs()[0].delta_x(), [1.0; 8]);
+    assert_eq!(text.runs()[1].delta_x(), [2.0; 3]);
+    assert_eq!(text.runs()[2].delta_x(), [3.0; 5]);
+
+    let one_over = ResourceLimits {
+        max_text_characters_per_page: 15,
+        ..ResourceLimits::default()
+    };
+    assert!(matches!(
+        page_result(objects, &font_catalog(""), one_over),
+        Err(Error::LimitExceeded(_))
+    ));
+}
+
+#[test]
+fn text_required_fields_and_local_scalars_have_object_context() {
+    let cases = [
+        (
+            r#"<ofd:TextObject ID="2" Font="10" Size="2"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Boundary",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Size="2"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Font",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Size",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2" Stroke="maybe"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Stroke",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2" Fill="maybe"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Fill",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2" Alpha="256"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Alpha",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:Clips TransFlag="maybe"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Clips.TransFlag",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:TextCode X="0" Y="0">A</ofd:TextCode><ofd:CGTransform><ofd:Glyphs>1</ofd:Glyphs></ofd:CGTransform></ofd:TextObject>"#,
+            "CodePosition",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:TextCode X="0" Y="0">A</ofd:TextCode><ofd:CGTransform CodePosition="0"/></ofd:TextObject>"#,
+            "Glyphs",
+        ),
+    ];
+    for (object, expected_field) in cases {
+        let error = page_result(object, &font_catalog(""), ResourceLimits::default()).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidPageObject { object_id: 2, field, ref path, .. } if field == expected_field && path.ends_with("Content.xml")),
+            "expected {expected_field}, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn malformed_text_object_does_not_consume_following_siblings() {
+    let objects = r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject>"#;
+    let error = page_result(objects, &font_catalog(""), ResourceLimits::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidPageObject {
+            object_id: 2,
+            field: "Size",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn truly_malformed_page_xml_remains_an_xml_error() {
+    let objects = r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:TextCode X="0" Y="0">A</ofd:TextObject>"#;
+    assert!(matches!(
+        page_result(objects, &font_catalog(""), ResourceLimits::default()),
+        Err(Error::Xml { ref path, .. }) if path.ends_with("Content.xml")
+    ));
+}
+
+#[test]
 fn rejects_invalid_origins_delta_grammar_and_nonfinite_values_with_context() {
     let cases = [
         (
