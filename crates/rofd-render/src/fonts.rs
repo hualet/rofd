@@ -140,6 +140,23 @@ impl ResolvedFont {
         self.glyph_count
     }
 
+    /// Returns the face glyph identifier for one Unicode scalar, when mapped.
+    pub fn glyph_index(&self, character: char) -> Result<Option<u32>> {
+        self.glyph_for(character)
+    }
+
+    /// Returns the unshaped horizontal-layout advance at `size_mm`.
+    pub fn glyph_advance_mm(&self, glyph_id: u32, size_mm: f64) -> Result<(f64, f64)> {
+        validate_glyph(self, glyph_id)?;
+        if !size_mm.is_finite() || size_mm <= 0.0 {
+            return Err(Error::InvalidFont {
+                identity: self.identity().to_owned(),
+                message: "glyph advance size must be finite and positive".to_owned(),
+            });
+        }
+        self.advance_mm(glyph_id, size_mm)
+    }
+
     fn glyph_for(&self, character: char) -> Result<Option<u32>> {
         let mut metrics = self.metrics.lock().map_err(|_| Error::FontCache {
             message: "face metadata lock is poisoned".to_owned(),

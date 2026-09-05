@@ -11,6 +11,7 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 
 const FONT: &[u8] = include_bytes!("fixtures/fonts/phase3-subset.ttf");
 const LATIN_FONT: &[u8] = include_bytes!("fixtures/fonts/phase3-latin-subset.ttf");
+const COLLECTION: &[u8] = include_bytes!("fixtures/fonts/phase3-subsets.ttc");
 
 fn package(font_file: Option<&[u8]>, text: &str, extra: &str) -> Document {
     package_named(font_file, text, extra, "Noto Sans CJK SC")
@@ -140,6 +141,40 @@ fn explicit_zero_deltas_stay_zero_and_each_text_code_keeps_its_origin() {
         (runs[1].glyphs()[0].x(), runs[1].glyphs()[0].y()),
         (8.0, 9.0)
     );
+}
+
+#[test]
+fn empty_delta_axes_infer_advance_but_numeric_zero_and_short_arrays_are_explicit() {
+    fn glyph_positions(delta_attributes: &str, text_value: &str) -> Vec<(f64, f64)> {
+        let text_code =
+            format!(r#"<ofd:TextCode X="1" Y="2" {delta_attributes}>{text_value}</ofd:TextCode>"#);
+        let document = package(Some(FONT), &text_code, "");
+        position_glyph_runs(
+            &SystemFontResolver::empty(Vec::new(), 1 << 20),
+            &document.font_resource(10).unwrap(),
+            &text_object(&document),
+            &ResourceLimits::default(),
+        )
+        .unwrap()[0]
+            .glyphs()
+            .iter()
+            .map(|glyph| (glyph.x(), glyph.y()))
+            .collect()
+    }
+
+    let absent = glyph_positions("", "AB");
+    let empty = glyph_positions(r#"DeltaX="" DeltaY="""#, "AB");
+    let whitespace = glyph_positions(r#"DeltaX="   " DeltaY=" 	 ""#, "AB");
+    assert_eq!(empty, absent);
+    assert_eq!(whitespace, absent);
+    assert!(absent[1].0 > absent[0].0);
+    assert_eq!(absent[1].1, absent[0].1);
+
+    let explicit_zero = glyph_positions(r#"DeltaX="0" DeltaY="0""#, "AB");
+    assert_eq!(explicit_zero, [(1.0, 2.0), (1.0, 2.0)]);
+
+    let short = glyph_positions(r#"DeltaX="2" DeltaY="1""#, "ABC");
+    assert_eq!(short, [(1.0, 2.0), (3.0, 3.0), (3.0, 3.0)]);
 }
 
 #[test]
@@ -488,6 +523,50 @@ fn invalid_embedded_data_and_face_index_are_structured_errors() {
             "fixture".to_owned(),
             FontSource::System {
                 identity: "fixture".to_owned()
+            }
+        ),
+        Err(Error::InvalidFont { .. })
+    ));
+}
+
+#[test]
+fn controlled_collection_selects_face_index_and_exposes_lookup_and_advance() {
+    let owned: Arc<[u8]> = Arc::from(COLLECTION.to_vec());
+    let latin = ResolvedFont::from_bytes(
+        Arc::clone(&owned),
+        0,
+        "collection-face-0".to_owned(),
+        FontSource::System {
+            identity: "collection-face-0".to_owned(),
+        },
+    )
+    .unwrap();
+    let cjk = ResolvedFont::from_bytes(
+        Arc::clone(&owned),
+        1,
+        "collection-face-1".to_owned(),
+        FontSource::System {
+            identity: "collection-face-1".to_owned(),
+        },
+    )
+    .unwrap();
+
+    assert!(latin.glyph_index('A').unwrap().is_some());
+    assert_eq!(latin.glyph_index('中').unwrap(), None);
+    let cjk_glyph = cjk.glyph_index('中').unwrap().unwrap();
+    let advance = cjk.glyph_advance_mm(cjk_glyph, 4.0).unwrap();
+    assert!(advance.0.is_finite() && advance.0 > 0.0);
+    assert_eq!(advance.1, 0.0);
+    assert_eq!(cjk.face_index(), 1);
+    assert!(Arc::ptr_eq(&cjk.encoded_bytes_arc(), &owned));
+
+    assert!(matches!(
+        ResolvedFont::from_bytes(
+            owned,
+            2,
+            "collection-face-2".to_owned(),
+            FontSource::System {
+                identity: "collection-face-2".to_owned(),
             }
         ),
         Err(Error::InvalidFont { .. })

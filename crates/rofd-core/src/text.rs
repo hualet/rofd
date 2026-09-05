@@ -38,12 +38,12 @@ impl TextCode {
         &self.delta_y
     }
 
-    /// Returns whether the source run explicitly supplied `DeltaX`.
+    /// Returns whether the source run supplied a nonempty `DeltaX` value.
     pub fn has_explicit_delta_x(&self) -> bool {
         self.has_delta_x
     }
 
-    /// Returns whether the source run explicitly supplied `DeltaY`.
+    /// Returns whether the source run supplied a nonempty `DeltaY` value.
     pub fn has_explicit_delta_y(&self) -> bool {
         self.has_delta_y
     }

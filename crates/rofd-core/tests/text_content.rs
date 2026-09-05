@@ -96,7 +96,7 @@ fn exposes_validated_text_runs_glyph_maps_clips_and_effective_style() {
     assert_eq!(text.runs()[0].delta_x(), [1.0, 0.5, 0.5, 0.5]);
     assert_eq!(text.runs()[0].delta_y(), [0.0, 0.0, 0.0, 0.0]);
     assert!(text.runs()[0].has_explicit_delta_x());
-    assert!(text.runs()[0].has_explicit_delta_y());
+    assert!(!text.runs()[0].has_explicit_delta_y());
     assert!(!text.runs()[1].has_explicit_delta_x());
     assert!(!text.runs()[1].has_explicit_delta_y());
     assert_eq!((text.runs()[1].x(), text.runs()[1].y()), (1.0, 7.0));
@@ -104,6 +104,26 @@ fn exposes_validated_text_runs_glyph_maps_clips_and_effective_style() {
     assert_eq!(text.glyph_maps()[0].code_position(), 1);
     assert_eq!(text.glyph_maps()[0].code_count(), 2);
     assert_eq!(text.glyph_maps()[0].glyphs(), [10, 11]);
+}
+
+#[test]
+fn empty_delta_attributes_are_absent_but_nonempty_short_arrays_are_explicit() {
+    let objects = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2">
+      <ofd:TextCode X="0" Y="0" DeltaX="" DeltaY="   ">AB</ofd:TextCode>
+      <ofd:TextCode DeltaX="0" DeltaY="1">CD</ofd:TextCode>
+    </ofd:TextObject>"#;
+    let document = package(objects, &font_catalog(""), ResourceLimits::default());
+    let page = document.page(0).unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+
+    assert!(!text.runs()[0].has_explicit_delta_x());
+    assert!(!text.runs()[0].has_explicit_delta_y());
+    assert!(text.runs()[1].has_explicit_delta_x());
+    assert!(text.runs()[1].has_explicit_delta_y());
+    assert_eq!(text.runs()[1].delta_x(), [0.0, 0.0]);
+    assert_eq!(text.runs()[1].delta_y(), [1.0, 0.0]);
 }
 
 #[test]

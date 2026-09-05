@@ -750,8 +750,14 @@ impl ConversionContext<'_> {
                 "page text character",
             )?;
             let delta_count = character_count;
-            let has_delta_x = run.delta_x.is_some();
-            let has_delta_y = run.delta_y.is_some();
+            let has_delta_x = run
+                .delta_x
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty());
+            let has_delta_y = run
+                .delta_y
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty());
             let delta_x = parse_delta(
                 run.delta_x.as_deref(),
                 delta_count,
