@@ -110,6 +110,14 @@ impl DisplayList {
     fn lower_object(&mut self, object: &PageObject, source: LayerSource) -> Result<()> {
         match object {
             PageObject::Path(path) => self.lower_path(path),
+            PageObject::Text(text) => {
+                self.push_unsupported(text.object_id(), UnsupportedObjectKind::Text, source);
+                Ok(())
+            }
+            PageObject::Image(image) => {
+                self.push_unsupported(image.object_id(), UnsupportedObjectKind::Image, source);
+                Ok(())
+            }
             PageObject::Group(group) => {
                 for child in group.objects() {
                     self.lower_object(child, source)?;
@@ -117,15 +125,24 @@ impl DisplayList {
                 Ok(())
             }
             PageObject::Unsupported(object) => {
-                self.diagnostics.push(RenderDiagnostic {
-                    object_id: object.object_id(),
-                    kind: object.kind(),
-                    source,
-                    message: unsupported_message(object.kind()).to_owned(),
-                });
+                self.push_unsupported(object.object_id(), object.kind(), source);
                 Ok(())
             }
         }
+    }
+
+    fn push_unsupported(
+        &mut self,
+        object_id: u64,
+        kind: UnsupportedObjectKind,
+        source: LayerSource,
+    ) {
+        self.diagnostics.push(RenderDiagnostic {
+            object_id,
+            kind,
+            source,
+            message: unsupported_message(kind).to_owned(),
+        });
     }
 
     fn lower_path(&mut self, path: &PathObject) -> Result<()> {

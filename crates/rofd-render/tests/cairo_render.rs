@@ -25,12 +25,17 @@ fn minimal_ofd(page_xml: &str) -> Vec<u8> {
 <ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
   <ofd:CommonData>
     <ofd:PageArea><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:PageArea>
+    <ofd:DocumentRes>Res.xml</ofd:DocumentRes>
     <ofd:MaxUnitID>100</ofd:MaxUnitID>
   </ofd:CommonData>
   <ofd:Pages><ofd:Page ID="100" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages>
 </ofd:Document>"#,
         ),
         ("Doc_0/Pages/Page_0/Content.xml", page_xml),
+        (
+            "Doc_0/Res.xml",
+            r#"<Res><Fonts><Font ID="900" FontName="Fixture"/></Fonts></Res>"#,
+        ),
     ];
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     for (name, contents) in entries {
@@ -446,7 +451,7 @@ fn rejects_arc_geometry_that_overflows_during_endpoint_conversion() {
 fn rotation_background_and_report_diagnostics_are_applied() {
     let page = open_page(
         "10 20 20 10",
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content>"#,
     );
     let options = RenderOptions {
         dpi: 25.4,

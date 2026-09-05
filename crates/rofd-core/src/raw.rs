@@ -55,6 +55,8 @@ pub(crate) struct ResourceRoot {
     pub(crate) fonts: Option<Fonts>,
     #[serde(rename = "MultiMedias")]
     pub(crate) multi_medias: Option<MultiMedias>,
+    #[serde(rename = "DrawParams")]
+    pub(crate) draw_params: Option<DrawParams>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +95,36 @@ pub(crate) struct MultiMediaEntry {
     pub(crate) format: Option<String>,
     #[serde(rename = "MediaFile")]
     pub(crate) media_file: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DrawParams {
+    #[serde(rename = "DrawParam", default)]
+    pub(crate) entries: Vec<DrawParamEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DrawParamEntry {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "Relative")]
+    pub(crate) relative: Option<String>,
+    #[serde(rename = "LineWidth")]
+    pub(crate) line_width: Option<String>,
+    #[serde(rename = "Join")]
+    pub(crate) line_join: Option<String>,
+    #[serde(rename = "Cap")]
+    pub(crate) line_cap: Option<String>,
+    #[serde(rename = "DashOffset")]
+    pub(crate) dash_offset: Option<String>,
+    #[serde(rename = "DashPattern")]
+    pub(crate) dash_pattern: Option<String>,
+    #[serde(rename = "MiterLimit")]
+    pub(crate) miter_limit: Option<String>,
+    #[serde(rename = "FillColor")]
+    pub(crate) fill_color: Option<PaintColor>,
+    #[serde(rename = "StrokeColor")]
+    pub(crate) stroke_color: Option<PaintColor>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,9 +198,9 @@ pub(crate) enum GraphicUnit {
     #[serde(rename = "PageBlock")]
     Group(PageBlock),
     #[serde(rename = "TextObject")]
-    Text(ObjectReference),
+    Text(TextObjectEnvelope),
     #[serde(rename = "ImageObject")]
-    Image(ObjectReference),
+    Image(ImageObjectEnvelope),
     #[serde(rename = "CompositeObject")]
     Composite(ObjectReference),
 }
@@ -185,6 +217,22 @@ pub(crate) struct PageBlock {
 pub(crate) struct ObjectReference {
     #[serde(rename = "ID")]
     pub(crate) id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TextObjectEnvelope {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(skip)]
+    pub(crate) object: Option<Box<TextObject>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageObjectEnvelope {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(skip)]
+    pub(crate) object: Option<Box<ImageObject>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +253,18 @@ pub(crate) struct PathObject {
     pub(crate) fill_rule: Option<String>,
     #[serde(rename = "Alpha")]
     pub(crate) alpha: Option<String>,
+    #[serde(rename = "DrawParam")]
+    pub(crate) draw_param: Option<String>,
+    #[serde(rename = "Join")]
+    pub(crate) line_join: Option<String>,
+    #[serde(rename = "Cap")]
+    pub(crate) line_cap: Option<String>,
+    #[serde(rename = "DashOffset")]
+    pub(crate) dash_offset: Option<String>,
+    #[serde(rename = "DashPattern")]
+    pub(crate) dash_pattern: Option<String>,
+    #[serde(rename = "MiterLimit")]
+    pub(crate) miter_limit: Option<String>,
     #[serde(rename = "AbbreviatedData")]
     pub(crate) abbreviated_data: String,
     #[serde(rename = "StrokeColor")]
@@ -213,6 +273,100 @@ pub(crate) struct PathObject {
     pub(crate) fill_color: Option<PaintColor>,
     #[serde(rename = "Clips")]
     pub(crate) clips: Option<Clips>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TextObject {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "Boundary")]
+    pub(crate) boundary: String,
+    #[serde(rename = "CTM")]
+    pub(crate) transform: Option<String>,
+    #[serde(rename = "Font")]
+    pub(crate) font: String,
+    #[serde(rename = "Size")]
+    pub(crate) size: String,
+    #[serde(rename = "Stroke")]
+    pub(crate) stroke: Option<String>,
+    #[serde(rename = "Fill")]
+    pub(crate) fill: Option<String>,
+    #[serde(rename = "Alpha")]
+    pub(crate) alpha: Option<String>,
+    #[serde(rename = "DrawParam")]
+    pub(crate) draw_param: Option<String>,
+    #[serde(rename = "LineWidth")]
+    pub(crate) line_width: Option<String>,
+    #[serde(rename = "Join")]
+    pub(crate) line_join: Option<String>,
+    #[serde(rename = "Cap")]
+    pub(crate) line_cap: Option<String>,
+    #[serde(rename = "DashOffset")]
+    pub(crate) dash_offset: Option<String>,
+    #[serde(rename = "DashPattern")]
+    pub(crate) dash_pattern: Option<String>,
+    #[serde(rename = "MiterLimit")]
+    pub(crate) miter_limit: Option<String>,
+    #[serde(rename = "FillColor")]
+    pub(crate) fill_color: Option<PaintColor>,
+    #[serde(rename = "StrokeColor")]
+    pub(crate) stroke_color: Option<PaintColor>,
+    #[serde(rename = "Clips")]
+    pub(crate) clips: Option<Clips>,
+    #[serde(rename = "TextCode", default)]
+    pub(crate) text_codes: Vec<TextCode>,
+    #[serde(rename = "CGTransform", default)]
+    pub(crate) cg_transforms: Vec<CgTransform>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TextCode {
+    #[serde(rename = "$value", default)]
+    pub(crate) text: String,
+    #[serde(rename = "X")]
+    pub(crate) x: Option<String>,
+    #[serde(rename = "Y")]
+    pub(crate) y: Option<String>,
+    #[serde(rename = "DeltaX")]
+    pub(crate) delta_x: Option<String>,
+    #[serde(rename = "DeltaY")]
+    pub(crate) delta_y: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct CgTransform {
+    #[serde(rename = "CodePosition")]
+    pub(crate) code_position: String,
+    #[serde(rename = "CodeCount")]
+    pub(crate) code_count: Option<String>,
+    #[serde(rename = "GlyphCount")]
+    pub(crate) glyph_count: Option<String>,
+    #[serde(rename = "Glyphs")]
+    pub(crate) glyphs: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageObject {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "Boundary")]
+    pub(crate) boundary: String,
+    #[serde(rename = "CTM")]
+    pub(crate) transform: Option<String>,
+    #[serde(rename = "ResourceID")]
+    pub(crate) resource_id: String,
+    #[serde(rename = "Alpha")]
+    pub(crate) alpha: Option<String>,
+    #[serde(rename = "DrawParam")]
+    pub(crate) draw_param: Option<String>,
+    #[serde(rename = "Substitution")]
+    pub(crate) substitution: Option<String>,
+    #[serde(rename = "ImageMask")]
+    pub(crate) image_mask: Option<String>,
+    #[serde(rename = "Clips")]
+    pub(crate) clips: Option<Clips>,
+    #[serde(rename = "Border")]
+    pub(crate) border: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

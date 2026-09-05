@@ -97,6 +97,18 @@ pub enum Error {
         /// Validation diagnostic.
         message: String,
     },
+    /// A page object contains a value that cannot be represented safely.
+    #[error("invalid page object {object_id} in {path}: {field}: {message}")]
+    InvalidPageObject {
+        /// Package path of the page or template containing the object.
+        path: String,
+        /// OFD object identifier.
+        object_id: u64,
+        /// Invalid field or child name.
+        field: &'static str,
+        /// Validation diagnostic.
+        message: String,
+    },
     /// A configured resource limit was exceeded.
     #[error("resource limit exceeded: {0}")]
     LimitExceeded(String),

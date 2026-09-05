@@ -25,12 +25,17 @@ fn minimal_ofd(page_xml: &str) -> Vec<u8> {
 <ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
   <ofd:CommonData>
     <ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>
+    <ofd:DocumentRes>Res.xml</ofd:DocumentRes>
     <ofd:MaxUnitID>100</ofd:MaxUnitID>
   </ofd:CommonData>
   <ofd:Pages><ofd:Page ID="100" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages>
 </ofd:Document>"#,
         ),
         ("Doc_0/Pages/Page_0/Content.xml", page_xml),
+        (
+            "Doc_0/Res.xml",
+            r#"<Res><Fonts><Font ID="900" FontName="Fixture"/></Fonts><MultiMedias><MultiMedia ID="901" Type="Image" Format="PNG"><MediaFile>unused.png</MediaFile></MultiMedia></MultiMedias></Res>"#,
+        ),
     ];
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     for (name, contents) in entries {
@@ -84,19 +89,23 @@ fn template_effective_layer_order_and_sources_flow_into_display_commands_and_dia
         ),
         (
             "Doc_0/Document.xml",
-            r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:PageArea><ofd:TemplatePage ID="10" BaseLoc="Templates/Back.xml"/><ofd:TemplatePage ID="20" BaseLoc="Templates/Front.xml" ZOrder="Foreground"/></ofd:CommonData><ofd:Pages><ofd:Page ID="100" BaseLoc="Pages/Page.xml"/></ofd:Pages></ofd:Document>"#,
+            r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:PageArea><ofd:DocumentRes>Res.xml</ofd:DocumentRes><ofd:TemplatePage ID="10" BaseLoc="Templates/Back.xml"/><ofd:TemplatePage ID="20" BaseLoc="Templates/Front.xml" ZOrder="Foreground"/></ofd:CommonData><ofd:Pages><ofd:Page ID="100" BaseLoc="Pages/Page.xml"/></ofd:Pages></ofd:Document>"#,
         ),
         (
             "Doc_0/Pages/Page.xml",
-            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:Area><ofd:Template TemplateID="10"/><ofd:Template TemplateID="20"/><ofd:Content><ofd:Layer ID="100"><ofd:PathObject ID="101" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 3 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PageBlock ID="102"><ofd:TextObject ID="103"/></ofd:PageBlock></ofd:Layer></ofd:Content></ofd:Page>"#,
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:Area><ofd:Template TemplateID="10"/><ofd:Template TemplateID="20"/><ofd:Content><ofd:Layer ID="100"><ofd:PathObject ID="101" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 3 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PageBlock ID="102"><ofd:TextObject ID="103" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject></ofd:PageBlock></ofd:Layer></ofd:Content></ofd:Page>"#,
         ),
         (
             "Doc_0/Templates/Back.xml",
-            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="10"><ofd:PathObject ID="11" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 1 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PageBlock ID="13"><ofd:TextObject ID="12"/></ofd:PageBlock></ofd:Layer></ofd:Content></ofd:Page>"#,
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="10"><ofd:PathObject ID="11" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 1 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PageBlock ID="13"><ofd:TextObject ID="12" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject></ofd:PageBlock></ofd:Layer></ofd:Content></ofd:Page>"#,
         ),
         (
             "Doc_0/Templates/Front.xml",
             r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="20"><ofd:PathObject ID="21" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 5 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content></ofd:Page>"#,
+        ),
+        (
+            "Doc_0/Res.xml",
+            r#"<Res><Fonts><Font ID="900" FontName="Fixture"/></Fonts></Res>"#,
         ),
     ];
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
@@ -299,9 +308,9 @@ fn direct_page_layers_follow_effective_category_order() {
 fn unsupported_nodes_produce_diagnostics_and_no_drawing_commands() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1">
-  <ofd:TextObject ID="2"/>
+  <ofd:TextObject ID="2" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject>
   <ofd:PageBlock ID="3">
-    <ofd:ImageObject ID="4"/>
+    <ofd:ImageObject ID="4" Boundary="0 0 1 1" ResourceID="901"/>
     <ofd:CompositeObject ID="5"/>
   </ofd:PageBlock>
 </ofd:Layer></ofd:Content>"#,

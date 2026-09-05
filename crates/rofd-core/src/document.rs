@@ -3,11 +3,11 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::container::Container;
 use crate::path::PackagePath;
-use crate::raw::{CommonData, DocumentRoot, OfdRoot};
+use crate::raw::{self, CommonData, DocumentRoot, OfdRoot};
 use crate::{Error, LoadOptions, Result};
 
 /// Descriptive metadata stored in an OFD document.
@@ -346,6 +346,7 @@ impl Document {
             .map_err(|error| with_error_path(error, &reference.path))?;
         let (direct_layers, direct_usage) = crate::content::convert_layers(
             page.content,
+            self,
             &self.0.limits,
             reference.path.as_str(),
             crate::LayerSource::Page,
@@ -412,6 +413,18 @@ impl Document {
         Ok(self.0.resource_catalog.get_or_init(|| Arc::clone(&parsed)))
     }
 
+    pub(crate) fn resource_kind(&self, id: u64) -> Result<crate::ResourceKind> {
+        self.resource_catalog()?.kind(id)
+    }
+
+    pub(crate) fn image_resource_format(&self, id: u64) -> Result<crate::ImageFormat> {
+        self.resource_catalog()?.image_format(id)
+    }
+
+    pub(crate) fn draw_param(&self, id: u64) -> Result<crate::paint::PaintParameters> {
+        self.resource_catalog()?.draw_param(id)
+    }
+
     fn resolve_template(
         &self,
         id: u64,
@@ -458,6 +471,7 @@ impl Document {
                 parse_page_xml(&self.0.container, &reference.path, &self.0.limits)?;
             let (direct_layers, direct_usage) = crate::content::convert_layers(
                 root.content,
+                self,
                 &self.0.limits,
                 reference.path.as_str(),
                 crate::LayerSource::Template(id),
@@ -602,6 +616,24 @@ fn validate_effective_usage(
             usage.path_commands, limits.max_path_commands
         )));
     }
+    if usage.text_characters > limits.max_text_characters_per_page {
+        return Err(Error::LimitExceeded(format!(
+            "effective page text character count {} exceeds limit {}",
+            usage.text_characters, limits.max_text_characters_per_page
+        )));
+    }
+    if usage.glyphs > limits.max_glyphs_per_page {
+        return Err(Error::LimitExceeded(format!(
+            "effective page glyph count {} exceeds limit {}",
+            usage.glyphs, limits.max_glyphs_per_page
+        )));
+    }
+    if usage.text_expansion_entries > limits.max_text_expansion_entries {
+        return Err(Error::LimitExceeded(format!(
+            "effective page text expansion count {} exceeds limit {}",
+            usage.text_expansion_entries, limits.max_text_expansion_entries
+        )));
+    }
     Ok(())
 }
 
@@ -633,17 +665,171 @@ fn parse_xml<T: DeserializeOwned>(
     })
 }
 
-fn parse_page_xml<T: DeserializeOwned>(
+fn parse_page_xml(
     container: &Container,
     path: &PackagePath,
     limits: &crate::ResourceLimits,
-) -> Result<T> {
+) -> Result<raw::PageRoot> {
     let bytes = container.read(path)?;
     preflight_page_xml(&bytes, path, limits)?;
-    serde_xml_rs::from_reader(bytes.as_slice()).map_err(|error| Error::Xml {
+    let (text_objects, image_objects) = extract_rich_objects(&bytes, path)?;
+    let mut deserializer = serde_xml_rs::Deserializer::new_from_reader(bytes.as_slice())
+        .non_contiguous_seq_elements(true);
+    let mut page = raw::PageRoot::deserialize(&mut deserializer).map_err(|error| Error::Xml {
         path: path.as_str().to_owned(),
         message: error.to_string(),
-    })
+    })?;
+    inject_rich_objects(&mut page, text_objects, image_objects, path)?;
+    Ok(page)
+}
+
+fn extract_rich_objects(
+    bytes: &[u8],
+    path: &PackagePath,
+) -> Result<(Vec<raw::TextObject>, Vec<raw::ImageObject>)> {
+    use xml::reader::{EventReader, XmlEvent};
+
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Text,
+        Image,
+    }
+
+    let mut capture = None::<(Kind, usize, xml::EventWriter<Vec<u8>>)>;
+    let mut texts = Vec::new();
+    let mut images = Vec::new();
+    let mut elements = Vec::<String>::new();
+    for event in EventReader::new(bytes) {
+        let event = event.map_err(|error| xml_error(path, error))?;
+        if capture.is_none() {
+            if let XmlEvent::StartElement { name, .. } = &event {
+                let is_graphic_unit = matches!(
+                    elements.last().map(String::as_str),
+                    Some("Layer" | "PageBlock")
+                );
+                let kind = is_graphic_unit
+                    .then_some(match name.local_name.as_str() {
+                        "TextObject" => Some(Kind::Text),
+                        "ImageObject" => Some(Kind::Image),
+                        _ => None,
+                    })
+                    .flatten();
+                if let Some(kind) = kind {
+                    capture = Some((kind, 0, xml::EventWriter::new(Vec::new())));
+                }
+            }
+        }
+        if let XmlEvent::StartElement { name, .. } = &event {
+            elements.push(name.local_name.clone());
+        }
+        if let Some((_, depth, writer)) = &mut capture {
+            if matches!(event, XmlEvent::StartElement { .. }) {
+                *depth += 1;
+            }
+            if let Some(writer_event) = event.as_writer_event() {
+                writer.write(writer_event).map_err(|error| Error::Xml {
+                    path: path.as_str().to_owned(),
+                    message: error.to_string(),
+                })?;
+            }
+            if matches!(event, XmlEvent::EndElement { .. }) {
+                *depth -= 1;
+                if *depth == 0 {
+                    let (kind, _, writer) = capture.take().expect("capture exists");
+                    let xml = writer.into_inner();
+                    let mut deserializer =
+                        serde_xml_rs::Deserializer::new_from_reader(xml.as_slice())
+                            .non_contiguous_seq_elements(true);
+                    match kind {
+                        Kind::Text => texts.push(raw::TextObject::deserialize(&mut deserializer)),
+                        Kind::Image => {
+                            images.push(raw::ImageObject::deserialize(&mut deserializer))
+                        }
+                    }
+                }
+            }
+        }
+        if matches!(event, XmlEvent::EndElement { .. }) {
+            elements.pop();
+        }
+    }
+    let map_error = |error: serde_xml_rs::Error| Error::Xml {
+        path: path.as_str().to_owned(),
+        message: error.to_string(),
+    };
+    Ok((
+        texts
+            .into_iter()
+            .collect::<std::result::Result<_, _>>()
+            .map_err(map_error)?,
+        images
+            .into_iter()
+            .collect::<std::result::Result<_, _>>()
+            .map_err(map_error)?,
+    ))
+}
+
+fn inject_rich_objects(
+    page: &mut raw::PageRoot,
+    texts: Vec<raw::TextObject>,
+    images: Vec<raw::ImageObject>,
+    path: &PackagePath,
+) -> Result<()> {
+    fn visit(
+        objects: &mut [raw::GraphicUnit],
+        texts: &mut impl Iterator<Item = raw::TextObject>,
+        images: &mut impl Iterator<Item = raw::ImageObject>,
+        path: &PackagePath,
+    ) -> Result<()> {
+        for object in objects {
+            match object {
+                raw::GraphicUnit::Text(text) => {
+                    let parsed = texts.next().ok_or_else(|| Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: "missing parsed TextObject payload".to_owned(),
+                    })?;
+                    if parsed.id != text.id {
+                        return Err(Error::InvalidStructure {
+                            path: path.as_str().to_owned(),
+                            message: "TextObject extraction order mismatch".to_owned(),
+                        });
+                    }
+                    text.object = Some(Box::new(parsed));
+                }
+                raw::GraphicUnit::Image(image) => {
+                    let parsed = images.next().ok_or_else(|| Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: "missing parsed ImageObject payload".to_owned(),
+                    })?;
+                    if parsed.id != image.id {
+                        return Err(Error::InvalidStructure {
+                            path: path.as_str().to_owned(),
+                            message: "ImageObject extraction order mismatch".to_owned(),
+                        });
+                    }
+                    image.object = Some(Box::new(parsed));
+                }
+                raw::GraphicUnit::Group(group) => visit(&mut group.objects, texts, images, path)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    let mut texts = texts.into_iter();
+    let mut images = images.into_iter();
+    if let Some(content) = &mut page.content {
+        for layer in &mut content.layers {
+            visit(&mut layer.objects, &mut texts, &mut images, path)?;
+        }
+    }
+    if texts.next().is_some() || images.next().is_some() {
+        return Err(Error::InvalidStructure {
+            path: path.as_str().to_owned(),
+            message: "rich object extraction did not match parsed page structure".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn preflight_xml_depth(bytes: &[u8], path: &PackagePath, max_xml_depth: usize) -> Result<()> {
@@ -679,6 +865,10 @@ fn preflight_page_xml(
         Layer,
         PageBlock,
         PathObject,
+        TextObject,
+        ImageObject,
+        ImageBorder,
+        TextCode,
         Clips,
         Clip,
         ClipArea,
@@ -716,8 +906,56 @@ fn preflight_page_xml(
                             | "ImageObject"
                             | "CompositeObject"
                     );
-                let is_clips =
-                    matches!(parent, Some(ElementMarker::PathObject)) && name.local_name == "Clips";
+                let is_clips = matches!(
+                    parent,
+                    Some(
+                        ElementMarker::PathObject
+                            | ElementMarker::TextObject
+                            | ElementMarker::ImageObject
+                    )
+                ) && name.local_name == "Clips";
+                let is_text_child = matches!(parent, Some(ElementMarker::TextObject))
+                    && matches!(
+                        name.local_name.as_str(),
+                        "FillColor" | "StrokeColor" | "Clips" | "TextCode" | "CGTransform"
+                    );
+                let is_image_child = matches!(parent, Some(ElementMarker::ImageObject))
+                    && matches!(name.local_name.as_str(), "Clips" | "Border");
+                let is_path_child = matches!(parent, Some(ElementMarker::PathObject))
+                    && matches!(
+                        name.local_name.as_str(),
+                        "AbbreviatedData" | "StrokeColor" | "FillColor" | "Clips"
+                    );
+                if matches!(parent, Some(ElementMarker::PathObject)) && !is_path_child {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: format!("unknown PathObject child {}", name.local_name),
+                    });
+                }
+                if matches!(parent, Some(ElementMarker::TextObject)) && !is_text_child {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: format!("unknown TextObject child {}", name.local_name),
+                    });
+                }
+                if matches!(parent, Some(ElementMarker::ImageObject)) && !is_image_child {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: format!("unknown ImageObject child {}", name.local_name),
+                    });
+                }
+                if matches!(parent, Some(ElementMarker::ImageBorder)) {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: format!("unknown Border child {}", name.local_name),
+                    });
+                }
+                if matches!(parent, Some(ElementMarker::TextCode)) {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: format!("TextCode contains child {}", name.local_name),
+                    });
+                }
                 let is_clip =
                     matches!(parent, Some(ElementMarker::Clips)) && name.local_name == "Clip";
                 let is_clip_area =
@@ -764,6 +1002,16 @@ fn preflight_page_xml(
                     _ if is_graphic_unit && name.local_name == "PathObject" => {
                         ElementMarker::PathObject
                     }
+                    _ if is_graphic_unit && name.local_name == "TextObject" => {
+                        ElementMarker::TextObject
+                    }
+                    _ if is_graphic_unit && name.local_name == "ImageObject" => {
+                        ElementMarker::ImageObject
+                    }
+                    _ if is_image_child && name.local_name == "Border" => {
+                        ElementMarker::ImageBorder
+                    }
+                    _ if is_text_child && name.local_name == "TextCode" => ElementMarker::TextCode,
                     _ if is_clips => ElementMarker::Clips,
                     _ if is_clip => ElementMarker::Clip,
                     _ if is_clip_area => ElementMarker::ClipArea,
@@ -771,7 +1019,8 @@ fn preflight_page_xml(
                 });
             }
             XmlEvent::EndElement { .. } => {
-                if matches!(elements.pop(), Some(ElementMarker::PageBlock)) {
+                let ended = elements.pop();
+                if matches!(ended, Some(ElementMarker::PageBlock)) {
                     page_block_depth = page_block_depth.saturating_sub(1);
                 }
             }

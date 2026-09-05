@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::container::Container;
+use crate::paint::PaintParameters;
 use crate::path::PackagePath;
-use crate::raw::{FontEntry, MultiMediaEntry, ResourceRoot};
-use crate::{Error, ResourceLimits, Result};
+use crate::raw::{DrawParamEntry, FontEntry, MultiMediaEntry, ResourceRoot};
+use crate::{Color, Error, LineCap, LineJoin, ResourceLimits, Result};
 
 /// A document resource category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,6 +15,8 @@ pub enum ResourceKind {
     Font,
     /// An encoded raster image resource.
     Image,
+    /// A reusable set of drawing parameters.
+    DrawParam,
 }
 
 /// An encoded image format supported by the resource index.
@@ -97,6 +100,7 @@ pub(crate) struct ResourceCatalog {
 enum ResourceEntry {
     Font(FontRecord),
     Image(ImageRecord),
+    DrawParam(DrawParamRecord),
 }
 
 #[derive(Debug)]
@@ -114,6 +118,14 @@ struct ImageRecord {
     id: u64,
     format: ImageFormat,
     file: Asset,
+    declaration_path: String,
+}
+
+#[derive(Debug)]
+struct DrawParamRecord {
+    id: u64,
+    relative: Option<u64>,
+    values: PaintParameters,
     declaration_path: String,
 }
 
@@ -196,6 +208,13 @@ impl ResourceCatalog {
             {
                 catalog.insert_image(image, &root.base_loc, path)?;
             }
+            for draw_param in root
+                .draw_params
+                .into_iter()
+                .flat_map(|params| params.entries)
+            {
+                catalog.insert_draw_param(draw_param, path)?;
+            }
         }
         Ok(catalog)
     }
@@ -216,6 +235,11 @@ impl ResourceCatalog {
             Some(ResourceEntry::Image(_)) => {
                 Err(kind_mismatch(id, ResourceKind::Font, ResourceKind::Image))
             }
+            Some(ResourceEntry::DrawParam(_)) => Err(kind_mismatch(
+                id,
+                ResourceKind::Font,
+                ResourceKind::DrawParam,
+            )),
             None => Err(Error::UnknownResource { object_id: id }),
         }
     }
@@ -235,6 +259,11 @@ impl ResourceCatalog {
             Some(ResourceEntry::Font(_)) => {
                 Err(kind_mismatch(id, ResourceKind::Image, ResourceKind::Font))
             }
+            Some(ResourceEntry::DrawParam(_)) => Err(kind_mismatch(
+                id,
+                ResourceKind::Image,
+                ResourceKind::DrawParam,
+            )),
             None => Err(Error::UnknownResource { object_id: id }),
         }
     }
@@ -312,6 +341,107 @@ impl ResourceCatalog {
         )
     }
 
+    fn insert_draw_param(&mut self, entry: DrawParamEntry, path: &PackagePath) -> Result<()> {
+        let id = parse_id(&entry.id, path)?;
+        let relative = entry
+            .relative
+            .as_deref()
+            .map(|value| parse_id(value, path))
+            .transpose()?;
+        let values = PaintParameters {
+            line_width: parse_positive(entry.line_width.as_deref(), "LineWidth", id, path)?,
+            line_join: parse_join(entry.line_join.as_deref(), id, path)?,
+            line_cap: parse_cap(entry.line_cap.as_deref(), id, path)?,
+            dash_offset: parse_nonnegative(entry.dash_offset.as_deref(), "DashOffset", id, path)?,
+            dash_pattern: parse_dash_pattern(entry.dash_pattern.as_deref(), id, path)?,
+            miter_limit: parse_positive(entry.miter_limit.as_deref(), "MiterLimit", id, path)?,
+            fill_color: entry
+                .fill_color
+                .as_ref()
+                .map(parse_color)
+                .transpose()
+                .map_err(|message| invalid_resource(path, Some(id), "FillColor", message))?,
+            stroke_color: entry
+                .stroke_color
+                .as_ref()
+                .map(parse_color)
+                .transpose()
+                .map_err(|message| invalid_resource(path, Some(id), "StrokeColor", message))?,
+        };
+        self.insert(
+            id,
+            ResourceEntry::DrawParam(DrawParamRecord {
+                id,
+                relative,
+                values,
+                declaration_path: path.as_str().to_owned(),
+            }),
+            path,
+        )
+    }
+
+    pub(crate) fn kind(&self, id: u64) -> Result<ResourceKind> {
+        self.entries
+            .get(&id)
+            .map(ResourceEntry::kind)
+            .ok_or(Error::UnknownResource { object_id: id })
+    }
+
+    pub(crate) fn image_format(&self, id: u64) -> Result<ImageFormat> {
+        match self.entries.get(&id) {
+            Some(ResourceEntry::Image(image)) => Ok(image.format),
+            Some(other) => Err(kind_mismatch(id, ResourceKind::Image, other.kind())),
+            None => Err(Error::UnknownResource { object_id: id }),
+        }
+    }
+
+    pub(crate) fn draw_param(&self, id: u64) -> Result<PaintParameters> {
+        let mut positions = HashMap::new();
+        let mut chain = Vec::new();
+        let mut current = id;
+        loop {
+            if let Some(position) = positions.insert(current, chain.len()) {
+                let mut cycle = chain[position..]
+                    .iter()
+                    .map(|record: &&DrawParamRecord| record.id.to_string())
+                    .collect::<Vec<_>>();
+                cycle.push(current.to_string());
+                return Err(Error::InvalidStructure {
+                    path: self
+                        .entries
+                        .get(&current)
+                        .map(ResourceEntry::declaration_path)
+                        .unwrap_or("resource catalog")
+                        .to_owned(),
+                    message: format!("DrawParam Relative cycle: {}", cycle.join(" -> ")),
+                });
+            }
+            let entry = self
+                .entries
+                .get(&current)
+                .ok_or(Error::UnknownResource { object_id: current })?;
+            let ResourceEntry::DrawParam(record) = entry else {
+                return Err(kind_mismatch(
+                    current,
+                    ResourceKind::DrawParam,
+                    entry.kind(),
+                ));
+            };
+            debug_assert_eq!(record.id, current);
+            chain.push(record);
+            match record.relative {
+                Some(relative) => current = relative,
+                None => break,
+            }
+        }
+
+        let mut resolved = PaintParameters::default();
+        for record in chain.into_iter().rev() {
+            resolved.inherit(&record.values);
+        }
+        Ok(resolved)
+    }
+
     fn insert(&mut self, id: u64, entry: ResourceEntry, path: &PackagePath) -> Result<()> {
         use std::collections::hash_map::Entry;
 
@@ -336,6 +466,7 @@ impl ResourceEntry {
         match self {
             Self::Font(_) => ResourceKind::Font,
             Self::Image(_) => ResourceKind::Image,
+            Self::DrawParam(_) => ResourceKind::DrawParam,
         }
     }
 
@@ -343,6 +474,7 @@ impl ResourceEntry {
         match self {
             Self::Font(font) => &font.declaration_path,
             Self::Image(image) => &image.declaration_path,
+            Self::DrawParam(draw_param) => &draw_param.declaration_path,
         }
     }
 }
@@ -360,6 +492,7 @@ fn preflight(
         Res,
         Fonts,
         MultiMedias,
+        DrawParams,
         Other,
     }
 
@@ -393,10 +526,14 @@ fn preflight(
                 let is_fonts = matches!(parent, Some(Marker::Res)) && name.local_name == "Fonts";
                 let is_multi_medias =
                     matches!(parent, Some(Marker::Res)) && name.local_name == "MultiMedias";
+                let is_draw_params =
+                    matches!(parent, Some(Marker::Res)) && name.local_name == "DrawParams";
                 let is_resource = (matches!(parent, Some(Marker::Fonts))
                     && name.local_name == "Font")
                     || (matches!(parent, Some(Marker::MultiMedias))
-                        && name.local_name == "MultiMedia");
+                        && name.local_name == "MultiMedia")
+                    || (matches!(parent, Some(Marker::DrawParams))
+                        && name.local_name == "DrawParam");
                 if is_resource {
                     *total = total.checked_add(1).ok_or_else(|| {
                         Error::LimitExceeded("resource count overflow".to_owned())
@@ -414,6 +551,8 @@ fn preflight(
                     Marker::Fonts
                 } else if is_multi_medias {
                     Marker::MultiMedias
+                } else if is_draw_params {
+                    Marker::DrawParams
                 } else {
                     Marker::Other
                 });
@@ -425,6 +564,132 @@ fn preflight(
         }
     }
     Ok(())
+}
+
+fn parse_positive(
+    value: Option<&str>,
+    field: &'static str,
+    id: u64,
+    path: &PackagePath,
+) -> Result<Option<f64>> {
+    value
+        .map(|value| {
+            let parsed = value.parse::<f64>().map_err(|_| {
+                invalid_resource(path, Some(id), field, format!("invalid number {value}"))
+            })?;
+            if !parsed.is_finite() || parsed <= 0.0 {
+                return Err(invalid_resource(
+                    path,
+                    Some(id),
+                    field,
+                    format!("expected a positive finite number, found {value}"),
+                ));
+            }
+            Ok(parsed)
+        })
+        .transpose()
+}
+
+fn parse_nonnegative(
+    value: Option<&str>,
+    field: &'static str,
+    id: u64,
+    path: &PackagePath,
+) -> Result<Option<f64>> {
+    value
+        .map(|value| {
+            let parsed = value.parse::<f64>().map_err(|_| {
+                invalid_resource(path, Some(id), field, format!("invalid number {value}"))
+            })?;
+            if !parsed.is_finite() || parsed < 0.0 {
+                return Err(invalid_resource(
+                    path,
+                    Some(id),
+                    field,
+                    format!("expected a non-negative finite number, found {value}"),
+                ));
+            }
+            Ok(parsed)
+        })
+        .transpose()
+}
+
+fn parse_join(value: Option<&str>, id: u64, path: &PackagePath) -> Result<Option<LineJoin>> {
+    value
+        .map(|value| match value {
+            "Miter" => Ok(LineJoin::Miter),
+            "Round" => Ok(LineJoin::Round),
+            "Bevel" => Ok(LineJoin::Bevel),
+            _ => Err(invalid_resource(
+                path,
+                Some(id),
+                "Join",
+                format!("invalid value {value}"),
+            )),
+        })
+        .transpose()
+}
+
+fn parse_cap(value: Option<&str>, id: u64, path: &PackagePath) -> Result<Option<LineCap>> {
+    value
+        .map(|value| match value {
+            "Butt" => Ok(LineCap::Butt),
+            "Round" => Ok(LineCap::Round),
+            "Square" => Ok(LineCap::Square),
+            _ => Err(invalid_resource(
+                path,
+                Some(id),
+                "Cap",
+                format!("invalid value {value}"),
+            )),
+        })
+        .transpose()
+}
+
+fn parse_dash_pattern(
+    value: Option<&str>,
+    id: u64,
+    path: &PackagePath,
+) -> Result<Option<Vec<f64>>> {
+    value
+        .map(|value| {
+            let values = value
+                .split_whitespace()
+                .map(|item| {
+                    let parsed = item.parse::<f64>().map_err(|_| {
+                        invalid_resource(
+                            path,
+                            Some(id),
+                            "DashPattern",
+                            format!("invalid number {item}"),
+                        )
+                    })?;
+                    if !parsed.is_finite() || parsed <= 0.0 {
+                        return Err(invalid_resource(
+                            path,
+                            Some(id),
+                            "DashPattern",
+                            format!("expected positive finite values, found {item}"),
+                        ));
+                    }
+                    Ok(parsed)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if values.is_empty() {
+                return Err(invalid_resource(
+                    path,
+                    Some(id),
+                    "DashPattern",
+                    "pattern must not be empty".to_owned(),
+                ));
+            }
+            Ok(values)
+        })
+        .transpose()
+}
+
+fn parse_color(color: &crate::raw::PaintColor) -> std::result::Result<Color, String> {
+    Color::parse_rgb(&color.value, color.alpha.as_deref()).map_err(|error| error.to_string())
 }
 
 fn parse_id(value: &str, path: &PackagePath) -> Result<u64> {

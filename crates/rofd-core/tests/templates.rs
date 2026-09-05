@@ -63,7 +63,9 @@ fn template(references: &str, layers: &str) -> String {
 }
 
 fn layer(id: u64, kind: &str, object_id: u64) -> String {
-    format!(r#"<ofd:Layer ID="{id}" Type="{kind}"><ofd:TextObject ID="{object_id}"/></ofd:Layer>"#)
+    format!(
+        r#"<ofd:Layer ID="{id}" Type="{kind}"><ofd:CompositeObject ID="{object_id}"/></ofd:Layer>"#
+    )
 }
 
 fn path_layer(id: u64, commands: &str) -> String {

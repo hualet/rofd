@@ -147,6 +147,23 @@ fn resource_ids_are_one_atomic_document_wide_space() {
         }) if first_path == "Doc_0/Res/Public.xml"
             && duplicate_path == "Doc_0/Res/Public.xml"
     ));
+
+    let draw_param_duplicate = open(
+        "<ofd:PublicRes>Res/Public.xml</ofd:PublicRes>",
+        &[(
+            "Doc_0/Res/Public.xml",
+            br#"<Res><Fonts><Font ID="6" FontName="font"/></Fonts><DrawParams><DrawParam ID="6"/></DrawParams></Res>"#,
+        )],
+    );
+    assert!(matches!(
+        draw_param_duplicate.font_resource(6),
+        Err(Error::DuplicateResourceId {
+            object_id: 6,
+            first_kind: ResourceKind::Font,
+            duplicate_kind: ResourceKind::DrawParam,
+            ..
+        })
+    ));
 }
 
 #[test]

@@ -202,13 +202,13 @@ fn accepts_xml_schema_numeric_boolean_attributes() {
 fn nested_page_blocks_preserve_exact_source_order() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1">
-  <ofd:TextObject ID="2"/>
+  <ofd:CompositeObject ID="2"/>
   <ofd:PageBlock ID="3">
-    <ofd:ImageObject ID="4"/>
+    <ofd:CompositeObject ID="4"/>
     <ofd:PageBlock ID="5"><ofd:CompositeObject ID="6"/></ofd:PageBlock>
-    <ofd:TextObject ID="7"/>
+    <ofd:CompositeObject ID="7"/>
   </ofd:PageBlock>
-  <ofd:ImageObject ID="8"/>
+  <ofd:CompositeObject ID="8"/>
 </ofd:Layer></ofd:Content>"#,
     )
     .unwrap();
@@ -231,23 +231,17 @@ fn nested_page_blocks_preserve_exact_source_order() {
 }
 
 #[test]
-fn known_unsupported_objects_remain_explicit() {
+fn composite_objects_remain_explicit() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1">
-  <ofd:TextObject ID="2"><ofd:TextCode>hello</ofd:TextCode></ofd:TextObject>
-  <ofd:ImageObject ID="3" ResourceID="9"/>
   <ofd:CompositeObject ID="4" ResourceID="10"/>
 </ofd:Layer></ofd:Content>"#,
     )
     .unwrap();
     let objects = page.layers()[0].objects();
-    for (index, (id, kind)) in [
-        (2, UnsupportedObjectKind::Text),
-        (3, UnsupportedObjectKind::Image),
-        (4, UnsupportedObjectKind::Composite),
-    ]
-    .into_iter()
-    .enumerate()
+    for (index, (id, kind)) in [(4, UnsupportedObjectKind::Composite)]
+        .into_iter()
+        .enumerate()
     {
         let PageObject::Unsupported(object) = &objects[index] else {
             panic!("expected an unsupported object");
@@ -299,8 +293,9 @@ fn rejects_nonpositive_or_nonfinite_line_width() {
         let error = open_page(&content).unwrap_err();
         assert!(matches!(
             error,
-            Error::InvalidValue {
-                field: "line width",
+            Error::InvalidPageObject {
+                field: "LineWidth",
+                object_id: 2,
                 ..
             }
         ));
@@ -314,10 +309,19 @@ fn rejects_invalid_stroke_and_fill_attributes() {
             r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1" {attribute}><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
         );
         let error = open_page(&content).unwrap_err();
-        assert!(
-            matches!(error, Error::InvalidValue { field: actual, .. } if actual == field),
-            "expected invalid {field}, got {error:?}"
-        );
+        let matches_expected = if field == "color" {
+            matches!(
+                error,
+                Error::InvalidPageObject {
+                    field: "StrokeColor",
+                    object_id: 2,
+                    ..
+                }
+            )
+        } else {
+            matches!(error, Error::InvalidValue { field: actual, .. } if actual == field)
+        };
+        assert!(matches_expected, "expected invalid {field}, got {error:?}");
     }
 }
 
@@ -364,10 +368,19 @@ fn rejects_invalid_boundary_transform_path_and_enabled_color() {
             "<ofd:Content><ofd:Layer ID=\"1\"><ofd:PathObject ID=\"2\" {attributes}>{children}</ofd:PathObject></ofd:Layer></ofd:Content>"
         );
         let error = open_page(&content).unwrap_err();
-        assert!(
-            matches!(error, Error::InvalidValue { field: actual, .. } if actual == field),
-            "expected invalid {field}, got {error:?}"
-        );
+        let matches_expected = if field == "color" {
+            matches!(
+                error,
+                Error::InvalidPageObject {
+                    field: "StrokeColor",
+                    object_id: 2,
+                    ..
+                }
+            )
+        } else {
+            matches!(error, Error::InvalidValue { field: actual, .. } if actual == field)
+        };
+        assert!(matches_expected, "expected invalid {field}, got {error:?}");
     }
 }
 
@@ -414,8 +427,8 @@ fn rejects_zero_or_malformed_layer_group_and_leaf_ids() {
         r#"<ofd:Content><ofd:Layer ID="0"/></ofd:Content>"#,
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="not-an-id"/></ofd:Layer></ofd:Content>"#,
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="not-an-id" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="0"/></ofd:Layer></ofd:Content>"#,
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:ImageObject ID="not-an-id"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="0"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="not-an-id"/></ofd:Layer></ofd:Content>"#,
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="0"/></ofd:Layer></ofd:Content>"#,
     ];
     for content in cases {
@@ -436,7 +449,7 @@ fn rejects_zero_or_malformed_layer_group_and_leaf_ids() {
 #[test]
 fn rejects_duplicate_ids_anywhere_on_a_page() {
     let error = open_page(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:TextObject ID="3"/></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
     )
     .unwrap_err();
     assert!(
@@ -451,7 +464,7 @@ fn counts_layers_groups_and_leaves_against_page_object_limit() {
         ..ResourceLimits::default()
     };
     let error = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:TextObject ID="3"/></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap_err();
@@ -467,7 +480,7 @@ fn page_object_limit_accepts_exactly_one_layer_one_group_and_one_leaf() {
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:TextObject ID="3"/></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -498,13 +511,13 @@ fn page_object_limit_rejects_flat_oversize_before_raw_deserialization() {
 }
 
 #[test]
-fn page_object_limit_ignores_object_names_inside_unsupported_payload() {
+fn page_object_limit_ignores_object_names_inside_composite_payload() {
     let limits = ResourceLimits {
         max_page_objects: 2,
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload><ofd:PathObject/><ofd:ImageObject/></ofd:Payload></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"><ofd:Payload><ofd:PathObject/><ofd:ImageObject/></ofd:Payload></ofd:CompositeObject></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -568,7 +581,7 @@ fn page_block_depth_limit_accepts_the_exact_nesting_depth() {
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PageBlock ID="3"><ofd:TextObject ID="4"/></ofd:PageBlock></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PageBlock ID="3"><ofd:CompositeObject ID="4"/></ofd:PageBlock></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -580,13 +593,13 @@ fn page_block_depth_limit_accepts_the_exact_nesting_depth() {
 }
 
 #[test]
-fn page_block_depth_ignores_page_block_names_inside_unsupported_payload() {
+fn page_block_depth_ignores_page_block_names_inside_composite_payload() {
     let limits = ResourceLimits {
         max_page_block_depth: 0,
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload><ofd:PageBlock/></ofd:Payload></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"><ofd:Payload><ofd:PageBlock/></ofd:Payload></ofd:CompositeObject></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -601,7 +614,7 @@ fn xml_depth_limit_rejects_deep_ignored_payload_before_deserialization() {
         ..ResourceLimits::default()
     };
     let error = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload><ofd:A><ofd:B/></ofd:A></ofd:Payload></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"><ofd:Payload><ofd:A><ofd:B/></ofd:A></ofd:Payload></ofd:CompositeObject></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap_err();
@@ -618,7 +631,7 @@ fn xml_depth_limit_accepts_the_exact_nesting_depth() {
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2"><ofd:Payload/></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"><ofd:Payload/></ofd:CompositeObject></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -705,28 +718,58 @@ fn rejects_unknown_graphic_units_instead_of_discarding_them() {
 }
 
 #[test]
-fn repository_fixture_exposes_paths_and_unsupported_nodes() {
+fn repository_fixture_exposes_paths_text_image_and_unsupported_nodes() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../learning/test.ofd");
     let document = Document::open(path, LoadOptions::default()).unwrap();
     let page = document.page(0).unwrap();
 
-    fn counts(objects: &[PageObject]) -> (usize, usize) {
-        objects
-            .iter()
-            .fold((0, 0), |(paths, unsupported), object| match object {
-                PageObject::Path(_) => (paths + 1, unsupported),
-                PageObject::Unsupported(_) => (paths, unsupported + 1),
+    fn counts(objects: &[PageObject]) -> (usize, usize, usize, usize) {
+        objects.iter().fold(
+            (0, 0, 0, 0),
+            |(paths, text, images, unsupported), object| match object {
+                PageObject::Path(_) => (paths + 1, text, images, unsupported),
+                PageObject::Text(_) => (paths, text + 1, images, unsupported),
+                PageObject::Image(_) => (paths, text, images + 1, unsupported),
+                PageObject::Unsupported(_) => (paths, text, images, unsupported + 1),
                 PageObject::Group(group) => {
                     let nested = counts(group.objects());
-                    (paths + nested.0, unsupported + nested.1)
+                    (
+                        paths + nested.0,
+                        text + nested.1,
+                        images + nested.2,
+                        unsupported + nested.3,
+                    )
                 }
-            })
+            },
+        )
     }
 
-    let (paths, unsupported) = page.layers().iter().fold((0, 0), |total, layer| {
-        let layer_counts = counts(layer.objects());
-        (total.0 + layer_counts.0, total.1 + layer_counts.1)
-    });
+    let (paths, text, images, unsupported) =
+        page.layers().iter().fold((0, 0, 0, 0), |total, layer| {
+            let layer_counts = counts(layer.objects());
+            (
+                total.0 + layer_counts.0,
+                total.1 + layer_counts.1,
+                total.2 + layer_counts.2,
+                total.3 + layer_counts.3,
+            )
+        });
     assert!(paths > 0);
-    assert!(unsupported > 0);
+    assert_eq!(text, 47);
+    assert_eq!(images, 1);
+    assert_eq!(unsupported, 0);
+
+    fn find_text(objects: &[PageObject], id: u64) -> Option<&rofd_core::TextObject> {
+        objects.iter().find_map(|object| match object {
+            PageObject::Text(text) if text.object_id() == id => Some(text),
+            PageObject::Group(group) => find_text(group.objects(), id),
+            _ => None,
+        })
+    }
+    let repeated = page
+        .layers()
+        .iter()
+        .find_map(|layer| find_text(layer.objects(), 66))
+        .expect("fixture TextObject 66");
+    assert_eq!(repeated.runs()[0].delta_x(), vec![2.54; 18]);
 }
