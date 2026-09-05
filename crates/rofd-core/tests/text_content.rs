@@ -229,7 +229,19 @@ fn text_required_fields_and_local_scalars_have_object_context() {
         ),
         (
             r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:Clips TransFlag="maybe"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
-            "Clips.TransFlag",
+            "TransFlag",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:Clips><ofd:Clip><ofd:Area CTM="bad"><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "Area.CTM",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:FillColor/><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "FillColor",
+        ),
+        (
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2" Stroke="true"><ofd:StrokeColor/><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
+            "StrokeColor",
         ),
         (
             r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:TextCode X="0" Y="0">A</ofd:TextCode><ofd:CGTransform><ofd:Glyphs>1</ofd:Glyphs></ofd:CGTransform></ofd:TextObject>"#,
@@ -485,6 +497,24 @@ fn drawparam_unknown_relative_cycles_and_style_values_fail_lazily() {
             }
         };
         assert!(expected, "{error:?}");
+    }
+}
+
+#[test]
+fn drawparam_missing_color_value_stays_a_resource_error() {
+    let object = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2" DrawParam="20"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#;
+    for (color, expected_field) in [
+        ("<FillColor/>", "FillColor"),
+        ("<StrokeColor/>", "StrokeColor"),
+    ] {
+        let catalog = font_catalog(&format!(
+            "<DrawParams><DrawParam ID=\"20\">{color}</DrawParam></DrawParams>"
+        ));
+        let error = page_result(object, &catalog, ResourceLimits::default()).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidResource { object_id: Some(20), field, ref path, .. } if field == expected_field && path.ends_with("Res.xml")),
+            "expected {expected_field}, got {error:?}"
+        );
     }
 }
 

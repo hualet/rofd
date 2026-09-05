@@ -385,6 +385,23 @@ fn rejects_invalid_boundary_transform_path_and_enabled_color() {
 }
 
 #[test]
+fn missing_path_color_value_has_owner_context() {
+    for (attributes, child, expected_field) in [
+        ("Fill=\"true\"", "<ofd:FillColor/>", "FillColor"),
+        ("Stroke=\"true\"", "<ofd:StrokeColor/>", "StrokeColor"),
+    ] {
+        let content = format!(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1" {attributes}>{child}<ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+        );
+        let error = open_page(&content).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidPageObject { object_id: 2, field, ref path, .. } if field == expected_field && path.ends_with("Content.xml")),
+            "expected {expected_field}, got {error:?}"
+        );
+    }
+}
+
+#[test]
 fn boundary_allows_negative_origins_but_requires_positive_dimensions() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="-1 -2 10 10"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,

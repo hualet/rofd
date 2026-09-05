@@ -689,7 +689,11 @@ fn parse_dash_pattern(
 }
 
 fn parse_color(color: &crate::raw::PaintColor) -> std::result::Result<Color, String> {
-    Color::parse_rgb(&color.value, color.alpha.as_deref()).map_err(|error| error.to_string())
+    let value = color
+        .value
+        .as_deref()
+        .ok_or_else(|| "required Value attribute is missing".to_owned())?;
+    Color::parse_rgb(value, color.alpha.as_deref()).map_err(|error| error.to_string())
 }
 
 fn parse_id(value: &str, path: &PackagePath) -> Result<u64> {

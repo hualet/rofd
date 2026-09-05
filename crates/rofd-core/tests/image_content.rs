@@ -118,6 +118,10 @@ fn image_required_fields_and_alpha_have_object_context() {
             r#"<ofd:ImageObject ID="2" Boundary="0 0 1 1" ResourceID="10" Alpha="-1"/>"#,
             "Alpha",
         ),
+        (
+            r#"<ofd:ImageObject ID="2" Boundary="0 0 1 1" ResourceID="10"><ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false" Rule="bad"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips></ofd:ImageObject>"#,
+            "Clip.Path.Rule",
+        ),
     ] {
         let error = image_page(object, catalog).unwrap_err();
         assert!(

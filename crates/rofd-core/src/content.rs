@@ -967,14 +967,14 @@ impl ConversionContext<'_> {
         let affected_by_object_transform = parse_object_bool(
             clips.trans_flag.as_deref(),
             false,
-            "Clips.TransFlag",
+            "TransFlag",
             self.path,
             object_id,
         )?;
         clips
             .clips
             .into_iter()
-            .map(|clip| self.convert_clip(clip, affected_by_object_transform))
+            .map(|clip| self.convert_clip(clip, affected_by_object_transform, object_id))
             .collect()
     }
 
@@ -982,6 +982,7 @@ impl ConversionContext<'_> {
         &mut self,
         clip: raw::Clip,
         affected_by_object_transform: bool,
+        object_id: u64,
     ) -> Result<Clip> {
         if clip.areas.is_empty() {
             return Err(Error::InvalidStructure {
@@ -1001,12 +1002,13 @@ impl ConversionContext<'_> {
                 .transform
                 .as_deref()
                 .map(Transform::parse)
-                .transpose()?
+                .transpose()
+                .map_err(|error| object_error(self.path, object_id, "Area.CTM", error.to_string()))?
                 .unwrap_or(Transform::IDENTITY);
             let child = area.children.into_iter().next().expect("length checked");
             match child {
                 raw::ClipAreaChild::Path(path) => {
-                    paths.push(self.convert_clip_path(path, area_transform)?);
+                    paths.push(self.convert_clip_path(path, area_transform, object_id)?);
                 }
                 raw::ClipAreaChild::Text(_) => {
                     return Err(Error::UnsupportedFeature(
@@ -1031,32 +1033,86 @@ impl ConversionContext<'_> {
         &mut self,
         path: raw::ClipPath,
         area_transform: Transform,
+        object_id: u64,
     ) -> Result<ClipPath> {
-        let fill_enabled = parse_bool(path.fill.as_deref(), false, "clip path fill")?;
-        let stroke_enabled = parse_bool(path.stroke.as_deref(), true, "clip path stroke")?;
+        let fill_enabled = parse_object_bool(
+            path.fill.as_deref(),
+            false,
+            "Clip.Path.Fill",
+            self.path,
+            object_id,
+        )?;
+        let stroke_enabled = parse_object_bool(
+            path.stroke.as_deref(),
+            true,
+            "Clip.Path.Stroke",
+            self.path,
+            object_id,
+        )?;
         if !fill_enabled || stroke_enabled {
             return Err(Error::UnsupportedFeature(
                 "clip paths must be fill-only (Fill=true and Stroke=false) in phase 2".to_owned(),
             ));
         }
-        let boundary = Rect::parse(&path.boundary)
-            .map_err(|_| invalid_value("clip boundary", &path.boundary))?;
+        let boundary_value = required_object_field(
+            path.boundary.as_deref(),
+            "Clip.Path.Boundary",
+            self.path,
+            object_id,
+        )?;
+        let boundary = Rect::parse(boundary_value).map_err(|error| {
+            object_error(
+                self.path,
+                object_id,
+                "Clip.Path.Boundary",
+                error.to_string(),
+            )
+        })?;
         if boundary.width <= 0.0 || boundary.height <= 0.0 {
-            return Err(invalid_value("clip boundary", &path.boundary));
+            return Err(object_error(
+                self.path,
+                object_id,
+                "Clip.Path.Boundary",
+                "width and height must be positive".to_owned(),
+            ));
         }
         let transform = path
             .transform
             .as_deref()
             .map(Transform::parse)
-            .transpose()?
+            .transpose()
+            .map_err(|error| {
+                object_error(self.path, object_id, "Clip.Path.CTM", error.to_string())
+            })?
             .unwrap_or(Transform::IDENTITY);
         let fill_rule = match path.fill_rule.as_deref() {
             None | Some("NonZero") => FillRule::NonZero,
             Some("Even-Odd") => FillRule::EvenOdd,
-            Some(value) => return Err(invalid_value("clip fill rule", value)),
+            Some(value) => {
+                return Err(object_error(
+                    self.path,
+                    object_id,
+                    "Clip.Path.Rule",
+                    format!("invalid fill rule {value}"),
+                ))
+            }
         };
-        let path_data =
-            PathData::parse_with_limit(&path.abbreviated_data, self.remaining_path_commands)?;
+        let abbreviated_data = required_object_field(
+            path.abbreviated_data.as_deref(),
+            "Clip.Path.AbbreviatedData",
+            self.path,
+            object_id,
+        )?;
+        let path_data = PathData::parse_with_limit(abbreviated_data, self.remaining_path_commands)
+            .map_err(|error| match error {
+                Error::LimitExceeded(_) => error,
+                error => object_error(
+                    self.path,
+                    object_id,
+                    "Clip.Path.AbbreviatedData",
+                    error.to_string(),
+                ),
+            })?;
         self.remaining_path_commands = self
             .remaining_path_commands
             .checked_sub(path_data.commands().len())
@@ -1154,8 +1210,11 @@ fn effective_paint_color(
     field: &'static str,
 ) -> Result<Color> {
     let mut color = match local {
-        Some(color) => Color::parse_rgb(&color.value, color.alpha.as_deref())
-            .map_err(|error| object_error(path, object_id, field, error.to_string()))?,
+        Some(color) => {
+            let value = required_object_field(color.value.as_deref(), field, path, object_id)?;
+            Color::parse_rgb(value, color.alpha.as_deref())
+                .map_err(|error| object_error(path, object_id, field, error.to_string()))?
+        }
         None => inherited.unwrap_or(default),
     };
     color.alpha = ((u16::from(color.alpha) * u16::from(object_alpha) + 127) / 255) as u8;

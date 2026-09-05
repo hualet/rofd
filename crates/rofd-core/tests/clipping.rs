@@ -185,20 +185,53 @@ fn rejects_mixed_fill_rules_within_one_clip() {
 #[test]
 fn rejects_invalid_clip_values() {
     let cases = [
-        r#"<ofd:Clips TransFlag="yes"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-        r#"<ofd:Clips><ofd:Clip><ofd:Area CTM="bad"><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="bad" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" CTM="bad" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false" Rule="bad"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M nope</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="yes" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="yes"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+        (
+            r#"<ofd:Clips TransFlag="yes"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "TransFlag",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area CTM="bad"><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Area.CTM",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.Boundary",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="bad" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.Boundary",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" CTM="bad" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.CTM",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false" Rule="bad"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.Rule",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"/></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.AbbreviatedData",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M nope</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.AbbreviatedData",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="yes" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.Fill",
+        ),
+        (
+            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="yes"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+            "Clip.Path.Stroke",
+        ),
     ];
 
-    for clips in cases {
+    for (clips, expected_field) in cases {
+        let error = open_page(&path_with_clips(clips, "M 0 0")).unwrap_err();
         assert!(
-            open_page(&path_with_clips(clips, "M 0 0")).is_err(),
-            "accepted invalid clip: {clips}"
+            matches!(error, Error::InvalidPageObject { object_id: 2, field, ref path, .. } if field == expected_field && path.ends_with("Content.xml")),
+            "expected {expected_field} for {clips}, got {error:?}"
         );
     }
 }

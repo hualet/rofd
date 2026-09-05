@@ -402,7 +402,7 @@ pub(crate) enum ClipAreaChild {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ClipPath {
     #[serde(rename = "Boundary")]
-    pub(crate) boundary: String,
+    pub(crate) boundary: Option<String>,
     #[serde(rename = "CTM")]
     pub(crate) transform: Option<String>,
     #[serde(rename = "Stroke")]
@@ -412,7 +412,7 @@ pub(crate) struct ClipPath {
     #[serde(rename = "Rule")]
     pub(crate) fill_rule: Option<String>,
     #[serde(rename = "AbbreviatedData")]
-    pub(crate) abbreviated_data: String,
+    pub(crate) abbreviated_data: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -421,7 +421,7 @@ pub(crate) struct ClipText {}
 #[derive(Debug, Deserialize)]
 pub(crate) struct PaintColor {
     #[serde(rename = "Value")]
-    pub(crate) value: String,
+    pub(crate) value: Option<String>,
     #[serde(rename = "Alpha")]
     pub(crate) alpha: Option<String>,
 }
