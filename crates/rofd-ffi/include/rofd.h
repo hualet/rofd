@@ -42,6 +42,14 @@ extern "C" {
  * that no handle is freed while another call is using it. Cairo context
  * access and synchronization remain the caller's responsibility under
  * Cairo's threading rules.
+ *
+ * All non-NULL output parameter locations supplied to one call must occupy
+ * distinct, non-overlapping storage. Before writing any output, the library
+ * checks address ranges for representable arithmetic, alignment, and overlap.
+ * Detectable violations fail with ROFD_STATUS_INVALID_ARGUMENT. If ordinary
+ * outputs overlap while error is a separate valid slot, ordinary outputs stay
+ * untouched and error receives the failure. If error overlaps an ordinary
+ * output, every output stays untouched and no error handle is published.
  */
 
 #define ROFD_ABI_VERSION 1u

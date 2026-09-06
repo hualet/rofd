@@ -241,12 +241,29 @@ The Rust global allocator may abort the process and cannot be promised as a
 recoverable status. The out-of-memory code applies only where the implementation
 receives an allocation failure as a normal Rust error.
 
-On entry, fallible functions set output pointers to null and scalar outputs to
-zero after validating that the output location itself is non-null. `error` is
-optional. If supplied, it is set to null on success and receives one newly owned
-error on failure. Callers must free an older error before reusing its variable.
-Messages are descriptive but not parsed as an API; status and diagnostic kind
-are the machine-readable contract.
+On entry, fallible functions visit every registered output: every non-null
+handle output is set to null and every non-null scalar output is set to zero,
+even when another required output location is null. Any null required location
+then fails the call before its operation runs. Operations return typed staged
+values that retain Rust ownership. Only a successful operation is committed to
+caller slots; errors and panics leave entry defaults in place and drop all
+staged ownership normally. The boundary owns commit, whose sealed output-slot
+implementations perform only non-panicking raw writes and one-way ownership
+transfers.
+
+All non-null output locations in one call must occupy distinct, non-overlapping
+storage. Before any output write, the boundary uses checked address arithmetic
+to validate alignment and ranges and rejects detectable overlap with
+`ROFD_STATUS_INVALID_ARGUMENT`. If only ordinary outputs overlap and `error` is
+a separate valid slot, the ordinary outputs remain untouched and the failure is
+published through `error`. If `error` overlaps any ordinary output, every output
+remains untouched and no error handle is published. These fail-closed cases are
+the exception to normal entry initialization.
+
+`error` is optional. If supplied, it is set to null on entry and receives one
+newly owned error on failure. Callers must free an older error before reusing
+its variable. Messages are descriptive but not parsed as an API; status and
+diagnostic kind are the machine-readable contract.
 
 The three options init functions and every free function are null-safe no-ops.
 `rofd_error_get_status(NULL)` returns `ROFD_STATUS_INVALID_ARGUMENT`, while
