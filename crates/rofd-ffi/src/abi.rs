@@ -149,6 +149,7 @@ impl Default for rofd_render_options_t {
 }
 
 /// Rectangle expressed in millimetres.
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct rofd_rect_t {
     /// X coordinate in millimetres.
@@ -176,7 +177,7 @@ pub struct rofd_render_diagnostic_t {
 
 // Each published size boundary includes trailing padding and must never change when fields are
 // appended. In particular, future fields must not reuse padding before one of these boundaries.
-const ROFD_LOAD_OPTIONS_V1_SIZE: usize = c_record_size(
+pub(crate) const ROFD_LOAD_OPTIONS_V1_SIZE: usize = c_record_size(
     offset_of!(rofd_load_options_t, strictness) + size_of::<u32>(),
     align_of::<u32>(),
 );

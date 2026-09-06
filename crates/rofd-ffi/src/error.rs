@@ -66,6 +66,7 @@ impl From<rofd_render::Error> for FfiError {
 #[allow(dead_code)] // Consumed by document entry points added in the next task.
 pub(crate) fn core_status(error: &rofd_core::Error) -> rofd_status_t {
     match error {
+        rofd_core::Error::Internal(_) => ROFD_STATUS_INTERNAL,
         rofd_core::Error::Io { .. } => ROFD_STATUS_IO,
         rofd_core::Error::LimitExceeded(_) => ROFD_STATUS_LIMIT_EXCEEDED,
         rofd_core::Error::UnsupportedFeature(_) => ROFD_STATUS_UNSUPPORTED,
@@ -215,6 +216,17 @@ macro_rules! zero_scalars {
 }
 
 zero_scalars!(i32, u32, u64, usize, f64);
+
+impl scalar_private::Sealed for crate::rofd_rect_t {}
+
+impl ZeroScalar for crate::rofd_rect_t {
+    const ZERO: Self = Self {
+        x_mm: 0.0,
+        y_mm: 0.0,
+        width_mm: 0.0,
+        height_mm: 0.0,
+    };
+}
 
 #[derive(Clone, Copy, Default)]
 struct SlotRange {
@@ -943,6 +955,19 @@ mod tests {
         assert_eq!(
             core_status(&rofd_core::Error::Container("probe".into())),
             ROFD_STATUS_INVALID_DOCUMENT
+        );
+        assert_eq!(
+            core_status(&rofd_core::Error::InvalidStructure {
+                path: "Document.xml".into(),
+                message: "probe".into(),
+            }),
+            ROFD_STATUS_INVALID_DOCUMENT
+        );
+        assert_eq!(
+            core_status(&rofd_core::Error::Internal(
+                "page initialization lock is poisoned".into()
+            )),
+            ROFD_STATUS_INTERNAL
         );
     }
 

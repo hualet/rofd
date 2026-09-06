@@ -113,7 +113,7 @@ impl Container {
         let mut archive = self
             .archive
             .lock()
-            .map_err(|_| Error::Container("ZIP archive lock is poisoned".to_owned()))?;
+            .map_err(|_| Error::Internal("ZIP archive lock is poisoned".to_owned()))?;
         let mut entry = archive
             .by_index(index)
             .map_err(|error| Error::Container(error.to_string()))?;
@@ -133,6 +133,37 @@ impl Container {
             )));
         }
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod poison_tests {
+    use super::Container;
+    use crate::{Error, ResourceLimits};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[test]
+    fn poisoned_zip_lock_is_an_internal_error() {
+        let bytes = {
+            use std::io::Write;
+            use zip::write::SimpleFileOptions;
+
+            let cursor = std::io::Cursor::new(Vec::new());
+            let mut writer = zip::ZipWriter::new(cursor);
+            writer
+                .start_file("OFD.xml", SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"<OFD/>").unwrap();
+            writer.finish().unwrap().into_inner()
+        };
+        let container = Container::from_bytes(bytes, ResourceLimits::default()).unwrap();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = container.archive.lock().unwrap();
+            panic!("poison ZIP mutex");
+        }));
+        let path = crate::path::PackagePath::new("OFD.xml").unwrap();
+        let error = container.read(&path).unwrap_err();
+        assert!(matches!(error, Error::Internal(message) if message.contains("ZIP archive lock")));
     }
 }
 

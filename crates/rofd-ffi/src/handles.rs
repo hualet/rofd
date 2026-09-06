@@ -25,6 +25,14 @@ pub(crate) struct ErrorHandle {
     pub(crate) message: CString,
 }
 
+pub(crate) struct DocumentHandle {
+    pub(crate) inner: rofd_core::Document,
+}
+
+pub(crate) struct PageHandle {
+    pub(crate) inner: rofd_core::Page,
+}
+
 mod token_private {
     pub(super) trait Sealed {}
 }
@@ -42,6 +50,18 @@ impl token_private::Sealed for rofd_error_t {}
 
 impl HandleToken for rofd_error_t {
     type Storage = ErrorHandle;
+}
+
+impl token_private::Sealed for rofd_document_t {}
+
+impl HandleToken for rofd_document_t {
+    type Storage = DocumentHandle;
+}
+
+impl token_private::Sealed for rofd_page_t {}
+
+impl HandleToken for rofd_page_t {
+    type Storage = PageHandle;
 }
 
 pub(crate) fn into_raw_handle<Token: HandleToken>(storage: Box<Token::Storage>) -> *mut Token {
@@ -90,4 +110,17 @@ impl token_private::Sealed for TestHandleToken {}
 #[cfg(test)]
 impl HandleToken for TestHandleToken {
     type Storage = TestHandleStorage;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DocumentHandle, PageHandle};
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn document_and_page_storage_are_send_and_sync() {
+        assert_send_sync::<DocumentHandle>();
+        assert_send_sync::<PageHandle>();
+    }
 }

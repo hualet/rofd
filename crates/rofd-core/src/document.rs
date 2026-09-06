@@ -77,7 +77,6 @@ struct TemplateReference {
 #[derive(Debug)]
 struct DocumentInner {
     container: Container,
-    document_path: PackagePath,
     limits: crate::ResourceLimits,
     metadata: Metadata,
     default_page_area: crate::raw::PageArea,
@@ -251,7 +250,6 @@ impl Document {
         let info = body.doc_info;
         Ok(Self(Arc::new(DocumentInner {
             container,
-            document_path,
             limits,
             metadata: Metadata {
                 document_id: info.document_id,
@@ -321,14 +319,10 @@ impl Document {
             });
         }
 
-        let _initialization =
-            reference
-                .initialization
-                .lock()
-                .map_err(|_| Error::InvalidStructure {
-                    path: reference.path.as_str().to_owned(),
-                    message: "page initialization lock is poisoned".to_owned(),
-                })?;
+        let _initialization = reference
+            .initialization
+            .lock()
+            .map_err(|_| Error::Internal("page initialization lock is poisoned".to_owned()))?;
         if let Some(data) = reference.cache.get() {
             return Ok(Page {
                 _document: Arc::clone(&self.0),
@@ -381,10 +375,7 @@ impl Document {
             self.0
                 .warnings
                 .lock()
-                .map_err(|_| Error::InvalidStructure {
-                    path: reference.path.as_str().to_owned(),
-                    message: "warning store lock is poisoned".to_owned(),
-                })?
+                .map_err(|_| Error::Internal("warning store lock is poisoned".to_owned()))?
                 .push(warning);
         }
         let data = reference.cache.get_or_init(|| Arc::clone(&parsed));
@@ -409,14 +400,9 @@ impl Document {
         if let Some(catalog) = self.0.resource_catalog.get() {
             return Ok(catalog);
         }
-        let _initialization =
-            self.0
-                .resource_initialization
-                .lock()
-                .map_err(|_| Error::InvalidStructure {
-                    path: self.0.document_path.as_str().to_owned(),
-                    message: "resource catalog initialization lock is poisoned".to_owned(),
-                })?;
+        let _initialization = self.0.resource_initialization.lock().map_err(|_| {
+            Error::Internal("resource catalog initialization lock is poisoned".to_owned())
+        })?;
         if let Some(catalog) = self.0.resource_catalog.get() {
             return Ok(catalog);
         }

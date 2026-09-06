@@ -72,6 +72,17 @@ removed, or reinterpreted. A new field must start at or after the preceding
 version boundary and may not consume that version's tail padding; use explicit
 padding or an equivalent layout constraint when an ABI requires it.
 
+Every non-NULL input C string must point to readable NUL-terminated UTF-8 bytes
+that remain valid for the entire call. Individual functions define whether
+NULL or empty input is allowed. For `rofd_document_open`, a NULL path is a
+defined input that returns `ROFD_STATUS_INVALID_ARGUMENT` under the normal
+output transaction. An empty path also returns `ROFD_STATUS_INVALID_ARGUMENT`.
+A non-NULL path must satisfy the general string validity, lifetime, and
+non-overlap contract.
+Non-NULL options must be correctly aligned and readable through struct_size.
+If `struct_size` declares a supported version boundary, the complete prefix
+through that boundary must remain readable for the call.
+
 The initial records are:
 
 ```c
@@ -259,6 +270,13 @@ a separate valid slot, the ordinary outputs remain untouched and the failure is
 published through `error`. If `error` overlaps any ordinary output, every output
 remains untouched and no error handle is published. These fail-closed cases are
 the exception to normal entry initialization.
+
+Readable input regions and live handle storage must not overlap any output slot,
+including the error slot. Input strings, options records, and handle storage
+must remain valid for the entire call and must not be concurrently modified or
+freed. Each document/page query borrows its live handle without consuming it;
+the handle storage must be disjoint from that call's ordinary and error output
+slots.
 
 `error` is optional. If supplied, it is set to null on entry and receives one
 newly owned error on failure. Callers must free an older error before reusing

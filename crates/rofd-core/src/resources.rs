@@ -237,10 +237,7 @@ impl Asset {
         let _initialization = self
             .initialization
             .lock()
-            .map_err(|_| Error::InvalidStructure {
-                path: self.path.as_str().to_owned(),
-                message: "asset initialization lock is poisoned".to_owned(),
-            })?;
+            .map_err(|_| Error::Internal("asset initialization lock is poisoned".to_owned()))?;
         if let Some(bytes) = self.bytes.get() {
             return Ok(Arc::clone(bytes));
         }
@@ -492,13 +489,10 @@ impl ResourceCatalog {
         if let Some(resolved) = requested.resolved.get() {
             return Ok(resolved.clone());
         }
-        let _initialization =
-            self.draw_param_initialization
-                .lock()
-                .map_err(|_| Error::InvalidStructure {
-                    path: requested.declaration_path.clone(),
-                    message: "DrawParam initialization lock is poisoned".to_owned(),
-                })?;
+        let _initialization = self
+            .draw_param_initialization
+            .lock()
+            .map_err(|_| Error::Internal("DrawParam initialization lock is poisoned".to_owned()))?;
         if let Some(resolved) = requested.resolved.get() {
             return Ok(resolved.clone());
         }

@@ -19,7 +19,9 @@ extern "C" {
  * NULL. A page retains the document data it needs, so its document may be
  * freed before the page.
  *
- * All input strings are UTF-8. The string returned by
+ * Every non-NULL input C string must point to readable NUL-terminated UTF-8 bytes
+ * that remain valid for the entire call. Individual functions specify whether
+ * NULL or an empty string is allowed. The string returned by
  * rofd_library_version() has static storage and must not be freed. A
  * diagnostic message is borrowed from its report and remains valid only
  * until that report is freed. A cairo_t passed for rendering is borrowed;
@@ -37,6 +39,9 @@ extern "C" {
  * or after the previous boundary and must never reuse an older version's tail
  * padding. Thus a new library initializes the complete older prefix that an old
  * caller can hold, while an old library preserves a new caller's unknown tail.
+ * Non-NULL options must be correctly aligned and readable through struct_size.
+ * When struct_size declares a supported version boundary, the complete prefix
+ * through that boundary must remain readable for the call.
  *
  * Read-only calls on live handles may run concurrently. Callers must ensure
  * that no handle is freed while another call is using it. Cairo context
@@ -50,6 +55,10 @@ extern "C" {
  * outputs overlap while error is a separate valid slot, ordinary outputs stay
  * untouched and error receives the failure. If error overlaps an ordinary
  * output, every output stays untouched and no error handle is published.
+ * Readable input regions and live handle storage must not overlap any output
+ * slot, including error. Input strings, options records, and handle storage
+ * must remain valid for the entire call. They must not be concurrently
+ * modified or freed.
  */
 
 #define ROFD_ABI_VERSION 1u
@@ -145,22 +154,38 @@ void rofd_renderer_options_init(rofd_renderer_options_t *options,
 void rofd_render_options_init(rofd_render_options_t *options,
                               size_t options_size);
 
+/**
+ * Open an OFD document. A NULL path is a defined input that returns
+ * ROFD_STATUS_INVALID_ARGUMENT under the normal output transaction. An empty
+ * path also returns ROFD_STATUS_INVALID_ARGUMENT. A non-NULL path must satisfy
+ * the input-string contract above; options may be NULL or must satisfy the
+ * options-record contract. Both readable inputs must be disjoint from document
+ * and error output storage.
+ */
 rofd_status_t rofd_document_open(const char *path,
                                  const rofd_load_options_t *options,
                                  rofd_document_t **document,
                                  rofd_error_t **error);
+/** Borrow a live document without consuming it; its storage must be disjoint
+ * from page_count and error and must not be freed during the call. */
 rofd_status_t rofd_document_get_page_count(const rofd_document_t *document,
                                            size_t *page_count,
                                            rofd_error_t **error);
+/** Borrow a live document and return an independently owned page. The document
+ * storage must be disjoint from page and error and remain live for the call. */
 rofd_status_t rofd_document_get_page(const rofd_document_t *document,
                                      size_t page_index,
                                      rofd_page_t **page,
                                      rofd_error_t **error);
 void rofd_document_free(rofd_document_t *document);
 
+/** Borrow a live page without consuming it; its storage must be disjoint from
+ * page_index and error and must not be freed during the call. */
 rofd_status_t rofd_page_get_index(const rofd_page_t *page,
                                   size_t *page_index,
                                   rofd_error_t **error);
+/** Borrow a live page without consuming it; its storage must be disjoint from
+ * page_size and error and must not be freed during the call. */
 rofd_status_t rofd_page_get_size_mm(const rofd_page_t *page,
                                     rofd_rect_t *page_size,
                                     rofd_error_t **error);

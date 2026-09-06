@@ -4,6 +4,9 @@ use std::path::PathBuf;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// An internal synchronization primitive or invariant became unusable.
+    #[error("internal rofd state error: {0}")]
+    Internal(String),
     /// Host file I/O failed.
     #[error("I/O error for {path}: {source}")]
     Io {
