@@ -1,10 +1,11 @@
 use std::io::{Cursor, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cairo::{
     Antialias, Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern,
 };
-use rofd_core::{Color, Document, LoadOptions, Rect, UnsupportedObjectKind};
-use rofd_render::{CairoRenderer, Error, RenderOptions};
+use rofd_core::{Color, Document, FontResource, LoadOptions, Rect, UnsupportedObjectKind};
+use rofd_render::{CairoRenderer, Error, FontResolver, ImageDecoder, RenderOptions, ResolvedFont};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 const PNG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgba.png");
@@ -289,6 +290,45 @@ fn invalid_options_and_unsafe_surface_dimensions_are_structured_errors() {
 }
 
 #[test]
+fn invalid_options_are_rejected_before_external_services_are_invoked() {
+    struct CountingResolver(AtomicUsize);
+
+    impl FontResolver for CountingResolver {
+        fn resolve_primary(
+            &self,
+            _resource: &FontResource,
+        ) -> rofd_render::Result<Option<ResolvedFont>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+
+        fn resolve_fallback(&self, _character: char) -> rofd_render::Result<Option<ResolvedFont>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+    }
+
+    let page = open_page(
+        "0 0 20 20",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2" Boundary="1 1 10 5" Font="900" Size="3"><ofd:TextCode X="0" Y="3">A</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+    );
+    let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
+    let context = Context::new(&surface).unwrap();
+    let resolver = CountingResolver(AtomicUsize::new(0));
+    let decoder = ImageDecoder::default();
+    let options = RenderOptions {
+        dpi: 0.0,
+        ..RenderOptions::default()
+    };
+
+    assert!(matches!(
+        CairoRenderer.render_page_with_services(&page, &context, &options, &resolver, &decoder,),
+        Err(Error::InvalidOption { field: "dpi", .. })
+    ));
+    assert_eq!(resolver.0.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn rejects_an_image_surface_smaller_than_pixel_size_without_changing_state() {
     let page = open_page("0 0 20 20", "");
     let surface = ImageSurface::create(Format::ARgb32, 19, 20).unwrap();
@@ -489,7 +529,7 @@ fn rotation_background_and_report_diagnostics_are_applied() {
 
 #[test]
 fn image_command_renders_and_preserves_caller_state() {
-    let content = r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="2" Boundary="0 0 3 2" ResourceID="901"/></ofd:Layer></ofd:Content>"#;
+    let content = r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="2" Boundary="0 0 3 2" CTM="3 0 0 2 0 0" ResourceID="901"/></ofd:Layer></ofd:Content>"#;
     let page = open_page("0 0 20 20", content);
     let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
     let context = Context::new(&surface).unwrap();

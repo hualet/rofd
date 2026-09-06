@@ -99,7 +99,9 @@ fn defaults_to_bilinear_and_nearest_preserves_orientation_boundary_and_alpha() {
         RenderOptions::default().image_interpolation,
         ImageInterpolation::Bilinear
     );
-    let page = page(r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" ResourceID="10" Alpha="128"/>"#);
+    let page = page(
+        r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" CTM="6 0 0 4 0 0" ResourceID="10" Alpha="128"/>"#,
+    );
     let mut surface = render(&page, &options(ImageInterpolation::Nearest, 0));
 
     assert_eq!(pixel(&mut surface, 4, 5), [255, 127, 127, 255]);
@@ -114,7 +116,7 @@ fn defaults_to_bilinear_and_nearest_preserves_orientation_boundary_and_alpha() {
 #[test]
 fn object_transform_ofd_clip_and_page_clip_compose() {
     let page = page(
-        r#"<ofd:ImageObject ID="2" Boundary="2 3 6 4" CTM="1 0 0 1 3 2" ResourceID="10"><ofd:Clips TransFlag="true"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 3 4" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 3 0 L 3 4 L 0 4 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips></ofd:ImageObject>"#,
+        r#"<ofd:ImageObject ID="2" Boundary="2 3 6 4" CTM="6 0 0 4 3 2" ResourceID="10"><ofd:Clips TransFlag="true"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 0.5 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 0.5 0 L 0.5 1 L 0 1 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips></ofd:ImageObject>"#,
     );
     let mut options = options(ImageInterpolation::Nearest, 0);
     options.clip = Some(Rect::parse("0 0 7 20").unwrap());
@@ -127,8 +129,20 @@ fn object_transform_ofd_clip_and_page_clip_compose() {
 }
 
 #[test]
+fn ctm_scales_the_normalized_image_without_multiplying_boundary_dimensions() {
+    let page =
+        page(r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" CTM="6 0 0 4 0 0" ResourceID="10"/>"#);
+    let mut surface = render(&page, &options(ImageInterpolation::Nearest, 0));
+
+    assert_eq!(pixel(&mut surface, 4, 5), [255, 0, 0, 255]);
+    assert_eq!(pixel(&mut surface, 9, 8), [0, 255, 255, 255]);
+    assert_eq!(pixel(&mut surface, 10, 8), [255, 255, 255, 255]);
+}
+
+#[test]
 fn page_quarter_turns_rotate_asymmetric_pixels() {
-    let page = page(r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" ResourceID="10"/>"#);
+    let page =
+        page(r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" CTM="6 0 0 4 0 0" ResourceID="10"/>"#);
     let samples = [(0, (4, 5)), (90, (14, 4)), (180, (15, 14)), (270, (5, 15))];
     for (rotation, (x, y)) in samples {
         let mut surface = render(&page, &options(ImageInterpolation::Nearest, rotation));
@@ -138,7 +152,8 @@ fn page_quarter_turns_rotate_asymmetric_pixels() {
 
 #[test]
 fn bilinear_blends_interior_samples_and_pads_image_edges() {
-    let page = page(r#"<ofd:ImageObject ID="2" Boundary="4 5 9 6" ResourceID="10"/>"#);
+    let page =
+        page(r#"<ofd:ImageObject ID="2" Boundary="4 5 9 6" CTM="9 0 0 6 0 0" ResourceID="10"/>"#);
     let mut nearest_surface = render(&page, &options(ImageInterpolation::Nearest, 0));
     let mut bilinear_surface = render(&page, &options(ImageInterpolation::Bilinear, 0));
     let nearest = pixel(&mut nearest_surface, 6, 6);
@@ -210,7 +225,8 @@ fn decode_error_preserves_caller_state_path_and_pixels() {
 
 #[test]
 fn native_image_buffer_counts_toward_the_raster_working_set() {
-    let page = page(r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" ResourceID="10"/>"#);
+    let page =
+        page(r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" CTM="6 0 0 4 0 0" ResourceID="10"/>"#);
     let exact = RenderOptions {
         max_raster_bytes: 3_624,
         ..options(ImageInterpolation::Nearest, 0)
@@ -236,7 +252,7 @@ fn native_image_buffer_counts_toward_the_raster_working_set() {
 #[test]
 fn repeated_resources_share_one_native_buffer_but_distinct_resources_are_aggregated() {
     let repeated = page(
-        r#"<ofd:ImageObject ID="2" Boundary="0 0 3 2" ResourceID="10"/><ofd:ImageObject ID="3" Boundary="3 0 3 2" ResourceID="10"/>"#,
+        r#"<ofd:ImageObject ID="2" Boundary="0 0 3 2" CTM="3 0 0 2 0 0" ResourceID="10"/><ofd:ImageObject ID="3" Boundary="3 0 3 2" CTM="3 0 0 2 0 0" ResourceID="10"/>"#,
     );
     let exact_one_buffer = RenderOptions {
         max_raster_bytes: 3_624,

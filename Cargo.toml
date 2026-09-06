@@ -36,7 +36,7 @@ license = "MIT"
 repository = "https://github.com/hualet/rofd"
 
 [workspace.dependencies]
-cairo-rs = { version = "0.20.7", features = ["freetype"] }
+cairo-rs = { version = "0.20.7", features = ["freetype", "png"] }
 fontdb = "0.23.0"
 freetype-rs = "0.37.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

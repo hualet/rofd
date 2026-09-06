@@ -73,10 +73,10 @@ pub enum Command {
     DrawImage {
         /// Immutable validated RGBA8 pixels.
         image: DecodedImage,
-        /// Target width in object-space millimetres.
-        width_mm: f64,
-        /// Target height in object-space millimetres.
-        height_mm: f64,
+        /// Target width in normalized image-object coordinates.
+        width: f64,
+        /// Target height in normalized image-object coordinates.
+        height: f64,
     },
     /// Restores the most recently saved graphics state.
     Restore,
@@ -431,8 +431,8 @@ impl DisplayList {
         self.push_command(Command::SetAlpha(image.alpha()));
         self.push_command(Command::DrawImage {
             image: decoded,
-            width_mm: boundary.width,
-            height_mm: boundary.height,
+            width: 1.0,
+            height: 1.0,
         });
         self.push_command(Command::Restore);
         Ok(())

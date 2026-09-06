@@ -210,14 +210,14 @@ fn injected_builder_lowers_path_text_and_image_with_exact_state_order() {
     );
     let Command::DrawImage {
         image,
-        width_mm,
-        height_mm,
+        width,
+        height,
     } = &commands[image_draw]
     else {
         unreachable!()
     };
     assert_eq!(image.dimensions(), (3, 2));
-    assert_eq!((*width_mm, *height_mm), (6.0, 4.0));
+    assert_eq!((*width, *height), (1.0, 1.0));
 
     let rebuilt = builder(&resolver, &decoder).build(&page).unwrap();
     assert_eq!(display, rebuilt);

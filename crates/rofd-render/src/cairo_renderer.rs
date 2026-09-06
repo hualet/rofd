@@ -9,7 +9,10 @@ use cairo::{
 use rofd_core::{Color, FillRule, Page, PathCommand, PathData, Point, Rect, Transform};
 
 use crate::fonts::FontAllocationKey;
-use crate::{ClipPath, Command, DisplayList, Error, GlyphRun, RenderDiagnostic, Result};
+use crate::{
+    ClipPath, Command, DisplayList, DisplayListBuilder, Error, FontResolver, GlyphRun,
+    ImageDecoder, RenderDiagnostic, Result,
+};
 
 const MILLIMETRES_PER_INCH: f64 = 25.4;
 const DEFAULT_MITER_LIMIT: f64 = 3.528;
@@ -106,36 +109,52 @@ impl CairoRenderer {
         context: &Context,
         options: &RenderOptions,
     ) -> Result<RenderReport> {
+        let geometry = validate_render_target(page, context, options)?;
         let caller_path = cairo(context.copy_path(), "capture caller path")?;
-        let rendered = self.render_page_preserving_path(page, context, options);
+        let rendered = DisplayList::from_page(page).and_then(|display_list| {
+            self.render_display_list(page, context, options, &geometry, display_list)
+        });
         let restored_path = restore_path(context, &caller_path);
         combine_results(rendered, restored_path, "restore caller path")
     }
 
-    fn render_page_preserving_path(
+    /// Renders with caller-provided reusable font and image services.
+    ///
+    /// This entry point is useful when applications require an explicit system
+    /// font snapshot, ordered fallback families, or shared bounded caches.
+    pub fn render_page_with_services(
         &self,
         page: &Page,
         context: &Context,
         options: &RenderOptions,
+        font_resolver: &dyn FontResolver,
+        image_decoder: &ImageDecoder,
     ) -> Result<RenderReport> {
-        let geometry = RenderGeometry::new(page.size(), options)?;
-        let display_list = DisplayList::from_page(page)?;
-        if let Ok(surface) = ImageSurface::try_from(context.target()) {
-            if surface.width() < geometry.pixel_width || surface.height() < geometry.pixel_height {
-                return Err(Error::SurfaceTooSmall {
-                    required_width: geometry.pixel_width,
-                    required_height: geometry.pixel_height,
-                    actual_width: surface.width(),
-                    actual_height: surface.height(),
-                });
-            }
-        }
+        let geometry = validate_render_target(page, context, options)?;
+        let caller_path = cairo(context.copy_path(), "capture caller path")?;
+        let rendered = DisplayListBuilder::new(font_resolver, image_decoder)
+            .build(page)
+            .and_then(|display_list| {
+                self.render_display_list(page, context, options, &geometry, display_list)
+            });
+        let restored_path = restore_path(context, &caller_path);
+        combine_results(rendered, restored_path, "restore caller path")
+    }
+
+    fn render_display_list(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        geometry: &RenderGeometry,
+        display_list: DisplayList,
+    ) -> Result<RenderReport> {
         let prepared_text = PreparedText::new(
             display_list.commands(),
             page.resource_limits().max_glyphs_per_page,
         )?;
         let prepared_images =
-            PreparedImages::new(display_list.commands(), &geometry, options.max_raster_bytes)?;
+            PreparedImages::new(display_list.commands(), geometry, options.max_raster_bytes)?;
         let prepared = PreparedRender {
             display_list,
             text: prepared_text,
@@ -143,12 +162,31 @@ impl CairoRenderer {
         };
         cairo(context.save(), "save caller state")?;
 
-        let rendered = render_saved(context, page.size(), options, &geometry, &prepared);
+        let rendered = render_saved(context, page.size(), options, geometry, &prepared);
         let restored = cairo(context.restore(), "restore caller state");
         combine_results(rendered, restored, "restore caller state").map(|()| RenderReport {
             diagnostics: prepared.display_list.diagnostics().to_vec(),
         })
     }
+}
+
+fn validate_render_target(
+    page: &Page,
+    context: &Context,
+    options: &RenderOptions,
+) -> Result<RenderGeometry> {
+    let geometry = RenderGeometry::new(page.size(), options)?;
+    if let Ok(surface) = ImageSurface::try_from(context.target()) {
+        if surface.width() < geometry.pixel_width || surface.height() < geometry.pixel_height {
+            return Err(Error::SurfaceTooSmall {
+                required_width: geometry.pixel_width,
+                required_height: geometry.pixel_height,
+                actual_width: surface.width(),
+                actual_height: surface.height(),
+            });
+        }
+    }
+    Ok(geometry)
 }
 
 fn render_saved(
@@ -231,17 +269,13 @@ impl PreparedImages {
         for command in commands {
             let Command::DrawImage {
                 image,
-                width_mm,
-                height_mm,
+                width,
+                height,
             } = command
             else {
                 continue;
             };
-            if !width_mm.is_finite()
-                || !height_mm.is_finite()
-                || *width_mm <= 0.0
-                || *height_mm <= 0.0
-            {
+            if !width.is_finite() || !height.is_finite() || *width <= 0.0 || *height <= 0.0 {
                 return Err(invalid_display_list(
                     "image boundary must contain finite positive dimensions",
                 ));
@@ -718,16 +752,12 @@ impl<'a> Interpreter<'a> {
                         .as_ref()
                         .ok_or_else(|| invalid_display_list("glyph run was not prepared"))?,
                 )?,
-                Command::DrawImage {
-                    width_mm,
-                    height_mm,
-                    ..
-                } => self.draw_image(
+                Command::DrawImage { width, height, .. } => self.draw_image(
                     self.prepared_images.images[index]
                         .as_ref()
                         .ok_or_else(|| invalid_display_list("image was not prepared"))?,
-                    *width_mm,
-                    *height_mm,
+                    *width,
+                    *height,
                 )?,
             }
         }
@@ -826,14 +856,14 @@ impl<'a> Interpreter<'a> {
         self.draw_with_clip(|context| draw_glyph_run_unmasked(context, &self.state, run))
     }
 
-    fn draw_image(&self, image: &PreparedImage, width_mm: f64, height_mm: f64) -> Result<()> {
+    fn draw_image(&self, image: &PreparedImage, width: f64, height: f64) -> Result<()> {
         self.draw_with_clip(|context| {
             draw_image_unmasked(
                 context,
                 &self.state,
                 image,
-                width_mm,
-                height_mm,
+                width,
+                height,
                 self.image_interpolation,
             )
         })
@@ -844,8 +874,8 @@ fn draw_image_unmasked(
     context: &Context,
     state: &PaintState,
     image: &PreparedImage,
-    width_mm: f64,
-    height_mm: f64,
+    width: f64,
+    height: f64,
     interpolation: ImageInterpolation,
 ) -> Result<()> {
     let pattern = SurfacePattern::create(&image.surface);
@@ -857,11 +887,11 @@ fn draw_image_unmasked(
 
     cairo(context.save(), "save image state")?;
     let drawn = (|| {
-        context.rectangle(0.0, 0.0, width_mm, height_mm);
+        context.rectangle(0.0, 0.0, width, height);
         context.clip();
         context.scale(
-            width_mm / f64::from(image.width),
-            height_mm / f64::from(image.height),
+            width / f64::from(image.width),
+            height / f64::from(image.height),
         );
         cairo(context.set_source(&pattern), "set image source")?;
         cairo(
