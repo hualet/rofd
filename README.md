@@ -13,15 +13,15 @@ OFD (Open Form Document) is an open standard for electronic documents, which is 
 
 - `rofd-core`: safe OFD container, metadata, page content, clipping, and
   recursively resolved template layers.
-- `rofd-render`: backend-neutral display lists plus partial Cairo page rendering
-  for paths, clipping, transforms, and quarter-turn rotation.
+- `rofd-render`: backend-neutral display lists plus bounded Cairo rendering for
+  paths, positioned text, PNG/JPEG images, clipping, transforms, and rotation.
 - Root `rofd` package: legacy Cairo rendering prototype kept during migration.
 - Qt/QML reader: design approved; implementation follows the C ABI phase.
 
 The target architecture and phased roadmap are documented in
 [`docs/superpowers/specs/2026-09-03-rofd-library-reader-design.md`](docs/superpowers/specs/2026-09-03-rofd-library-reader-design.md).
-The active partial-rendering plan is in
-[`docs/superpowers/plans/2026-09-04-rofd-display-list-rendering.md`](docs/superpowers/plans/2026-09-04-rofd-display-list-rendering.md).
+The active text-and-image plan is in
+[`docs/superpowers/plans/2026-09-05-rofd-text-image-rendering.md`](docs/superpowers/plans/2026-09-05-rofd-text-image-rendering.md).
 
 # Test the reusable core and renderer
 
@@ -31,8 +31,10 @@ cargo clippy -p rofd-core -p rofd-render --all-targets -- -D warnings
 cargo test -p rofd-core -p rofd-render
 ```
 
-`rofd-render` requires Cairo; `rofd-core` remains Cairo-, Qt-, and QML-free.
-Text, images, fonts, and document-resource rendering remain deferred to phase 3.
+`rofd-render` requires Cairo and FreeType/fontconfig for configured system-font
+fallback. `rofd-core` remains Cairo-, image-codec-, Qt-, and QML-free. Composite
+objects, advanced color spaces, annotations, signatures, and text-query APIs
+remain deferred.
 
 # Run the legacy Qt prototype
 
@@ -48,7 +50,7 @@ The Qt command requires the system Qt development dependencies used by
 This project is organized into the following directories and files:
 
 - `crates/rofd-core/`: independent document parsing and query crate.
-- `crates/rofd-render/`: display-list lowering and partial Cairo renderer.
+- `crates/rofd-render/`: display-list lowering and bounded Cairo renderer.
 - `crates/rofd-render/tests/real_fixture.rs`: end-to-end invoice fixture
   regression without generated artifacts.
 - `src/`: legacy parser and Cairo renderer retained during migration.

@@ -16,13 +16,15 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Install Cairo development files
+    - name: Install renderer development files and controlled fonts
       run: |
         sudo apt-get update
-        sudo apt-get install -y libcairo2-dev
+        sudo apt-get install -y libcairo2-dev libfontconfig1-dev libfreetype6-dev fonts-noto-cjk fonts-noto-mono
     - name: Check formatting
       run: cargo fmt --all -- --check
     - name: Lint core and renderer
       run: cargo clippy -p rofd-core -p rofd-render --all-targets -- -D warnings
     - name: Test core and renderer
       run: cargo test -p rofd-core -p rofd-render
+    - name: Test complete workspace
+      run: cargo test --workspace --all-targets
