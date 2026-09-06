@@ -26,9 +26,17 @@ extern "C" {
  * ownership remains with the caller.
  *
  * Every options record begins with struct_size. Call the matching initializer
- * before changing fields. The library uses struct_size to determine which
- * fields are present, allowing trailing fields to be added compatibly in
- * later ABI versions.
+ * with the writable capacity of the record before changing fields. A NULL
+ * pointer, or a capacity smaller than the oldest supported version boundary,
+ * is a no-op. Otherwise the initializer clears and initializes the highest
+ * complete supported version that fits, leaves later bytes unchanged, and sets
+ * struct_size to that selected version boundary rather than caller capacity.
+ *
+ * Options records evolve only by appending fields. Every published version
+ * boundary, including its tail padding, is permanent. New fields must start at
+ * or after the previous boundary and must never reuse an older version's tail
+ * padding. Thus a new library initializes the complete older prefix that an old
+ * caller can hold, while an old library preserves a new caller's unknown tail.
  *
  * Read-only calls on live handles may run concurrently. Callers must ensure
  * that no handle is freed while another call is using it. Cairo context
@@ -123,9 +131,11 @@ typedef struct rofd_render_diagnostic {
 uint32_t rofd_abi_version(void);
 const char *rofd_library_version(void);
 
-void rofd_load_options_init(rofd_load_options_t *options);
-void rofd_renderer_options_init(rofd_renderer_options_t *options);
-void rofd_render_options_init(rofd_render_options_t *options);
+void rofd_load_options_init(rofd_load_options_t *options, size_t options_size);
+void rofd_renderer_options_init(rofd_renderer_options_t *options,
+                                size_t options_size);
+void rofd_render_options_init(rofd_render_options_t *options,
+                              size_t options_size);
 
 rofd_status_t rofd_document_open(const char *path,
                                  const rofd_load_options_t *options,

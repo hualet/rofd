@@ -24,9 +24,9 @@ static void initialize_options(void) {
     rofd_renderer_options_t renderer_options;
     rofd_render_options_t render_options;
 
-    rofd_load_options_init(&load_options);
-    rofd_renderer_options_init(&renderer_options);
-    rofd_render_options_init(&render_options);
+    rofd_load_options_init(&load_options, sizeof(load_options));
+    rofd_renderer_options_init(&renderer_options, sizeof(renderer_options));
+    rofd_render_options_init(&render_options, sizeof(render_options));
 }
 
 int main(void) {

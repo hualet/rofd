@@ -52,12 +52,25 @@ The opaque handles are:
   and
 - `rofd_error_t`, owning a status and a NUL-terminated UTF-8 message.
 
-Every options record starts with `uint32_t struct_size`. A null options pointer
-means documented defaults. Init functions zero the record, set its current
-size, and fill defaults. An undersized v1 record is rejected; a larger record
-is accepted and its unknown tail ignored. Future libraries accept the original
-v1 size and supply defaults for fields appended later. No field may be inserted,
-reordered, removed, or reinterpreted.
+Every options record starts with `uint32_t struct_size`. Each init function also
+receives the caller's writable capacity. Each published record version has a
+permanent size boundary: the end of its last field rounded up to that version's
+maximum field alignment. This includes tail padding, including target-specific
+tail padding on 32-bit layouts. Supported boundaries are kept as an ordered
+version list.
+
+A null pointer or capacity below the oldest supported boundary is a no-op and
+no byte is touched. Otherwise the initializer selects the highest complete
+supported version that fits, zeros and fills exactly that prefix, leaves later
+caller bytes unchanged, and writes the selected boundary—not caller capacity or
+the newest record size—to `struct_size`. A new library must therefore initialize
+the v1 prefix for a v1-sized old caller even after fields have been appended; an
+old library preserves fields in a new caller's unknown tail.
+
+Records evolve only by appending fields. No field may be inserted, reordered,
+removed, or reinterpreted. A new field must start at or after the preceding
+version boundary and may not consume that version's tail padding; use explicit
+padding or an equivalent layout constraint when an ABI requires it.
 
 The initial records are:
 
@@ -123,9 +136,11 @@ All exported names begin with `rofd_`:
 uint32_t rofd_abi_version(void);
 const char *rofd_library_version(void);
 
-void rofd_load_options_init(rofd_load_options_t *options);
-void rofd_renderer_options_init(rofd_renderer_options_t *options);
-void rofd_render_options_init(rofd_render_options_t *options);
+void rofd_load_options_init(rofd_load_options_t *options, size_t options_size);
+void rofd_renderer_options_init(rofd_renderer_options_t *options,
+                                size_t options_size);
+void rofd_render_options_init(rofd_render_options_t *options,
+                              size_t options_size);
 
 rofd_status_t rofd_document_open(
     const char *path,
@@ -254,10 +269,11 @@ surface. There is no global last-error or mutable process-wide renderer state.
 ## Verification and Acceptance
 
 Rust boundary tests cover null inputs, invalid UTF-8, unknown integer constants,
-undersized and oversized option records, output initialization, error mapping,
-diagnostic bounds, caught test panics, and every permitted handle-release order.
-Layout tests assert the size, alignment, and field offsets mirrored by the
-header.
+undersized and oversized option records, zeroed option padding, output
+initialization, error mapping, diagnostic bounds, caught test panics, and every
+permitted handle-release order. Portable layout tests cover stable prefixes and
+alignment properties; Linux x86_64 tests assert the exact size, alignment, and
+field offsets mirrored by the header.
 
 A committed C program is compiled and linked against `librofd_ffi`. It opens
 `learning/test.ofd`, observes one page and its `211.5 x 140 mm` box, obtains a

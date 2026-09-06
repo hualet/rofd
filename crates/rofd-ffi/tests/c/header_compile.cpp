@@ -10,11 +10,18 @@ static_assert(std::is_standard_layout_v<rofd_render_options_t>,
               "rofd_render_options_t must have standard layout");
 
 int main() {
+    rofd_load_options_t load_options;
+    rofd_renderer_options_t renderer_options;
+    rofd_render_options_t render_options;
     rofd_document_t *document = nullptr;
     rofd_page_t *page = nullptr;
     rofd_renderer_t *renderer = nullptr;
     rofd_render_report_t *report = nullptr;
     rofd_error_t *error = nullptr;
+
+    rofd_load_options_init(&load_options, sizeof(load_options));
+    rofd_renderer_options_init(&renderer_options, sizeof(renderer_options));
+    rofd_render_options_init(&render_options, sizeof(render_options));
 
     (void)document;
     (void)page;
