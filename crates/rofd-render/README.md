@@ -45,13 +45,16 @@ rotation by 0, 90, 180, or 270 degrees. Page coordinates are millimetres, page
 boxes may have nonzero origins, and output dimensions follow the configured DPI
 and scale.
 
-`RenderOptions::default()` selects 96 DPI, scale 1, no rotation, an opaque white
-background, no optional page-space clip, and a 256 MiB raster budget. The
-`max_raster_bytes` budget conservatively covers the required ARGB32 target plus
-the full-page clip mask and clipped-drawing intermediate. Invalid options,
-unsupported Cairo dimensions, insufficient target surfaces, and budget excesses
-are returned as structured errors. Rendering preserves the caller's Cairo
-graphics state and current path on both success and recoverable failure.
+`RenderOptions::default()` selects 96 DPI, scale 1, no rotation, bilinear image
+sampling, an opaque white background, no optional page-space clip, and a 256 MiB
+raster budget. The `max_raster_bytes` budget conservatively covers the required
+ARGB32 target, full-page clip mask, clipped-drawing intermediate, and the
+aggregate premultiplied buffers for unique decoded images. Native buffers are
+prepared once per unique allocation and reused by repeated image commands.
+Invalid options, unsupported
+Cairo dimensions, insufficient target surfaces, allocation failures, and budget
+excesses are returned as structured errors. Rendering preserves the caller's
+Cairo graphics state and current path on both success and recoverable failure.
 
 ## Font resolution and glyph positioning
 
@@ -94,15 +97,16 @@ concurrently, and existing `DecodedImage` clones remain valid after eviction.
 `DrawGlyphRun` and `DrawImage` commands with injectable font and image services.
 It bounds the aggregate unique decoded-image allocations retained by one list;
 callers may override that default with `with_max_decoded_image_bytes`.
-Fallbacks, missing glyphs, and deferred image extensions are reported with the
+Fallbacks, missing glyphs, and unsupported image extensions are reported with the
 owning object and page/template source. Cairo renders positioned glyph IDs from
 resolved FreeType faces, batches consecutive glyphs using the same face, and
 uses glyph outlines when fill plus stroke is required. Missing glyphs use a
-deterministic visible box. Text honors object transforms, page rotation, paint,
-and the same A8 union/intersection clip masks as paths. Cairo still rejects
-`DrawImage` before display-list image decoding or painting until image
-compositing lands. Composite objects, annotations, and signatures are also not
-rendered yet.
+deterministic visible box. Cairo also converts immutable RGBA8 images to
+native-endian premultiplied ARGB32 and composites them with explicit nearest or
+bilinear sampling. Text and images honor object transforms, page rotation,
+opacity, optional page clipping, and the same A8 union/intersection clip masks as
+paths. Image substitution, masks, and borders remain explicit diagnostics;
+composite objects, annotations, and signatures are also not rendered yet.
 
 The expanded diagnostic API uses `RenderDiagnostic::kind()` to return
 `RenderDiagnosticKind`; callers of the earlier renderer preview should migrate

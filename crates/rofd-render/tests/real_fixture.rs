@@ -2,13 +2,10 @@ use std::path::PathBuf;
 
 use cairo::{Context, Format, ImageSurface};
 use rofd_core::{Document, LayerSource, LoadOptions};
-use rofd_render::{
-    CairoRenderer, Command, DisplayCommandKind, DisplayList, Error, RenderDiagnosticKind,
-    RenderOptions,
-};
+use rofd_render::{CairoRenderer, Command, DisplayList, RenderDiagnosticKind, RenderOptions};
 
 #[test]
-fn repository_invoice_fixture_lowers_content_and_cairo_defers_before_painting() {
+fn repository_invoice_fixture_lowers_and_renders_text_images_and_paths() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../learning/test.ofd");
     let document = Document::open(fixture, LoadOptions::default()).unwrap();
     let page = document.page(0).unwrap();
@@ -83,20 +80,30 @@ fn repository_invoice_fixture_lowers_content_and_cairo_defers_before_painting() 
     let (width, height) = CairoRenderer::pixel_size(&page, &options).unwrap();
     let mut surface = ImageSurface::create(Format::ARgb32, width, height).unwrap();
     let context = Context::new(&surface).unwrap();
-    assert!(matches!(
-        CairoRenderer.render_page(&page, &context, &options),
-        Err(Error::UnsupportedDisplayCommand {
-            command: DisplayCommandKind::Image
-        })
-    ));
+    let report = CairoRenderer
+        .render_page(&page, &context, &options)
+        .unwrap();
+    assert_eq!(report.diagnostics(), display_list.diagnostics());
     drop(context);
     assert_eq!((width, height), (2115, 1400));
-    assert_eq!(pixel(&mut surface, 10, 10), [0, 0, 0, 0]);
-    assert_eq!(pixel(&mut surface, 700, 200), [0, 0, 0, 0]);
+    assert_eq!(pixel(&mut surface, 10, 10), [255, 255, 255, 255]);
+    assert!(non_white_pixels(&mut surface) > 10_000);
     eprintln!(
-        "fixture: 211.5x140 mm, {draw_paths} paths, {} lowering diagnostics; Cairo deferred",
+        "fixture: 211.5x140 mm, {draw_paths} paths, {} diagnostics; Cairo rendered",
         display_list.diagnostics().len()
     );
+}
+
+fn non_white_pixels(surface: &mut ImageSurface) -> usize {
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let width = surface.width() as usize;
+    let height = surface.height() as usize;
+    let data = surface.data().unwrap();
+    (0..height)
+        .flat_map(|y| (0..width).map(move |x| y * stride + x * 4))
+        .filter(|offset| data[*offset..*offset + 4] != [255, 255, 255, 255])
+        .count()
 }
 
 fn pixel(surface: &mut ImageSurface, x: i32, y: i32) -> [u8; 4] {

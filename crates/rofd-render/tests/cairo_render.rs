@@ -4,7 +4,7 @@ use cairo::{
     Antialias, Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern,
 };
 use rofd_core::{Color, Document, LoadOptions, Rect, UnsupportedObjectKind};
-use rofd_render::{CairoRenderer, DisplayCommandKind, Error, RenderOptions};
+use rofd_render::{CairoRenderer, Error, RenderOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 const PNG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgba.png");
@@ -488,7 +488,7 @@ fn rotation_background_and_report_diagnostics_are_applied() {
 }
 
 #[test]
-fn deferred_image_command_fails_before_cairo_paints() {
+fn image_command_renders_and_preserves_caller_state() {
     let content = r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="2" Boundary="0 0 3 2" ResourceID="901"/></ofd:Layer></ofd:Content>"#;
     let page = open_page("0 0 20 20", content);
     let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
@@ -499,18 +499,16 @@ fn deferred_image_command_fails_before_cairo_paints() {
     context.move_to(4.0, 5.0);
     context.line_to(6.0, 7.0);
     let caller_path = path_segments(&context);
-    assert!(matches!(
-        CairoRenderer.render_page(&page, &context, &options_at_one_pixel_per_mm()),
-        Err(Error::UnsupportedDisplayCommand {
-            command: DisplayCommandKind::Image
-        })
-    ));
+    CairoRenderer
+        .render_page(&page, &context, &options_at_one_pixel_per_mm())
+        .unwrap();
     assert_eq!(context.matrix(), matrix);
     assert_eq!(context.line_width(), 7.0);
     assert_eq!(path_segments(&context), caller_path);
     drop(context);
     let mut surface = surface;
-    assert_eq!(pixel(&mut surface, 10, 10), [0, 0, 0, 0]);
+    assert_red(pixel(&mut surface, 0, 0));
+    assert_eq!(pixel(&mut surface, 10, 10), [255, 255, 255, 255]);
 }
 
 #[test]

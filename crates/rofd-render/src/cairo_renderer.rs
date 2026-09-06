@@ -2,21 +2,31 @@ use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use cairo::{
-    Antialias, Context, FillRule as CairoFillRule, FontFace, FontOptions, Format, Glyph,
-    HintMetrics, HintStyle, ImageSurface, LineCap, LineJoin, Matrix, Operator, Path, SubpixelOrder,
+    Antialias, Context, Extend, FillRule as CairoFillRule, Filter, FontFace, FontOptions, Format,
+    Glyph, HintMetrics, HintStyle, ImageSurface, LineCap, LineJoin, Matrix, Operator, Path,
+    SubpixelOrder, SurfacePattern,
 };
-use rofd_core::{Color, FillRule, Page, PageObject, PathCommand, PathData, Point, Rect, Transform};
+use rofd_core::{Color, FillRule, Page, PathCommand, PathData, Point, Rect, Transform};
 
 use crate::fonts::FontAllocationKey;
-use crate::{
-    ClipPath, Command, DisplayCommandKind, DisplayList, Error, GlyphRun, RenderDiagnostic, Result,
-};
+use crate::{ClipPath, Command, DisplayList, Error, GlyphRun, RenderDiagnostic, Result};
 
 const MILLIMETRES_PER_INCH: f64 = 25.4;
 const DEFAULT_MITER_LIMIT: f64 = 3.528;
 const DEFAULT_CURVE_TOLERANCE: f64 = 0.1;
 const MAX_CAIRO_IMAGE_DIMENSION: i32 = 32_767;
 const DEFAULT_MAX_RASTER_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Sampling filter used while scaling decoded raster images.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ImageInterpolation {
+    /// Select the closest source pixel without blending neighbors.
+    Nearest,
+    /// Blend adjacent source pixels for smoother scaling.
+    #[default]
+    Bilinear,
+}
 
 /// Options controlling page rasterization.
 #[derive(Clone, Debug, PartialEq)]
@@ -31,11 +41,13 @@ pub struct RenderOptions {
     pub background: Color,
     /// Optional clipping rectangle in absolute page-space millimetres.
     pub clip: Option<Rect>,
-    /// Maximum bytes for all simultaneously live full-page raster surfaces.
+    /// Sampling filter used while mapping images into their object boundaries.
+    pub image_interpolation: ImageInterpolation,
+    /// Maximum bytes for all simultaneously live raster working surfaces.
     ///
     /// Validation conservatively includes the caller's ARGB32 target, one A8
-    /// clip mask, and one ARGB32 clipped-drawing intermediate even when the
-    /// current page does not use clipping.
+    /// clip mask, one ARGB32 clipped-drawing intermediate, and one retained
+    /// native premultiplied buffer per unique decoded image allocation.
     pub max_raster_bytes: u64,
 }
 
@@ -52,6 +64,7 @@ impl Default for RenderOptions {
                 alpha: 255,
             },
             clip: None,
+            image_interpolation: ImageInterpolation::Bilinear,
             max_raster_bytes: DEFAULT_MAX_RASTER_BYTES,
         }
     }
@@ -106,9 +119,7 @@ impl CairoRenderer {
         options: &RenderOptions,
     ) -> Result<RenderReport> {
         let geometry = RenderGeometry::new(page.size(), options)?;
-        ensure_page_supported(page)?;
         let display_list = DisplayList::from_page(page)?;
-        ensure_supported_commands(display_list.commands())?;
         if let Ok(surface) = ImageSurface::try_from(context.target()) {
             if surface.width() < geometry.pixel_width || surface.height() < geometry.pixel_height {
                 return Err(Error::SurfaceTooSmall {
@@ -123,45 +134,21 @@ impl CairoRenderer {
             display_list.commands(),
             page.resource_limits().max_glyphs_per_page,
         )?;
+        let prepared_images =
+            PreparedImages::new(display_list.commands(), &geometry, options.max_raster_bytes)?;
+        let prepared = PreparedRender {
+            display_list,
+            text: prepared_text,
+            images: prepared_images,
+        };
         cairo(context.save(), "save caller state")?;
 
-        let rendered = render_saved(
-            context,
-            page.size(),
-            options,
-            &geometry,
-            &display_list,
-            &prepared_text,
-        );
+        let rendered = render_saved(context, page.size(), options, &geometry, &prepared);
         let restored = cairo(context.restore(), "restore caller state");
         combine_results(rendered, restored, "restore caller state").map(|()| RenderReport {
-            diagnostics: display_list.diagnostics().to_vec(),
+            diagnostics: prepared.display_list.diagnostics().to_vec(),
         })
     }
-}
-
-fn ensure_page_supported(page: &Page) -> Result<()> {
-    fn deferred(objects: &[PageObject]) -> Option<DisplayCommandKind> {
-        for object in objects {
-            match object {
-                PageObject::Image(_) => return Some(DisplayCommandKind::Image),
-                PageObject::Group(group) => {
-                    if let Some(command) = deferred(group.objects()) {
-                        return Some(command);
-                    }
-                }
-                PageObject::Path(_) | PageObject::Text(_) | PageObject::Unsupported(_) => {}
-            }
-        }
-        None
-    }
-
-    for layer in page.layers() {
-        if let Some(command) = deferred(layer.objects()) {
-            return Err(Error::UnsupportedDisplayCommand { command });
-        }
-    }
-    Ok(())
 }
 
 fn render_saved(
@@ -169,8 +156,7 @@ fn render_saved(
     page_box: Rect,
     options: &RenderOptions,
     geometry: &RenderGeometry,
-    display_list: &DisplayList,
-    prepared_text: &PreparedText,
+    prepared: &PreparedRender,
 ) -> Result<()> {
     context.set_matrix(geometry.page_to_device);
     context.set_operator(Operator::Over);
@@ -188,21 +174,122 @@ fn render_saved(
         cairo(context.status(), "apply page-space clip")?;
     }
 
-    let mut interpreter = Interpreter::new(context, geometry, prepared_text);
-    interpreter.run(display_list.commands())
+    let mut interpreter = Interpreter::new(
+        context,
+        geometry,
+        &prepared.text,
+        &prepared.images,
+        options.image_interpolation,
+    );
+    interpreter.run(prepared.display_list.commands())
 }
 
-fn ensure_supported_commands(commands: &[Command]) -> Result<()> {
-    for command in commands {
-        let command = match command {
-            Command::DrawImage { .. } => Some(DisplayCommandKind::Image),
-            _ => None,
-        };
-        if let Some(command) = command {
-            return Err(Error::UnsupportedDisplayCommand { command });
-        }
+fn cairo_image_layout(image: &crate::DecodedImage) -> Result<(i32, i32, u64)> {
+    if image.width() > MAX_CAIRO_IMAGE_DIMENSION as u32
+        || image.height() > MAX_CAIRO_IMAGE_DIMENSION as u32
+    {
+        return Err(Error::InvalidImageSurfaceSize {
+            resource_id: image.resource_id(),
+            width: image.width(),
+            height: image.height(),
+        });
     }
-    Ok(())
+    let width = i32::try_from(image.width())
+        .map_err(|_| invalid_display_list("image width exceeds the Cairo integer domain"))?;
+    let height = i32::try_from(image.height())
+        .map_err(|_| invalid_display_list("image height exceeds the Cairo integer domain"))?;
+    let stride = Format::ARgb32
+        .stride_for_width(image.width())
+        .map_err(|_| invalid_display_list("image stride exceeds the Cairo integer domain"))?;
+    let bytes = u64::try_from(stride)
+        .ok()
+        .and_then(|stride| stride.checked_mul(u64::from(image.height())))
+        .ok_or_else(|| invalid_display_list("image raster byte length overflow"))?;
+    Ok((width, height, bytes))
+}
+
+struct PreparedImages {
+    images: Vec<Option<PreparedImage>>,
+}
+
+struct PreparedRender {
+    display_list: DisplayList,
+    text: PreparedText,
+    images: PreparedImages,
+}
+
+#[derive(Clone)]
+struct PreparedImage {
+    surface: ImageSurface,
+    width: i32,
+    height: i32,
+}
+
+impl PreparedImages {
+    fn new(commands: &[Command], geometry: &RenderGeometry, max_bytes: u64) -> Result<Self> {
+        let mut allocations = HashMap::<usize, u64>::new();
+        for command in commands {
+            let Command::DrawImage {
+                image,
+                width_mm,
+                height_mm,
+            } = command
+            else {
+                continue;
+            };
+            if !width_mm.is_finite()
+                || !height_mm.is_finite()
+                || *width_mm <= 0.0
+                || *height_mm <= 0.0
+            {
+                return Err(invalid_display_list(
+                    "image boundary must contain finite positive dimensions",
+                ));
+            }
+            let bytes = cairo_image_layout(image)?.2;
+            allocations.entry(image.allocation_id()).or_insert(bytes);
+        }
+        let native_bytes = allocations.values().try_fold(0u64, |total, bytes| {
+            total
+                .checked_add(*bytes)
+                .ok_or(Error::RasterBudgetExceeded {
+                    required_bytes: u64::MAX,
+                    max_bytes,
+                })
+        })?;
+        let required_bytes = geometry.surface_bytes.checked_add(native_bytes).ok_or(
+            Error::RasterBudgetExceeded {
+                required_bytes: u64::MAX,
+                max_bytes,
+            },
+        )?;
+        if required_bytes > max_bytes {
+            return Err(Error::RasterBudgetExceeded {
+                required_bytes,
+                max_bytes,
+            });
+        }
+
+        let mut surfaces = HashMap::<usize, PreparedImage>::new();
+        let mut images = std::iter::repeat_with(|| None)
+            .take(commands.len())
+            .collect::<Vec<_>>();
+        for (index, command) in commands.iter().enumerate() {
+            let Command::DrawImage { image, .. } = command else {
+                continue;
+            };
+            let key = image.allocation_id();
+            let prepared = if let Some(prepared) = surfaces.get(&key) {
+                prepared.clone()
+            } else {
+                let prepared = prepare_image_surface(image)?;
+                surfaces.insert(key, prepared.clone());
+                prepared
+            };
+            images[index] = Some(prepared);
+        }
+        Ok(Self { images })
+    }
 }
 
 struct PreparedText {
@@ -356,6 +443,7 @@ struct RenderGeometry {
     pixel_width: i32,
     pixel_height: i32,
     page_to_device: Matrix,
+    surface_bytes: u64,
 }
 
 impl RenderGeometry {
@@ -460,6 +548,7 @@ impl RenderGeometry {
             pixel_width: width as i32,
             pixel_height: height as i32,
             page_to_device,
+            surface_bytes: required_bytes,
         })
     }
 }
@@ -521,6 +610,8 @@ struct Interpreter<'a> {
     context: &'a Context,
     geometry: &'a RenderGeometry,
     prepared_text: &'a PreparedText,
+    prepared_images: &'a PreparedImages,
+    image_interpolation: ImageInterpolation,
     state: PaintState,
     stack: Vec<PaintState>,
 }
@@ -530,11 +621,15 @@ impl<'a> Interpreter<'a> {
         context: &'a Context,
         geometry: &'a RenderGeometry,
         prepared_text: &'a PreparedText,
+        prepared_images: &'a PreparedImages,
+        image_interpolation: ImageInterpolation,
     ) -> Self {
         Self {
             context,
             geometry,
             prepared_text,
+            prepared_images,
+            image_interpolation,
             state: PaintState::default(),
             stack: Vec::new(),
         }
@@ -623,11 +718,17 @@ impl<'a> Interpreter<'a> {
                         .as_ref()
                         .ok_or_else(|| invalid_display_list("glyph run was not prepared"))?,
                 )?,
-                Command::DrawImage { .. } => {
-                    return Err(Error::UnsupportedDisplayCommand {
-                        command: DisplayCommandKind::Image,
-                    });
-                }
+                Command::DrawImage {
+                    width_mm,
+                    height_mm,
+                    ..
+                } => self.draw_image(
+                    self.prepared_images.images[index]
+                        .as_ref()
+                        .ok_or_else(|| invalid_display_list("image was not prepared"))?,
+                    *width_mm,
+                    *height_mm,
+                )?,
             }
         }
         if !self.stack.is_empty() {
@@ -724,6 +825,96 @@ impl<'a> Interpreter<'a> {
     fn draw_glyph_run(&self, run: &PreparedGlyphRun) -> Result<()> {
         self.draw_with_clip(|context| draw_glyph_run_unmasked(context, &self.state, run))
     }
+
+    fn draw_image(&self, image: &PreparedImage, width_mm: f64, height_mm: f64) -> Result<()> {
+        self.draw_with_clip(|context| {
+            draw_image_unmasked(
+                context,
+                &self.state,
+                image,
+                width_mm,
+                height_mm,
+                self.image_interpolation,
+            )
+        })
+    }
+}
+
+fn draw_image_unmasked(
+    context: &Context,
+    state: &PaintState,
+    image: &PreparedImage,
+    width_mm: f64,
+    height_mm: f64,
+    interpolation: ImageInterpolation,
+) -> Result<()> {
+    let pattern = SurfacePattern::create(&image.surface);
+    pattern.set_extend(Extend::Pad);
+    pattern.set_filter(match interpolation {
+        ImageInterpolation::Nearest => Filter::Nearest,
+        ImageInterpolation::Bilinear => Filter::Bilinear,
+    });
+
+    cairo(context.save(), "save image state")?;
+    let drawn = (|| {
+        context.rectangle(0.0, 0.0, width_mm, height_mm);
+        context.clip();
+        context.scale(
+            width_mm / f64::from(image.width),
+            height_mm / f64::from(image.height),
+        );
+        cairo(context.set_source(&pattern), "set image source")?;
+        cairo(
+            context.paint_with_alpha(f64::from(state.alpha) / 255.0),
+            "composite image",
+        )
+    })();
+    let restored = cairo(context.restore(), "restore image state");
+    combine_results(drawn, restored, "restore image state")
+}
+
+fn prepare_image_surface(image: &crate::DecodedImage) -> Result<PreparedImage> {
+    let (width, height, byte_len) = cairo_image_layout(image)?;
+    let stride = Format::ARgb32
+        .stride_for_width(image.width())
+        .map_err(|_| invalid_display_list("image stride exceeds the Cairo integer domain"))?;
+    let capacity = usize::try_from(byte_len)
+        .map_err(|_| invalid_display_list("image raster byte length exceeds address space"))?;
+    let mut native = Vec::new();
+    native
+        .try_reserve_exact(capacity)
+        .map_err(|_| Error::RasterAllocation {
+            required_bytes: byte_len,
+        })?;
+    native.resize(capacity, 0);
+    let source_stride = image.stride();
+    let target_stride =
+        usize::try_from(stride).map_err(|_| invalid_display_list("negative Cairo image stride"))?;
+    let source_width = usize::try_from(image.width())
+        .map_err(|_| invalid_display_list("image width exceeds address space"))?;
+    let source_height = usize::try_from(image.height())
+        .map_err(|_| invalid_display_list("image height exceeds address space"))?;
+    for y in 0..source_height {
+        for x in 0..source_width {
+            let source = y * source_stride + x * 4;
+            let target = y * target_stride + x * 4;
+            let alpha = u32::from(image.rgba()[source + 3]);
+            let red = (u32::from(image.rgba()[source]) * alpha + 127) / 255;
+            let green = (u32::from(image.rgba()[source + 1]) * alpha + 127) / 255;
+            let blue = (u32::from(image.rgba()[source + 2]) * alpha + 127) / 255;
+            let pixel = (alpha << 24) | (red << 16) | (green << 8) | blue;
+            native[target..target + 4].copy_from_slice(&pixel.to_ne_bytes());
+        }
+    }
+    let surface = cairo(
+        ImageSurface::create_for_data(native, Format::ARgb32, width, height, stride),
+        "create image source surface",
+    )?;
+    Ok(PreparedImage {
+        surface,
+        width,
+        height,
+    })
 }
 
 fn draw_glyph_run_unmasked(

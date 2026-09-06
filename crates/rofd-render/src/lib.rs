@@ -7,7 +7,7 @@ mod display_list;
 mod fonts;
 mod images;
 
-pub use cairo_renderer::{CairoRenderer, RenderOptions, RenderReport};
+pub use cairo_renderer::{CairoRenderer, ImageInterpolation, RenderOptions, RenderReport};
 pub use display_list::{
     ClipPath, Command, DisplayList, DisplayListBuilder, RenderDiagnostic, RenderDiagnosticKind,
 };
@@ -103,6 +103,24 @@ pub enum Error {
         required_bytes: u64,
         /// Configured maximum simultaneously live raster bytes.
         max_bytes: u64,
+    },
+    /// The checked native image buffer could not be allocated.
+    #[error("could not allocate {required_bytes} bytes for image compositing")]
+    RasterAllocation {
+        /// Number of bytes requested for the premultiplied Cairo image.
+        required_bytes: u64,
+    },
+    /// A decoded source image exceeds Cairo's supported surface dimensions.
+    #[error(
+        "image resource {resource_id} is {width} by {height} pixels, exceeding Cairo's surface limit"
+    )]
+    InvalidImageSurfaceSize {
+        /// OFD image resource identifier.
+        resource_id: u64,
+        /// Decoded source width.
+        width: u32,
+        /// Decoded source height.
+        height: u32,
     },
     /// Cairo rejected a rendering operation.
     #[error("Cairo {operation} failed: {source}")]
