@@ -1,12 +1,16 @@
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use cairo::{
-    Antialias, Context, FillRule as CairoFillRule, Format, ImageSurface, LineCap, LineJoin, Matrix,
-    Operator, Path,
+    Antialias, Context, FillRule as CairoFillRule, FontFace, FontOptions, Format, Glyph,
+    HintMetrics, HintStyle, ImageSurface, LineCap, LineJoin, Matrix, Operator, Path, SubpixelOrder,
 };
 use rofd_core::{Color, FillRule, Page, PageObject, PathCommand, PathData, Point, Rect, Transform};
 
-use crate::{ClipPath, Command, DisplayCommandKind, DisplayList, Error, RenderDiagnostic, Result};
+use crate::fonts::FontAllocationKey;
+use crate::{
+    ClipPath, Command, DisplayCommandKind, DisplayList, Error, GlyphRun, RenderDiagnostic, Result,
+};
 
 const MILLIMETRES_PER_INCH: f64 = 25.4;
 const DEFAULT_MITER_LIMIT: f64 = 3.528;
@@ -115,9 +119,20 @@ impl CairoRenderer {
                 });
             }
         }
+        let prepared_text = PreparedText::new(
+            display_list.commands(),
+            page.resource_limits().max_glyphs_per_page,
+        )?;
         cairo(context.save(), "save caller state")?;
 
-        let rendered = render_saved(context, page.size(), options, &geometry, &display_list);
+        let rendered = render_saved(
+            context,
+            page.size(),
+            options,
+            &geometry,
+            &display_list,
+            &prepared_text,
+        );
         let restored = cairo(context.restore(), "restore caller state");
         combine_results(rendered, restored, "restore caller state").map(|()| RenderReport {
             diagnostics: display_list.diagnostics().to_vec(),
@@ -129,14 +144,13 @@ fn ensure_page_supported(page: &Page) -> Result<()> {
     fn deferred(objects: &[PageObject]) -> Option<DisplayCommandKind> {
         for object in objects {
             match object {
-                PageObject::Text(_) => return Some(DisplayCommandKind::GlyphRun),
                 PageObject::Image(_) => return Some(DisplayCommandKind::Image),
                 PageObject::Group(group) => {
                     if let Some(command) = deferred(group.objects()) {
                         return Some(command);
                     }
                 }
-                PageObject::Path(_) | PageObject::Unsupported(_) => {}
+                PageObject::Path(_) | PageObject::Text(_) | PageObject::Unsupported(_) => {}
             }
         }
         None
@@ -156,6 +170,7 @@ fn render_saved(
     options: &RenderOptions,
     geometry: &RenderGeometry,
     display_list: &DisplayList,
+    prepared_text: &PreparedText,
 ) -> Result<()> {
     context.set_matrix(geometry.page_to_device);
     context.set_operator(Operator::Over);
@@ -173,14 +188,13 @@ fn render_saved(
         cairo(context.status(), "apply page-space clip")?;
     }
 
-    let mut interpreter = Interpreter::new(context, geometry);
+    let mut interpreter = Interpreter::new(context, geometry, prepared_text);
     interpreter.run(display_list.commands())
 }
 
 fn ensure_supported_commands(commands: &[Command]) -> Result<()> {
     for command in commands {
         let command = match command {
-            Command::DrawGlyphRun(_) => Some(DisplayCommandKind::GlyphRun),
             Command::DrawImage { .. } => Some(DisplayCommandKind::Image),
             _ => None,
         };
@@ -189,6 +203,153 @@ fn ensure_supported_commands(commands: &[Command]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+struct PreparedText {
+    runs: Vec<Option<PreparedGlyphRun>>,
+}
+
+struct PreparedGlyphRun {
+    size_mm: f64,
+    batches: Vec<PreparedGlyphBatch>,
+}
+
+struct PreparedGlyphBatch {
+    transform: Option<Transform>,
+    content: PreparedGlyphContent,
+}
+
+enum PreparedGlyphContent {
+    Font {
+        key: FontAllocationKey,
+        face: FontFace,
+        glyphs: Vec<Glyph>,
+    },
+    Missing {
+        boxes: Vec<(f64, f64, f64, f64)>,
+    },
+}
+
+impl PreparedText {
+    fn new(commands: &[Command], max_glyphs: usize) -> Result<Self> {
+        let mut faces = HashMap::<FontAllocationKey, FontFace>::new();
+        let mut glyph_count = 0usize;
+        let mut runs = std::iter::repeat_with(|| None)
+            .take(commands.len())
+            .collect::<Vec<_>>();
+        for (index, command) in commands.iter().enumerate() {
+            let Command::DrawGlyphRun(run) = command else {
+                continue;
+            };
+            glyph_count = glyph_count.checked_add(run.glyphs().len()).ok_or_else(|| {
+                invalid_display_list("glyph count overflow while preparing Cairo text")
+            })?;
+            if glyph_count > max_glyphs {
+                return Err(invalid_display_list(
+                    "display glyph count exceeds the page glyph limit",
+                ));
+            }
+            runs[index] = Some(PreparedGlyphRun::new(run, &mut faces)?);
+        }
+        Ok(Self { runs })
+    }
+}
+
+impl PreparedGlyphRun {
+    fn new(run: &GlyphRun, faces: &mut HashMap<FontAllocationKey, FontFace>) -> Result<Self> {
+        if !run.size_mm().is_finite() || run.size_mm() <= 0.0 {
+            return Err(invalid_display_list(
+                "glyph run size must be finite and positive",
+            ));
+        }
+        for glyph in run.glyphs() {
+            if !glyph.x().is_finite() || !glyph.y().is_finite() {
+                return Err(invalid_display_list(
+                    "glyph position must contain finite coordinates",
+                ));
+            }
+            if glyph.is_synthetic_box() {
+                if glyph.font().is_some() {
+                    return Err(invalid_display_list(
+                        "synthetic missing glyph unexpectedly contains a font",
+                    ));
+                }
+            } else if glyph.font().is_none() {
+                return Err(invalid_display_list(
+                    "font-backed glyph does not contain a resolved font",
+                ));
+            }
+        }
+
+        let mut batches = Vec::<PreparedGlyphBatch>::new();
+        for positioned in run.glyphs() {
+            let transform = positioned.transform();
+            if positioned.is_synthetic_box() {
+                let width = run.size_mm() * 0.6;
+                let top = positioned.y() - run.size_mm();
+                if !width.is_finite() || !top.is_finite() {
+                    return Err(invalid_display_list("synthetic glyph box overflow"));
+                }
+                match batches.last_mut() {
+                    Some(PreparedGlyphBatch {
+                        transform: prior,
+                        content: PreparedGlyphContent::Missing { boxes },
+                    }) if *prior == transform => {
+                        boxes.push((positioned.x(), top, width, run.size_mm()));
+                    }
+                    _ => batches.push(PreparedGlyphBatch {
+                        transform,
+                        content: PreparedGlyphContent::Missing {
+                            boxes: vec![(positioned.x(), top, width, run.size_mm())],
+                        },
+                    }),
+                }
+                continue;
+            }
+
+            let font = positioned
+                .font()
+                .expect("font presence was validated before batching");
+            if positioned.glyph_id() >= font.glyph_count() {
+                return Err(invalid_display_list(
+                    "positioned glyph identifier exceeds its resolved face",
+                ));
+            }
+            let glyph_index = positioned.glyph_id().into();
+            let key = font.allocation_key();
+            let face = if let Some(face) = faces.get(&key) {
+                face.clone()
+            } else {
+                let face = font.create_cairo_font_face()?;
+                faces.insert(key, face.clone());
+                face
+            };
+            let cairo_glyph = Glyph::new(glyph_index, positioned.x(), positioned.y());
+            match batches.last_mut() {
+                Some(PreparedGlyphBatch {
+                    transform: prior,
+                    content:
+                        PreparedGlyphContent::Font {
+                            key: prior_key,
+                            glyphs,
+                            ..
+                        },
+                }) if *prior == transform && *prior_key == key => glyphs.push(cairo_glyph),
+                _ => batches.push(PreparedGlyphBatch {
+                    transform,
+                    content: PreparedGlyphContent::Font {
+                        key,
+                        face,
+                        glyphs: vec![cairo_glyph],
+                    },
+                }),
+            }
+        }
+        Ok(Self {
+            size_mm: run.size_mm(),
+            batches,
+        })
+    }
 }
 
 struct RenderGeometry {
@@ -359,15 +520,21 @@ impl Default for PaintState {
 struct Interpreter<'a> {
     context: &'a Context,
     geometry: &'a RenderGeometry,
+    prepared_text: &'a PreparedText,
     state: PaintState,
     stack: Vec<PaintState>,
 }
 
 impl<'a> Interpreter<'a> {
-    fn new(context: &'a Context, geometry: &'a RenderGeometry) -> Self {
+    fn new(
+        context: &'a Context,
+        geometry: &'a RenderGeometry,
+        prepared_text: &'a PreparedText,
+    ) -> Self {
         Self {
             context,
             geometry,
+            prepared_text,
             state: PaintState::default(),
             stack: Vec::new(),
         }
@@ -392,7 +559,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn run_commands(&mut self, commands: &[Command]) -> Result<()> {
-        for command in commands {
+        for (index, command) in commands.iter().enumerate() {
             match command {
                 Command::Save => {
                     cairo(self.context.save(), "save display state")?;
@@ -451,11 +618,11 @@ impl<'a> Interpreter<'a> {
                 }
                 Command::SetAlpha(alpha) => self.state.alpha = *alpha,
                 Command::DrawPath(path) => self.draw_path(path)?,
-                Command::DrawGlyphRun(_) => {
-                    return Err(Error::UnsupportedDisplayCommand {
-                        command: DisplayCommandKind::GlyphRun,
-                    });
-                }
+                Command::DrawGlyphRun(_) => self.draw_glyph_run(
+                    self.prepared_text.runs[index]
+                        .as_ref()
+                        .ok_or_else(|| invalid_display_list("glyph run was not prepared"))?,
+                )?,
                 Command::DrawImage { .. } => {
                     return Err(Error::UnsupportedDisplayCommand {
                         command: DisplayCommandKind::Image,
@@ -511,7 +678,7 @@ impl<'a> Interpreter<'a> {
         Ok(surface)
     }
 
-    fn draw_path(&self, path: &PathData) -> Result<()> {
+    fn draw_with_clip(&self, draw_unmasked: impl FnOnce(&Context) -> Result<()>) -> Result<()> {
         if let Some(mask) = &self.state.clip_mask {
             let surface = cairo(
                 ImageSurface::create(
@@ -526,7 +693,7 @@ impl<'a> Interpreter<'a> {
             set_raster_defaults(&temporary)?;
             set_stroke_defaults(&temporary)?;
             cairo(temporary.status(), "initialize clipped drawing state")?;
-            draw_path_unmasked(&temporary, &self.state, path)?;
+            draw_unmasked(&temporary)?;
             surface.flush();
             cairo(surface.status(), "flush clipped drawing surface")?;
 
@@ -546,14 +713,75 @@ impl<'a> Interpreter<'a> {
             let restored = cairo(self.context.restore(), "restore clipped composite state");
             combine_results(composite, restored, "restore clipped composite state")
         } else {
-            draw_path_unmasked(self.context, &self.state, path)
+            draw_unmasked(self.context)
         }
     }
+
+    fn draw_path(&self, path: &PathData) -> Result<()> {
+        self.draw_with_clip(|context| draw_path_unmasked(context, &self.state, path))
+    }
+
+    fn draw_glyph_run(&self, run: &PreparedGlyphRun) -> Result<()> {
+        self.draw_with_clip(|context| draw_glyph_run_unmasked(context, &self.state, run))
+    }
+}
+
+fn draw_glyph_run_unmasked(
+    context: &Context,
+    state: &PaintState,
+    run: &PreparedGlyphRun,
+) -> Result<()> {
+    apply_stroke_state(context, state)?;
+    for batch in &run.batches {
+        cairo(context.save(), "save glyph batch state")?;
+        let drawn = (|| {
+            if let Some(transform) = batch.transform {
+                context.transform(cairo_matrix(transform));
+                cairo(context.status(), "apply glyph transform")?;
+            }
+            match &batch.content {
+                PreparedGlyphContent::Font { face, glyphs, .. } => {
+                    context.set_font_face(face);
+                    context.set_font_size(run.size_mm);
+                    cairo(context.status(), "apply glyph font")?;
+                    if state.stroke.is_none() {
+                        if let Some(fill) = state.fill {
+                            set_source_color(context, fill)?;
+                            cairo(context.show_glyphs(glyphs), "fill positioned glyphs")?;
+                        }
+                    } else {
+                        context.new_path();
+                        context.glyph_path(glyphs);
+                        cairo(context.status(), "construct positioned glyph path")?;
+                        paint_current_path(context, state)?;
+                    }
+                }
+                PreparedGlyphContent::Missing { boxes } => {
+                    context.new_path();
+                    for &(x, y, width, height) in boxes {
+                        context.rectangle(x, y, width, height);
+                    }
+                    cairo(context.status(), "construct missing glyph boxes")?;
+                    paint_current_path(context, state)?;
+                }
+            }
+            Ok(())
+        })();
+        let restored = cairo(context.restore(), "restore glyph batch state");
+        combine_results(drawn, restored, "restore glyph batch state")?;
+    }
+    Ok(())
 }
 
 fn draw_path_unmasked(context: &Context, state: &PaintState, path: &PathData) -> Result<()> {
     append_path(context, path)?;
     context.set_fill_rule(cairo_fill_rule(state.fill_rule));
+    apply_stroke_state(context, state)?;
+    paint_current_path(context, state)?;
+    cairo(context.status(), "finish drawing path")
+}
+
+fn apply_stroke_state(context: &Context, state: &PaintState) -> Result<()> {
     context.set_line_width(state.line_width);
     context.set_line_join(match state.line_join {
         rofd_core::LineJoin::Miter => LineJoin::Miter,
@@ -567,8 +795,12 @@ fn draw_path_unmasked(context: &Context, state: &PaintState, path: &PathData) ->
     });
     context.set_miter_limit(state.miter_limit);
     context.set_dash(&state.dash_pattern, state.dash_offset);
-    cairo(context.status(), "apply path paint state")?;
+    cairo(context.status(), "apply stroke paint state")
+}
 
+fn paint_current_path(context: &Context, state: &PaintState) -> Result<()> {
+    context.set_fill_rule(cairo_fill_rule(state.fill_rule));
+    cairo(context.status(), "apply fill rule")?;
     match (state.fill, state.stroke) {
         (Some(fill), Some(stroke)) => {
             set_source_color(context, fill)?;
@@ -586,7 +818,7 @@ fn draw_path_unmasked(context: &Context, state: &PaintState, path: &PathData) ->
         }
         (None, None) => context.new_path(),
     }
-    cairo(context.status(), "finish drawing path")
+    cairo(context.status(), "finish painting current path")
 }
 
 fn append_path(context: &Context, path: &PathData) -> Result<()> {
@@ -798,6 +1030,15 @@ fn set_stroke_defaults(context: &Context) -> Result<()> {
 fn set_raster_defaults(context: &Context) -> Result<()> {
     context.set_antialias(Antialias::Gray);
     context.set_tolerance(DEFAULT_CURVE_TOLERANCE);
+    let mut font_options = FontOptions::new().map_err(|source| Error::Backend {
+        operation: "create deterministic font options",
+        source,
+    })?;
+    font_options.set_antialias(Antialias::Gray);
+    font_options.set_subpixel_order(SubpixelOrder::Default);
+    font_options.set_hint_style(HintStyle::None);
+    font_options.set_hint_metrics(HintMetrics::Off);
+    context.set_font_options(&font_options);
     cairo(context.status(), "set default raster parameters")
 }
 

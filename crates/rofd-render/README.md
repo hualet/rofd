@@ -95,10 +95,14 @@ concurrently, and existing `DecodedImage` clones remain valid after eviction.
 It bounds the aggregate unique decoded-image allocations retained by one list;
 callers may override that default with `with_max_decoded_image_bytes`.
 Fallbacks, missing glyphs, and deferred image extensions are reported with the
-owning object and page/template source. Cairo rejects these two draw commands
-before painting until their backend implementations land; it never reports a
-successful render after silently omitting them. Composite objects, annotations,
-and signatures are also not rendered yet.
+owning object and page/template source. Cairo renders positioned glyph IDs from
+resolved FreeType faces, batches consecutive glyphs using the same face, and
+uses glyph outlines when fill plus stroke is required. Missing glyphs use a
+deterministic visible box. Text honors object transforms, page rotation, paint,
+and the same A8 union/intersection clip masks as paths. Cairo still rejects
+`DrawImage` before display-list image decoding or painting until image
+compositing lands. Composite objects, annotations, and signatures are also not
+rendered yet.
 
 The expanded diagnostic API uses `RenderDiagnostic::kind()` to return
 `RenderDiagnosticKind`; callers of the earlier renderer preview should migrate

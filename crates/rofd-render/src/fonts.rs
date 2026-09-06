@@ -8,6 +8,12 @@ use rofd_core::{FontResource, ResourceIdentity, ResourceLimits, TextObject, Tran
 
 use crate::{Error, Result};
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct FontAllocationKey {
+    bytes: usize,
+    face_index: u32,
+}
+
 /// Validated stable font identity that cannot contain a host path.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FontIdentity(Arc<str>);
@@ -113,6 +119,37 @@ struct FontMetricsCache {
 }
 
 impl ResolvedFont {
+    pub(crate) fn allocation_key(&self) -> FontAllocationKey {
+        FontAllocationKey {
+            bytes: self.bytes.as_ptr() as usize,
+            face_index: self.face_index,
+        }
+    }
+
+    pub(crate) fn create_cairo_font_face(&self) -> Result<cairo::FontFace> {
+        // cairo-rs owns its FreeType face through the safe default `Rc<Vec<u8>>`
+        // storage. Copy once per render-local face; callers cache the result.
+        let library = freetype::Library::init().map_err(|error| Error::InvalidFont {
+            identity: self.identity().to_owned(),
+            message: error.to_string(),
+        })?;
+        let face_index = isize::try_from(self.face_index).map_err(|_| Error::InvalidFont {
+            identity: self.identity().to_owned(),
+            message: "face index is not representable".to_owned(),
+        })?;
+        let face = library
+            .new_memory_face(self.bytes.to_vec(), face_index)
+            .map_err(|error| Error::InvalidFont {
+                identity: self.identity().to_owned(),
+                message: error.to_string(),
+            })?;
+        cairo::FontFace::create_from_ft(&face).map_err(|source| Error::FontBackend {
+            identity: self.identity().to_owned(),
+            operation: "create Cairo FreeType font face",
+            source,
+        })
+    }
+
     /// Validates and constructs a face from one embedded document resource.
     pub fn from_embedded_resource(resource: &FontResource, face_index: u32) -> Result<Self> {
         let resource_id = resource.id();
@@ -314,6 +351,11 @@ impl ResolvedFont {
         &self,
         operation: impl FnOnce(&freetype::Face<Arc<[u8]>>) -> Result<T>,
     ) -> Result<T> {
+        let face = self.open_face()?;
+        operation(&face)
+    }
+
+    fn open_face(&self) -> Result<freetype::Face<Arc<[u8]>>> {
         let library = freetype::Library::init().map_err(|error| Error::InvalidFont {
             identity: self.identity().to_owned(),
             message: error.to_string(),
@@ -322,13 +364,12 @@ impl ResolvedFont {
             identity: self.identity().to_owned(),
             message: "face index is not representable".to_owned(),
         })?;
-        let face = library
+        library
             .new_memory_face2(Arc::clone(&self.bytes), face_index)
             .map_err(|error| Error::InvalidFont {
                 identity: self.identity().to_owned(),
                 message: error.to_string(),
-            })?;
-        operation(&face)
+            })
     }
 
     fn into_configured_fallback(mut self) -> Self {

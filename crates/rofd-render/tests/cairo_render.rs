@@ -488,37 +488,29 @@ fn rotation_background_and_report_diagnostics_are_applied() {
 }
 
 #[test]
-fn deferred_text_and_image_commands_fail_before_cairo_paints() {
-    for (content, expected) in [
-        (
-            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:TextObject ID="2" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content>"#,
-            DisplayCommandKind::GlyphRun,
-        ),
-        (
-            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="2" Boundary="0 0 3 2" ResourceID="901"/></ofd:Layer></ofd:Content>"#,
-            DisplayCommandKind::Image,
-        ),
-    ] {
-        let page = open_page("0 0 20 20", content);
-        let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
-        let context = Context::new(&surface).unwrap();
-        let matrix = Matrix::new(2.0, 0.25, 0.5, 3.0, 4.0, 5.0);
-        context.set_matrix(matrix);
-        context.set_line_width(7.0);
-        context.move_to(4.0, 5.0);
-        context.line_to(6.0, 7.0);
-        let caller_path = path_segments(&context);
-        assert!(matches!(
-            CairoRenderer.render_page(&page, &context, &options_at_one_pixel_per_mm()),
-            Err(Error::UnsupportedDisplayCommand { command }) if command == expected
-        ));
-        assert_eq!(context.matrix(), matrix);
-        assert_eq!(context.line_width(), 7.0);
-        assert_eq!(path_segments(&context), caller_path);
-        drop(context);
-        let mut surface = surface;
-        assert_eq!(pixel(&mut surface, 10, 10), [0, 0, 0, 0]);
-    }
+fn deferred_image_command_fails_before_cairo_paints() {
+    let content = r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="2" Boundary="0 0 3 2" ResourceID="901"/></ofd:Layer></ofd:Content>"#;
+    let page = open_page("0 0 20 20", content);
+    let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
+    let context = Context::new(&surface).unwrap();
+    let matrix = Matrix::new(2.0, 0.25, 0.5, 3.0, 4.0, 5.0);
+    context.set_matrix(matrix);
+    context.set_line_width(7.0);
+    context.move_to(4.0, 5.0);
+    context.line_to(6.0, 7.0);
+    let caller_path = path_segments(&context);
+    assert!(matches!(
+        CairoRenderer.render_page(&page, &context, &options_at_one_pixel_per_mm()),
+        Err(Error::UnsupportedDisplayCommand {
+            command: DisplayCommandKind::Image
+        })
+    ));
+    assert_eq!(context.matrix(), matrix);
+    assert_eq!(context.line_width(), 7.0);
+    assert_eq!(path_segments(&context), caller_path);
+    drop(context);
+    let mut surface = surface;
+    assert_eq!(pixel(&mut surface, 10, 10), [0, 0, 0, 0]);
 }
 
 #[test]

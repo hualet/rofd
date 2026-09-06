@@ -167,6 +167,17 @@ pub enum Error {
         /// Synchronization detail.
         message: String,
     },
+    /// Cairo could not create or use a resolved FreeType face.
+    #[error("font {identity} failed to {operation}: {source}")]
+    FontBackend {
+        /// Stable non-path resolved-font identity.
+        identity: String,
+        /// Font backend operation being attempted.
+        operation: &'static str,
+        /// Cairo backend failure.
+        #[source]
+        source: cairo::Error,
+    },
     /// A font resource was paired with a text object referencing another identifier.
     #[error(
         "text object {text_object_id} references font {expected_font_id}, not resource {actual_resource_id}"
