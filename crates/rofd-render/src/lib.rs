@@ -8,12 +8,33 @@ mod fonts;
 mod images;
 
 pub use cairo_renderer::{CairoRenderer, RenderOptions, RenderReport};
-pub use display_list::{ClipPath, Command, DisplayList, RenderDiagnostic};
+pub use display_list::{
+    ClipPath, Command, DisplayList, DisplayListBuilder, RenderDiagnostic, RenderDiagnosticKind,
+};
 pub use fonts::{
     position_glyph_runs, FontDiagnostic, FontIdentity, FontResolver, FontSource, GlyphRun,
     PositionedGlyph, ResolvedFont, SystemFontResolver,
 };
 pub use images::{DecodedImage, ImageDecoder};
+
+/// Backend-neutral draw command categories whose Cairo implementations may differ.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum DisplayCommandKind {
+    /// Positioned glyph drawing.
+    GlyphRun,
+    /// Decoded raster-image drawing.
+    Image,
+}
+
+impl std::fmt::Display for DisplayCommandKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::GlyphRun => "DrawGlyphRun",
+            Self::Image => "DrawImage",
+        })
+    }
+}
 
 /// An error encountered while lowering or rendering a validated page.
 #[derive(Debug, thiserror::Error)]
@@ -157,6 +178,52 @@ pub enum Error {
         expected_font_id: u64,
         /// Font resource identifier supplied by the caller.
         actual_resource_id: u64,
+    },
+    /// A page object's document resource could not be loaded.
+    #[error("object {object_id} could not load {kind:?} resource {resource_id}: {source}")]
+    ObjectResource {
+        /// OFD page object identifier.
+        object_id: u64,
+        /// Referenced document-wide resource identifier.
+        resource_id: u64,
+        /// Expected resource category.
+        kind: rofd_core::ResourceKind,
+        /// Structured core resource failure with package-local provenance.
+        #[source]
+        source: rofd_core::Error,
+    },
+    /// Processing a loaded page-object resource failed.
+    #[error(
+        "object {object_id} could not process {kind:?} resource {resource_id} at {asset_path}: {source}"
+    )]
+    ObjectResourceProcessing {
+        /// OFD page object identifier.
+        object_id: u64,
+        /// Referenced document-wide resource identifier.
+        resource_id: u64,
+        /// Resource category being processed.
+        kind: rofd_core::ResourceKind,
+        /// Safe package-local asset path, or a stable marker for an external font.
+        asset_path: String,
+        /// Structured font-positioning or image-decoding failure.
+        #[source]
+        source: Box<Error>,
+    },
+    /// The Cairo backend has not implemented a backend-neutral draw command yet.
+    #[error("Cairo rendering for {command} is not implemented")]
+    UnsupportedDisplayCommand {
+        /// Stable display-command category.
+        command: DisplayCommandKind,
+    },
+    /// Decoded images retained by one display list exceed its aggregate byte budget.
+    #[error(
+        "display-list images require {required_bytes} decoded bytes but the limit is {max_bytes}"
+    )]
+    DisplayListImageBudgetExceeded {
+        /// Aggregate decoded RGBA bytes required through the failing object.
+        required_bytes: u64,
+        /// Maximum decoded RGBA bytes retained by one display list.
+        max_bytes: u64,
     },
     /// Encoded bytes do not have a supported PNG or JPEG signature.
     #[error("image resource {resource_id} at {path} has an unsupported byte signature")]

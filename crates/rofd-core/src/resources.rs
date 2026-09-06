@@ -81,6 +81,7 @@ pub struct FontResource {
     family_name: Option<String>,
     charset: Option<String>,
     bytes: Option<Arc<[u8]>>,
+    asset_path: Option<String>,
 }
 
 impl FontResource {
@@ -117,6 +118,11 @@ impl FontResource {
     /// Returns a shared owner for the bounded encoded font file, when embedded.
     pub fn encoded_bytes_arc(&self) -> Option<Arc<[u8]>> {
         self.bytes.as_ref().map(Arc::clone)
+    }
+
+    /// Returns the safe package-local embedded font path, when declared.
+    pub fn asset_path(&self) -> Option<&str> {
+        self.asset_path.as_deref()
     }
 }
 
@@ -307,6 +313,7 @@ impl ResourceCatalog {
                     .as_ref()
                     .map(|file| file.load(container, limit, "font resource"))
                     .transpose()?,
+                asset_path: font.file.as_ref().map(|file| file.path.as_str().to_owned()),
             }),
             Some(ResourceEntry::Image(_)) => {
                 Err(kind_mismatch(id, ResourceKind::Font, ResourceKind::Image))

@@ -4,9 +4,9 @@ use cairo::{
     Antialias, Context, FillRule as CairoFillRule, Format, ImageSurface, LineCap, LineJoin, Matrix,
     Operator, Path,
 };
-use rofd_core::{Color, FillRule, Page, PathCommand, PathData, Point, Rect, Transform};
+use rofd_core::{Color, FillRule, Page, PageObject, PathCommand, PathData, Point, Rect, Transform};
 
-use crate::{ClipPath, Command, DisplayList, Error, RenderDiagnostic, Result};
+use crate::{ClipPath, Command, DisplayCommandKind, DisplayList, Error, RenderDiagnostic, Result};
 
 const MILLIMETRES_PER_INCH: f64 = 25.4;
 const DEFAULT_MITER_LIMIT: f64 = 3.528;
@@ -102,7 +102,9 @@ impl CairoRenderer {
         options: &RenderOptions,
     ) -> Result<RenderReport> {
         let geometry = RenderGeometry::new(page.size(), options)?;
+        ensure_page_supported(page)?;
         let display_list = DisplayList::from_page(page)?;
+        ensure_supported_commands(display_list.commands())?;
         if let Ok(surface) = ImageSurface::try_from(context.target()) {
             if surface.width() < geometry.pixel_width || surface.height() < geometry.pixel_height {
                 return Err(Error::SurfaceTooSmall {
@@ -121,6 +123,31 @@ impl CairoRenderer {
             diagnostics: display_list.diagnostics().to_vec(),
         })
     }
+}
+
+fn ensure_page_supported(page: &Page) -> Result<()> {
+    fn deferred(objects: &[PageObject]) -> Option<DisplayCommandKind> {
+        for object in objects {
+            match object {
+                PageObject::Text(_) => return Some(DisplayCommandKind::GlyphRun),
+                PageObject::Image(_) => return Some(DisplayCommandKind::Image),
+                PageObject::Group(group) => {
+                    if let Some(command) = deferred(group.objects()) {
+                        return Some(command);
+                    }
+                }
+                PageObject::Path(_) | PageObject::Unsupported(_) => {}
+            }
+        }
+        None
+    }
+
+    for layer in page.layers() {
+        if let Some(command) = deferred(layer.objects()) {
+            return Err(Error::UnsupportedDisplayCommand { command });
+        }
+    }
+    Ok(())
 }
 
 fn render_saved(
@@ -148,6 +175,20 @@ fn render_saved(
 
     let mut interpreter = Interpreter::new(context, geometry);
     interpreter.run(display_list.commands())
+}
+
+fn ensure_supported_commands(commands: &[Command]) -> Result<()> {
+    for command in commands {
+        let command = match command {
+            Command::DrawGlyphRun(_) => Some(DisplayCommandKind::GlyphRun),
+            Command::DrawImage { .. } => Some(DisplayCommandKind::Image),
+            _ => None,
+        };
+        if let Some(command) = command {
+            return Err(Error::UnsupportedDisplayCommand { command });
+        }
+    }
+    Ok(())
 }
 
 struct RenderGeometry {
@@ -288,6 +329,12 @@ struct PaintState {
     fill: Option<Color>,
     fill_rule: FillRule,
     line_width: f64,
+    line_join: rofd_core::LineJoin,
+    line_cap: rofd_core::LineCap,
+    miter_limit: f64,
+    dash_offset: f64,
+    dash_pattern: Vec<f64>,
+    alpha: u8,
     clip_mask: Option<ImageSurface>,
 }
 
@@ -298,6 +345,12 @@ impl Default for PaintState {
             fill: None,
             fill_rule: FillRule::NonZero,
             line_width: 1.0,
+            line_join: rofd_core::LineJoin::Miter,
+            line_cap: rofd_core::LineCap::Butt,
+            miter_limit: DEFAULT_MITER_LIMIT,
+            dash_offset: 0.0,
+            dash_pattern: Vec::new(),
+            alpha: 255,
             clip_mask: None,
         }
     }
@@ -374,7 +427,40 @@ impl<'a> Interpreter<'a> {
                     }
                     self.state.line_width = *width;
                 }
+                Command::SetLineJoin(join) => self.state.line_join = *join,
+                Command::SetLineCap(cap) => self.state.line_cap = *cap,
+                Command::SetMiterLimit(limit) => {
+                    if !limit.is_finite() || *limit <= 0.0 {
+                        return Err(invalid_display_list(
+                            "non-positive or non-finite miter limit",
+                        ));
+                    }
+                    self.state.miter_limit = *limit;
+                }
+                Command::SetDash { offset, pattern } => {
+                    if !offset.is_finite()
+                        || *offset < 0.0
+                        || pattern
+                            .iter()
+                            .any(|value| !value.is_finite() || *value <= 0.0)
+                    {
+                        return Err(invalid_display_list("invalid stroke dash parameters"));
+                    }
+                    self.state.dash_offset = *offset;
+                    self.state.dash_pattern.clone_from(pattern);
+                }
+                Command::SetAlpha(alpha) => self.state.alpha = *alpha,
                 Command::DrawPath(path) => self.draw_path(path)?,
+                Command::DrawGlyphRun(_) => {
+                    return Err(Error::UnsupportedDisplayCommand {
+                        command: DisplayCommandKind::GlyphRun,
+                    });
+                }
+                Command::DrawImage { .. } => {
+                    return Err(Error::UnsupportedDisplayCommand {
+                        command: DisplayCommandKind::Image,
+                    });
+                }
             }
         }
         if !self.stack.is_empty() {
@@ -469,6 +555,18 @@ fn draw_path_unmasked(context: &Context, state: &PaintState, path: &PathData) ->
     append_path(context, path)?;
     context.set_fill_rule(cairo_fill_rule(state.fill_rule));
     context.set_line_width(state.line_width);
+    context.set_line_join(match state.line_join {
+        rofd_core::LineJoin::Miter => LineJoin::Miter,
+        rofd_core::LineJoin::Round => LineJoin::Round,
+        rofd_core::LineJoin::Bevel => LineJoin::Bevel,
+    });
+    context.set_line_cap(match state.line_cap {
+        rofd_core::LineCap::Butt => LineCap::Butt,
+        rofd_core::LineCap::Round => LineCap::Round,
+        rofd_core::LineCap::Square => LineCap::Square,
+    });
+    context.set_miter_limit(state.miter_limit);
+    context.set_dash(&state.dash_pattern, state.dash_offset);
     cairo(context.status(), "apply path paint state")?;
 
     match (state.fill, state.stroke) {

@@ -136,6 +136,21 @@ impl Page {
     pub fn layers(&self) -> &[crate::Layer] {
         &self.data.layers
     }
+
+    /// Returns the immutable resource limits used to validate this page and its document.
+    pub fn resource_limits(&self) -> &crate::ResourceLimits {
+        &self._document.limits
+    }
+
+    /// Looks up a font resource in the document that owns this page.
+    pub fn font_resource(&self, resource_id: u64) -> Result<crate::FontResource> {
+        Document(Arc::clone(&self._document)).font_resource(resource_id)
+    }
+
+    /// Looks up an image resource in the document that owns this page.
+    pub fn image_resource(&self, resource_id: u64) -> Result<crate::ImageResource> {
+        Document(Arc::clone(&self._document)).image_resource(resource_id)
+    }
 }
 
 impl Document {

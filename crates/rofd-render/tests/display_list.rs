@@ -1,10 +1,10 @@
 use std::io::{Cursor, Write};
 
 use rofd_core::{
-    Color, Document, FillRule, LayerSource, LoadOptions, PathData, Point, Transform,
-    UnsupportedObjectKind,
+    Color, Document, FillRule, LayerSource, LineCap, LineJoin, LoadOptions, PathData, Point,
+    Transform, UnsupportedObjectKind,
 };
-use rofd_render::{ClipPath, Command, DisplayList};
+use rofd_render::{ClipPath, Command, DisplayList, RenderDiagnosticKind};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 fn minimal_ofd(page_xml: &str) -> Vec<u8> {
@@ -136,6 +136,10 @@ fn template_effective_layer_order_and_sources_flow_into_display_commands_and_dia
     assert_eq!(display.diagnostics().len(), 2);
     assert_eq!(display.diagnostics()[0].object_id(), 12);
     assert_eq!(display.diagnostics()[0].source(), LayerSource::Template(10));
+    assert!(matches!(
+        display.diagnostics()[0].kind(),
+        RenderDiagnosticKind::MissingGlyph { character: 'T', .. }
+    ));
     assert_eq!(display.diagnostics()[1].object_id(), 103);
     assert_eq!(display.diagnostics()[1].source(), LayerSource::Page);
 }
@@ -173,6 +177,13 @@ fn lowers_path_to_exact_backend_neutral_command_sequence() {
             })),
             Command::SetFillRule(FillRule::EvenOdd),
             Command::SetLineWidth(1.25),
+            Command::SetLineJoin(LineJoin::Miter),
+            Command::SetLineCap(LineCap::Butt),
+            Command::SetMiterLimit(3.528),
+            Command::SetDash {
+                offset: 0.0,
+                pattern: Vec::new(),
+            },
             Command::DrawPath(PathData::parse("M 1 2 L 3 4 C").unwrap()),
             Command::Restore,
         ]
@@ -189,7 +200,7 @@ fn identity_object_transform_leaves_boundary_translation_as_the_effective_transf
 
     let display_list = DisplayList::from_page(&page).unwrap();
 
-    assert_eq!(display_list.commands().len(), 8);
+    assert_eq!(display_list.commands().len(), 12);
     assert_eq!(display_list.commands()[0], Command::Save);
     assert_eq!(
         display_list.commands()[1],
@@ -205,8 +216,12 @@ fn identity_object_transform_leaves_boundary_translation_as_the_effective_transf
         Command::SetFillRule(FillRule::NonZero)
     );
     assert_eq!(display_list.commands()[5], Command::SetLineWidth(0.353));
-    assert!(matches!(display_list.commands()[6], Command::DrawPath(_)));
-    assert_eq!(display_list.commands()[7], Command::Restore);
+    assert!(matches!(
+        display_list.commands()[9],
+        Command::SetDash { .. }
+    ));
+    assert!(matches!(display_list.commands()[10], Command::DrawPath(_)));
+    assert_eq!(display_list.commands()[11], Command::Restore);
 }
 
 #[test]
@@ -272,7 +287,7 @@ fn recursively_flattens_nested_groups_in_source_order_without_group_state() {
 
     let display_list = DisplayList::from_page(&page).unwrap();
 
-    assert_eq!(display_list.commands().len(), 4 * 8);
+    assert_eq!(display_list.commands().len(), 4 * 12);
     assert_eq!(
         drawn_paths(&display_list),
         ["M 2 0", "M 4 0", "M 6 0", "M 7 0"]
@@ -305,12 +320,10 @@ fn direct_page_layers_follow_effective_category_order() {
 }
 
 #[test]
-fn unsupported_nodes_produce_diagnostics_and_no_drawing_commands() {
+fn unsupported_composites_produce_diagnostics_and_no_drawing_commands() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1">
-  <ofd:TextObject ID="2" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject>
   <ofd:PageBlock ID="3">
-    <ofd:ImageObject ID="4" Boundary="0 0 1 1" ResourceID="901"/>
     <ofd:CompositeObject ID="5"/>
   </ofd:PageBlock>
 </ofd:Layer></ofd:Content>"#,
@@ -319,16 +332,13 @@ fn unsupported_nodes_produce_diagnostics_and_no_drawing_commands() {
     let display_list = DisplayList::from_page(&page).unwrap();
 
     assert!(display_list.commands().is_empty());
-    assert_eq!(display_list.diagnostics().len(), 3);
-    for (diagnostic, (object_id, kind)) in display_list.diagnostics().iter().zip([
-        (2, UnsupportedObjectKind::Text),
-        (4, UnsupportedObjectKind::Image),
-        (5, UnsupportedObjectKind::Composite),
-    ]) {
-        assert_eq!(diagnostic.object_id(), object_id);
-        assert_eq!(diagnostic.kind(), kind);
-        assert!(!diagnostic.message().is_empty());
-    }
+    assert_eq!(display_list.diagnostics().len(), 1);
+    assert_eq!(display_list.diagnostics()[0].object_id(), 5);
+    assert_eq!(
+        display_list.diagnostics()[0].unsupported_kind(),
+        Some(UnsupportedObjectKind::Composite)
+    );
+    assert!(!display_list.diagnostics()[0].message().is_empty());
 }
 
 #[test]
@@ -439,8 +449,8 @@ fn unions_areas_per_clip_and_intersects_clips_in_source_order_before_drawing() {
         display_list.commands()[3],
         Command::ConcatTransform(_)
     ));
-    assert!(matches!(display_list.commands()[8], Command::DrawPath(_)));
-    assert_eq!(display_list.commands()[9], Command::Restore);
+    assert!(matches!(display_list.commands()[12], Command::DrawPath(_)));
+    assert_eq!(display_list.commands()[13], Command::Restore);
 }
 
 #[test]

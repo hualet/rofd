@@ -90,8 +90,16 @@ different positive byte bound. Valid images larger than that cache policy are
 returned uncached. Failures are never retained, unrelated resources may decode
 concurrently, and existing `DecodedImage` clones remain valid after eviction.
 
-Text and image objects remain omitted from Cairo drawing and are reported
-through display-list and render-report diagnostics, including object kind,
-identifier, and page/template source. Phase 3 will later connect positioned
-glyphs and decoded images to the display list and Cairo backend. Composite
-objects, annotations, and signatures are also not rendered yet.
+`DisplayListBuilder` lowers text and image objects into backend-neutral
+`DrawGlyphRun` and `DrawImage` commands with injectable font and image services.
+It bounds the aggregate unique decoded-image allocations retained by one list;
+callers may override that default with `with_max_decoded_image_bytes`.
+Fallbacks, missing glyphs, and deferred image extensions are reported with the
+owning object and page/template source. Cairo rejects these two draw commands
+before painting until their backend implementations land; it never reports a
+successful render after silently omitting them. Composite objects, annotations,
+and signatures are also not rendered yet.
+
+The expanded diagnostic API uses `RenderDiagnostic::kind()` to return
+`RenderDiagnosticKind`; callers of the earlier renderer preview should migrate
+unsupported-object checks to `RenderDiagnostic::unsupported_kind()`.

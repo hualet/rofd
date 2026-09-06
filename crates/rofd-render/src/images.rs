@@ -8,13 +8,30 @@ use rofd_core::{ImageFormat, ImageResource, ResourceIdentity, ResourceLimits};
 use crate::{Error, Result};
 
 /// Immutable, validated, row-major RGBA8 pixels decoded from one OFD image resource.
+///
+/// Clones share their pixel allocation. Equality compares collision-free source
+/// resource identity and constant-size metadata rather than rescanning pixels.
 #[derive(Clone, Debug)]
 pub struct DecodedImage {
+    identity: Option<ResourceIdentity>,
     resource_id: u64,
     width: u32,
     height: u32,
     stride: usize,
     rgba: Arc<[u8]>,
+}
+
+impl PartialEq for DecodedImage {
+    fn eq(&self, other: &Self) -> bool {
+        self.resource_id == other.resource_id
+            && self.width == other.width
+            && self.height == other.height
+            && self.stride == other.stride
+            && match (&self.identity, &other.identity) {
+                (Some(left), Some(right)) => left == right,
+                _ => Arc::ptr_eq(&self.rgba, &other.rgba),
+            }
+    }
 }
 
 impl DecodedImage {
@@ -66,8 +83,13 @@ impl DecodedImage {
         Some([pixel[0], pixel[1], pixel[2], pixel[3]])
     }
 
-    fn byte_len(&self) -> u64 {
+    /// Returns the decoded RGBA byte length.
+    pub fn byte_len(&self) -> u64 {
         u64::try_from(self.rgba.len()).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn allocation_id(&self) -> usize {
+        self.rgba.as_ptr() as usize
     }
 }
 
@@ -588,6 +610,7 @@ fn decode_pixels(
     let stride = usize::try_from(u64::from(width) * 4)
         .map_err(|_| overflow_error(resource, width, height))?;
     Ok(DecodedImage {
+        identity: Some(resource.identity()),
         resource_id: resource.id(),
         width,
         height,
@@ -639,6 +662,7 @@ mod tests {
     fn image(value: u8, byte_len: usize) -> DecodedImage {
         let pixels = vec![value; byte_len];
         DecodedImage {
+            identity: None,
             resource_id: u64::from(value),
             width: u32::try_from(byte_len / 4).unwrap(),
             height: 1,

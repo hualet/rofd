@@ -94,6 +94,18 @@ pub struct ResolvedFont {
     metrics: Arc<Mutex<FontMetricsCache>>,
 }
 
+impl PartialEq for ResolvedFont {
+    fn eq(&self, other: &Self) -> bool {
+        self.face_index == other.face_index
+            && self.identity == other.identity
+            && self.source == other.source
+            && self.family_name == other.family_name
+            && self.glyph_count == other.glyph_count
+            && self.units_per_em == other.units_per_em
+            && Arc::ptr_eq(&self.bytes, &other.bytes)
+    }
+}
+
 #[derive(Debug, Default)]
 struct FontMetricsCache {
     characters: HashMap<char, Option<u32>>,
@@ -355,7 +367,7 @@ pub enum FontDiagnostic {
 }
 
 /// One exact glyph placement in OFD object-space millimetres.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PositionedGlyph {
     glyph_id: u32,
     x: f64,
@@ -424,13 +436,17 @@ impl PositionedGlyph {
 }
 
 /// One source `TextCode` and its ordered, unshaped positioned glyphs.
-#[derive(Clone, Debug)]
+///
+/// Clones share immutable text, glyph, and diagnostic storage. Equality is
+/// structural and linear in glyph/diagnostic count for independently allocated
+/// runs, but it never rescans font bytes.
+#[derive(Clone, Debug, PartialEq)]
 pub struct GlyphRun {
-    text: String,
+    text: Arc<str>,
     source_range: Range<usize>,
     size_mm: f64,
-    glyphs: Vec<PositionedGlyph>,
-    diagnostics: Vec<FontDiagnostic>,
+    glyphs: Arc<[PositionedGlyph]>,
+    diagnostics: Arc<[FontDiagnostic]>,
 }
 
 impl GlyphRun {
@@ -1092,11 +1108,11 @@ pub fn position_glyph_runs(
             .checked_add(characters.len())
             .ok_or_else(|| layout_error(text, "text characters", "character index overflow"))?;
         runs.push(GlyphRun {
-            text: run.text().to_owned(),
+            text: Arc::from(run.text()),
             source_range: run_start..global_scalar,
             size_mm: text.font_size(),
-            glyphs,
-            diagnostics,
+            glyphs: glyphs.into(),
+            diagnostics: diagnostics.into(),
         });
     }
     Ok(runs)

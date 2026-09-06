@@ -4,8 +4,10 @@ use cairo::{
     Antialias, Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern,
 };
 use rofd_core::{Color, Document, LoadOptions, Rect, UnsupportedObjectKind};
-use rofd_render::{CairoRenderer, Error, RenderOptions};
+use rofd_render::{CairoRenderer, DisplayCommandKind, Error, RenderOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
+
+const PNG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgba.png");
 
 fn minimal_ofd(page_xml: &str) -> Vec<u8> {
     let entries = [
@@ -34,7 +36,7 @@ fn minimal_ofd(page_xml: &str) -> Vec<u8> {
         ("Doc_0/Pages/Page_0/Content.xml", page_xml),
         (
             "Doc_0/Res.xml",
-            r#"<Res><Fonts><Font ID="900" FontName="Fixture"/></Fonts></Res>"#,
+            r#"<Res><Fonts><Font ID="900" FontName="Fixture"/></Fonts><MultiMedias><MultiMedia ID="901" Type="Image" Format="PNG"><MediaFile>image.png</MediaFile></MultiMedia></MultiMedias></Res>"#,
         ),
     ];
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
@@ -44,6 +46,10 @@ fn minimal_ofd(page_xml: &str) -> Vec<u8> {
             .unwrap();
         writer.write_all(contents.as_bytes()).unwrap();
     }
+    writer
+        .start_file("Doc_0/image.png", SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(PNG).unwrap();
     writer.finish().unwrap().into_inner()
 }
 
@@ -451,7 +457,7 @@ fn rejects_arc_geometry_that_overflows_during_endpoint_conversion() {
 fn rotation_background_and_report_diagnostics_are_applied() {
     let page = open_page(
         "10 20 20 10",
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"/></ofd:Layer></ofd:Content>"#,
     );
     let options = RenderOptions {
         dpi: 25.4,
@@ -472,10 +478,47 @@ fn rotation_background_and_report_diagnostics_are_applied() {
         .render_page(&page, &context, &options)
         .unwrap();
     assert_eq!(report.diagnostics().len(), 1);
-    assert_eq!(report.diagnostics()[0].kind(), UnsupportedObjectKind::Text);
+    assert_eq!(
+        report.diagnostics()[0].unsupported_kind(),
+        Some(UnsupportedObjectKind::Composite)
+    );
     drop(context);
     let mut surface = surface;
     assert_eq!(pixel(&mut surface, 5, 10)[0..3], [10, 20, 30]);
+}
+
+#[test]
+fn deferred_text_and_image_commands_fail_before_cairo_paints() {
+    for (content, expected) in [
+        (
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:TextObject ID="2" Boundary="0 0 1 1" Font="900" Size="1"><ofd:TextCode X="0" Y="0">T</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content>"#,
+            DisplayCommandKind::GlyphRun,
+        ),
+        (
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 2 2" Fill="true"><ofd:AbbreviatedData>M 0 0 L 2 0 L 2 2 C</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="2" Boundary="0 0 3 2" ResourceID="901"/></ofd:Layer></ofd:Content>"#,
+            DisplayCommandKind::Image,
+        ),
+    ] {
+        let page = open_page("0 0 20 20", content);
+        let surface = ImageSurface::create(Format::ARgb32, 20, 20).unwrap();
+        let context = Context::new(&surface).unwrap();
+        let matrix = Matrix::new(2.0, 0.25, 0.5, 3.0, 4.0, 5.0);
+        context.set_matrix(matrix);
+        context.set_line_width(7.0);
+        context.move_to(4.0, 5.0);
+        context.line_to(6.0, 7.0);
+        let caller_path = path_segments(&context);
+        assert!(matches!(
+            CairoRenderer.render_page(&page, &context, &options_at_one_pixel_per_mm()),
+            Err(Error::UnsupportedDisplayCommand { command }) if command == expected
+        ));
+        assert_eq!(context.matrix(), matrix);
+        assert_eq!(context.line_width(), 7.0);
+        assert_eq!(path_segments(&context), caller_path);
+        drop(context);
+        let mut surface = surface;
+        assert_eq!(pixel(&mut surface, 10, 10), [0, 0, 0, 0]);
+    }
 }
 
 #[test]
