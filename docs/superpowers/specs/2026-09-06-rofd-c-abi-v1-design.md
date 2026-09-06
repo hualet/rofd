@@ -109,9 +109,11 @@ typedef struct rofd_render_diagnostic {
 kinds are stable integer constants, not C enum layouts. Default renderer
 construction scans system fonts once, uses 64 MiB font and image-cache limits,
 and selects the ordered families `Noto Sans CJK SC`, `Noto Sans`, and
-`DejaVu Sans`; an explicitly supplied zero-length list disables fallback while
-retaining embedded and declared-family lookup. Explicit zero byte limits are
-invalid.
+`DejaVu Sans`. Null options, or `fallback_families == NULL` and
+`fallback_family_count == 0`, select these built-in default families;
+`fallback_families != NULL` and `fallback_family_count == 0` explicitly
+disable fallback; `fallback_family_count > 0` requires a valid array of
+non-null UTF-8 strings. Explicit zero byte limits are invalid.
 
 ## Functions and Ownership
 

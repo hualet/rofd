@@ -75,6 +75,14 @@ typedef struct rofd_load_options {
     uint32_t strictness;
 } rofd_load_options_t;
 
+/**
+ * Renderer construction options.
+ *
+ * NULL options, or fallback_families == NULL and fallback_family_count == 0,
+ * select built-in default families. Non-NULL fallback_families with a zero
+ * count explicitly disables fallback. A count greater than zero requires a
+ * valid array of non-NULL UTF-8 strings.
+ */
 typedef struct rofd_renderer_options {
     uint32_t struct_size;
     const char *const *fallback_families;
