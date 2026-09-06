@@ -5,6 +5,7 @@
 mod cairo_renderer;
 mod display_list;
 mod fonts;
+mod images;
 
 pub use cairo_renderer::{CairoRenderer, RenderOptions, RenderReport};
 pub use display_list::{ClipPath, Command, DisplayList, RenderDiagnostic};
@@ -12,6 +13,7 @@ pub use fonts::{
     position_glyph_runs, FontDiagnostic, FontIdentity, FontResolver, FontSource, GlyphRun,
     PositionedGlyph, ResolvedFont, SystemFontResolver,
 };
+pub use images::{DecodedImage, ImageDecoder};
 
 /// An error encountered while lowering or rendering a validated page.
 #[derive(Debug, thiserror::Error)]
@@ -155,6 +157,82 @@ pub enum Error {
         expected_font_id: u64,
         /// Font resource identifier supplied by the caller.
         actual_resource_id: u64,
+    },
+    /// Encoded bytes do not have a supported PNG or JPEG signature.
+    #[error("image resource {resource_id} at {path} has an unsupported byte signature")]
+    UnsupportedImageFormat {
+        /// OFD image resource identifier.
+        resource_id: u64,
+        /// Safe package-local encoded asset path.
+        path: String,
+    },
+    /// The byte signature does not agree with the catalog's declared image format.
+    #[error(
+        "image resource {resource_id} at {path} declares {declared:?} but contains {detected:?}"
+    )]
+    ImageFormatMismatch {
+        /// OFD image resource identifier.
+        resource_id: u64,
+        /// Safe package-local encoded asset path.
+        path: String,
+        /// Catalog-declared format.
+        declared: rofd_core::ImageFormat,
+        /// Signature-detected format.
+        detected: rofd_core::ImageFormat,
+    },
+    /// Encoded image bytes are corrupt or cannot be decoded safely.
+    #[error("image resource {resource_id} at {path} could not be decoded: {message}")]
+    ImageDecode {
+        /// OFD image resource identifier.
+        resource_id: u64,
+        /// Safe package-local encoded asset path.
+        path: String,
+        /// Decoder detail without host paths.
+        message: String,
+    },
+    /// An encoded image advertises a zero dimension.
+    #[error("image resource {resource_id} at {path} has invalid dimensions {width} by {height}")]
+    InvalidImageDimensions {
+        /// OFD image resource identifier.
+        resource_id: u64,
+        /// Safe package-local encoded asset path.
+        path: String,
+        /// Header width.
+        width: u32,
+        /// Header height.
+        height: u32,
+    },
+    /// Image stride or decoded-size arithmetic cannot be represented safely.
+    #[error("image resource {resource_id} at {path} dimensions {width} by {height} overflow RGBA sizing")]
+    ImageDimensionsOverflow {
+        /// OFD image resource identifier.
+        resource_id: u64,
+        /// Safe package-local encoded asset path.
+        path: String,
+        /// Header width.
+        width: u32,
+        /// Header height.
+        height: u32,
+    },
+    /// An encoded or decoded image quantity exceeds its configured per-image limit.
+    #[error("image resource {resource_id} at {path} has {actual} {field}, exceeding {max}")]
+    ImageLimitExceeded {
+        /// OFD image resource identifier.
+        resource_id: u64,
+        /// Safe package-local encoded asset path.
+        path: String,
+        /// Stable limit category.
+        field: &'static str,
+        /// Actual checked quantity.
+        actual: u64,
+        /// Configured maximum.
+        max: u64,
+    },
+    /// Internal decoded-image cache synchronization failed.
+    #[error("image cache unavailable: {message}")]
+    ImageCache {
+        /// Synchronization detail.
+        message: String,
     },
 }
 

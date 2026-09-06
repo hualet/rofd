@@ -123,12 +123,19 @@ impl FontResource {
 /// Immutable metadata and encoded bytes for an OFD image resource.
 #[derive(Clone, Debug)]
 pub struct ImageResource {
+    identity: ResourceIdentity,
     id: u64,
     format: ImageFormat,
     bytes: Arc<[u8]>,
+    asset_path: String,
 }
 
 impl ImageResource {
+    /// Returns the opaque identity of this resource declaration.
+    pub fn identity(&self) -> ResourceIdentity {
+        self.identity.clone()
+    }
+
     /// Returns the document-wide OFD object identifier.
     pub fn id(&self) -> u64 {
         self.id
@@ -142,6 +149,11 @@ impl ImageResource {
     /// Returns the bounded encoded image bytes without decoding them.
     pub fn encoded_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Returns the safe package-local path of the encoded asset.
+    pub fn asset_path(&self) -> &str {
+        &self.asset_path
     }
 }
 
@@ -173,6 +185,7 @@ struct FontRecord {
 
 #[derive(Debug)]
 struct ImageRecord {
+    identity: ResourceIdentity,
     id: u64,
     format: ImageFormat,
     file: Asset,
@@ -315,9 +328,11 @@ impl ResourceCatalog {
     ) -> Result<ImageResource> {
         match self.entries.get(&id) {
             Some(ResourceEntry::Image(image)) => Ok(ImageResource {
+                identity: image.identity.clone(),
                 id: image.id,
                 format: image.format,
                 bytes: image.file.load(container, limit, "image resource")?,
+                asset_path: image.file.path.as_str().to_owned(),
             }),
             Some(ResourceEntry::Font(_)) => {
                 Err(kind_mismatch(id, ResourceKind::Image, ResourceKind::Font))
@@ -396,6 +411,7 @@ impl ResourceCatalog {
         self.insert(
             id,
             ResourceEntry::Image(ImageRecord {
+                identity: ResourceIdentity::new(),
                 id,
                 format,
                 file: Asset::new(path),

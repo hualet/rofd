@@ -10,6 +10,7 @@ description = "Backend-neutral OFD display-list lowering and Cairo rendering"
 cairo-rs.workspace = true
 fontdb.workspace = true
 freetype-rs.workspace = true
+image.workspace = true
 rofd-core = { path = "../rofd-core" }
 thiserror.workspace = true
 

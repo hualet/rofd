@@ -74,6 +74,22 @@ clones. System font bytes are checked against the resolver's configured limit
 before ownership. Cache failures are retryable, and constructing a new resolver
 is how callers observe a newer installed-font snapshot.
 
+## Image decoding
+
+`ImageDecoder` validates PNG/JPEG byte signatures against the resource catalog,
+reads and bounds dimensions before allocating pixels, configures the underlying
+decoder's allocation limits, and returns immutable top-to-bottom native RGBA8
+`DecodedImage` values. Pixel, stride, dimension, format, corruption, overflow,
+and limit failures are structured and retain the safe package-local asset path.
+
+Decoded pixels use a per-resource single-flight cache keyed by opaque resource
+identity, so equal numeric IDs from different documents cannot collide. The
+default cache retains at most 64 MiB of decoded RGBA bytes with deterministic
+least-recently-used eviction; `ImageDecoder::with_cache_byte_budget` selects a
+different positive byte bound. Valid images larger than that cache policy are
+returned uncached. Failures are never retained, unrelated resources may decode
+concurrently, and existing `DecodedImage` clones remain valid after eviction.
+
 Text and image objects remain omitted from Cairo drawing and are reported
 through display-list and render-report diagnostics, including object kind,
 identifier, and page/template source. Phase 3 will later connect positioned
