@@ -364,6 +364,15 @@ impl ImageDecoder {
         key: CacheKey,
         loader: impl FnOnce() -> Result<DecodedImage>,
     ) -> Result<DecodedImage> {
+        self.cached_with_join_observer(key, loader, || {})
+    }
+
+    fn cached_with_join_observer(
+        &self,
+        key: CacheKey,
+        loader: impl FnOnce() -> Result<DecodedImage>,
+        follower_joined: impl FnOnce(),
+    ) -> Result<DecodedImage> {
         let (slot, leader) = {
             let mut cache = self.cache.lock().map_err(|_| Error::ImageCache {
                 message: "image cache index is poisoned".to_owned(),
@@ -382,6 +391,7 @@ impl ImageDecoder {
             }
         };
         if !leader {
+            follower_joined();
             return slot.wait();
         }
 
@@ -620,6 +630,7 @@ fn overflow_error(resource: &ImageResource, width: u32, height: u32) -> Error {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
+    use std::sync::Barrier;
     use std::thread;
     use std::time::Duration;
 
@@ -637,37 +648,129 @@ mod tests {
     }
 
     #[test]
-    fn cache_is_single_flight_and_failures_are_retryable() {
+    fn overlapping_success_cohort_uses_one_in_flight_attempt() {
+        const WORKERS: usize = 12;
         let decoder = Arc::new(ImageDecoder::with_cache_byte_budget(64).unwrap());
         let initializations = Arc::new(AtomicUsize::new(0));
-        let threads = (0..12)
+        let start = Arc::new(Barrier::new(WORKERS + 1));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (leader_entered_tx, leader_entered_rx) = mpsc::channel();
+        let (follower_joined_tx, follower_joined_rx) = mpsc::channel();
+        let threads = (0..WORKERS)
             .map(|_| {
                 let decoder = Arc::clone(&decoder);
                 let initializations = Arc::clone(&initializations);
+                let start = Arc::clone(&start);
+                let gate = Arc::clone(&gate);
+                let leader_entered_tx = leader_entered_tx.clone();
+                let follower_joined_tx = follower_joined_tx.clone();
                 thread::spawn(move || {
-                    decoder.cached(CacheKey::Test(1), || {
-                        initializations.fetch_add(1, Ordering::SeqCst);
-                        Ok(image(1, 4))
-                    })
+                    start.wait();
+                    decoder.cached_with_join_observer(
+                        CacheKey::Test(1),
+                        || {
+                            initializations.fetch_add(1, Ordering::SeqCst);
+                            leader_entered_tx.send(()).unwrap();
+                            let (open, released) = &*gate;
+                            let mut open = open.lock().unwrap();
+                            while !*open {
+                                open = released.wait(open).unwrap();
+                            }
+                            Ok(image(1, 4))
+                        },
+                        || follower_joined_tx.send(()).unwrap(),
+                    )
                 })
             })
             .collect::<Vec<_>>();
+        drop(leader_entered_tx);
+        drop(follower_joined_tx);
+        start.wait();
+        leader_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        for _ in 1..WORKERS {
+            follower_joined_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }
+        assert_eq!(initializations.load(Ordering::SeqCst), 1);
+        let (open, released) = &*gate;
+        *open.lock().unwrap() = true;
+        released.notify_all();
         for worker in threads {
             worker.join().unwrap().unwrap();
         }
         assert_eq!(initializations.load(Ordering::SeqCst), 1);
+    }
 
-        let attempts = AtomicUsize::new(0);
-        assert!(decoder
-            .cached(CacheKey::Test(2), || {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                Err(Error::ImageDecode {
-                    resource_id: 2,
-                    path: "Doc/image.png".to_owned(),
-                    message: "injected".to_owned(),
+    #[test]
+    fn overlapping_failure_cohort_shares_one_attempt_then_later_retry_succeeds() {
+        const WORKERS: usize = 12;
+        let decoder = Arc::new(ImageDecoder::with_cache_byte_budget(64).unwrap());
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(WORKERS + 1));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (leader_entered_tx, leader_entered_rx) = mpsc::channel();
+        let (follower_joined_tx, follower_joined_rx) = mpsc::channel();
+        let threads = (0..WORKERS)
+            .map(|_| {
+                let decoder = Arc::clone(&decoder);
+                let attempts = Arc::clone(&attempts);
+                let start = Arc::clone(&start);
+                let gate = Arc::clone(&gate);
+                let leader_entered_tx = leader_entered_tx.clone();
+                let follower_joined_tx = follower_joined_tx.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    decoder.cached_with_join_observer(
+                        CacheKey::Test(2),
+                        || {
+                            attempts.fetch_add(1, Ordering::SeqCst);
+                            leader_entered_tx.send(()).unwrap();
+                            let (open, released) = &*gate;
+                            let mut open = open.lock().unwrap();
+                            while !*open {
+                                open = released.wait(open).unwrap();
+                            }
+                            Err(Error::ImageDecode {
+                                resource_id: 2,
+                                path: "Doc/image.png".to_owned(),
+                                message: "injected".to_owned(),
+                            })
+                        },
+                        || follower_joined_tx.send(()).unwrap(),
+                    )
                 })
             })
-            .is_err());
+            .collect::<Vec<_>>();
+        drop(leader_entered_tx);
+        drop(follower_joined_tx);
+        start.wait();
+        leader_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        for _ in 1..WORKERS {
+            follower_joined_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let (open, released) = &*gate;
+        *open.lock().unwrap() = true;
+        released.notify_all();
+        for worker in threads {
+            assert!(matches!(
+                worker.join().unwrap(),
+                Err(Error::ImageDecode {
+                    resource_id: 2,
+                    ref message,
+                    ..
+                }) if message == "injected"
+            ));
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
         decoder
             .cached(CacheKey::Test(2), || {
                 attempts.fetch_add(1, Ordering::SeqCst);

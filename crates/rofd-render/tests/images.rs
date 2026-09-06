@@ -1,5 +1,5 @@
 use std::io::{Cursor, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::thread;
 
 use rofd_core::{Document, ImageFormat, LoadOptions, ResourceLimits};
@@ -355,14 +355,18 @@ fn cache_reuses_bytes_evicts_by_decoded_bytes_and_returns_oversize_uncached() {
 
 #[test]
 fn concurrent_same_resource_is_single_flight_and_shares_pixels() {
+    const WORKERS: usize = 12;
     let document = Arc::new(package(PNG, "PNG", ResourceLimits::default()));
     let decoder = Arc::new(ImageDecoder::default());
-    let threads = (0..12)
+    let start = Arc::new(Barrier::new(WORKERS + 1));
+    let threads = (0..WORKERS)
         .map(|_| {
             let document = Arc::clone(&document);
             let decoder = Arc::clone(&decoder);
+            let start = Arc::clone(&start);
             thread::spawn(move || {
                 let resource = document.image_resource(10).unwrap();
+                start.wait();
                 decoder
                     .decode(&resource, &ResourceLimits::default())
                     .unwrap()
@@ -370,6 +374,7 @@ fn concurrent_same_resource_is_single_flight_and_shares_pixels() {
             })
         })
         .collect::<Vec<_>>();
+    start.wait();
     let results = threads
         .into_iter()
         .map(|thread| thread.join().unwrap())
