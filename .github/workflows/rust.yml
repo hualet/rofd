@@ -10,21 +10,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  core-and-render:
-    name: Core and renderer
+  reusable-libraries:
+    name: Reusable libraries
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: Install renderer development files and controlled fonts
+    - name: Install native build tools, renderer development files, and controlled fonts
       run: |
         sudo apt-get update
-        sudo apt-get install -y libcairo2-dev libfontconfig1-dev libfreetype6-dev fonts-noto-cjk fonts-noto-mono
+        sudo apt-get install -y build-essential g++ pkg-config libcairo2-dev libfontconfig1-dev libfreetype6-dev fonts-noto-cjk fonts-noto-mono
     - name: Check formatting
       run: cargo fmt --all -- --check
-    - name: Lint core and renderer
-      run: cargo clippy -p rofd-core -p rofd-render --all-targets -- -D warnings
-    - name: Test core and renderer
-      run: cargo test -p rofd-core -p rofd-render
+    - name: Lint reusable crates
+      run: cargo clippy -p rofd-core -p rofd-render -p rofd-ffi --all-targets -- -D warnings
+    - name: Test reusable crates
+      run: cargo test -p rofd-core -p rofd-render -p rofd-ffi
+    - name: Test C and C++ consumers
+      run: crates/rofd-ffi/tests/run_c_tests.sh
     - name: Test complete workspace
       run: cargo test --workspace --all-targets
