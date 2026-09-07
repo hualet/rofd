@@ -39,14 +39,17 @@ fallback. `rofd-core` remains Cairo-, image-codec-, Qt-, and QML-free. Composite
 objects, advanced color spaces, annotations, signatures, and text-query APIs
 remain deferred.
 
-# Run the legacy Qt prototype
+# Run the Qt prototype
 
 ```bash
-cargo run --features qt-reader --bin rofd
+cargo run -p rofd --features qt-reader --bin rofd [file.ofd]
 ```
 
-The Qt command requires the system Qt development dependencies used by
-`qmetaobject`. The prototype is not yet the planned OFD reader.
+The Qt command requires the system Qt6 development dependencies used by
+`qmetaobject`. The prototype opens OFD documents via the "Open…" button (or a
+path passed on the command line), renders pages through `rofd-core` and
+`rofd-render`, and supports page navigation. Note the `-p rofd` flag: the root
+package is not part of the workspace's `default-members`.
 
 # Project structure
 

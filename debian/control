@@ -18,7 +18,8 @@ Architecture: any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          qml6-module-qtquick,
-         qml6-module-qtquick-window
+         qml6-module-qtquick-window,
+         qml6-module-qtquick-dialogs
 Description: OFD document reader (Qt/QML application)
  rofd is an OFD (Open Fixed-layout Document) parser and renderer.
  .

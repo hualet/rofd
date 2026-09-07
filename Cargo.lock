@@ -1128,6 +1128,8 @@ dependencies = [
  "env_logger",
  "log",
  "qmetaobject",
+ "rofd-core",
+ "rofd-render",
  "serde",
  "serde-xml-rs",
  "zip",
