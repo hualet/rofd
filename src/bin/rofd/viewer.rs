@@ -1,8 +1,19 @@
-use log::{error, info};
+use log::{debug, error, info};
 use qmetaobject::prelude::*;
 
 use rofd_core::{Document, LoadOptions};
-use rofd_render::{CairoRenderer, RenderOptions};
+use rofd_render::{CairoRenderer, ImageDecoder, RenderOptions, SystemFontResolver};
+
+/// Ordered fallback families for characters the document fonts cannot render.
+const FALLBACK_FAMILIES: &[&str] = &[
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "Source Han Serif SC",
+    "WenQuanYi Micro Hei",
+    "SimSun",
+    "宋体",
+    "sans-serif",
+];
 
 #[derive(Default, QObject)]
 pub struct OfdViewer {
@@ -22,6 +33,7 @@ pub struct OfdViewer {
     previous_page: qt_method!(fn(&mut self)),
 
     document: Option<Document>,
+    font_resolver: Option<SystemFontResolver>,
     render_counter: u32,
 }
 
@@ -49,21 +61,50 @@ impl OfdViewer {
     }
 
     fn show_page(&mut self, index: i32) {
-        let Some(document) = &self.document else {
-            return;
+        let max_font_bytes = {
+            let Some(document) = &self.document else {
+                return;
+            };
+            if index < 0 || index >= document.page_count() as i32 {
+                return;
+            }
+            match document.page(index as usize) {
+                Ok(page) => page.resource_limits().max_font_bytes,
+                Err(e) => {
+                    error!("failed to load page {}: {}", index + 1, e);
+                    return;
+                }
+            }
         };
-        if index < 0 || index >= document.page_count() as i32 {
-            return;
+
+        // Scanning system fonts is expensive, so do it once per document.
+        if self.font_resolver.is_none() {
+            self.font_resolver = Some(SystemFontResolver::with_system_fonts(
+                FALLBACK_FAMILIES
+                    .iter()
+                    .map(|family| family.to_string())
+                    .collect(),
+                max_font_bytes,
+            ));
         }
 
         let result = (|| -> std::result::Result<String, Box<dyn std::error::Error>> {
+            let document = self.document.as_ref().unwrap();
+            let font_resolver = self.font_resolver.as_ref().unwrap();
             let page = document.page(index as usize)?;
             let options = RenderOptions::default();
             let (width, height) = CairoRenderer::pixel_size(&page, &options)?;
 
             let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)?;
             let context = cairo::Context::new(&surface)?;
-            CairoRenderer.render_page(&page, &context, &options)?;
+            let report = CairoRenderer.render_page_with_services(
+                &page,
+                &context,
+                &options,
+                font_resolver,
+                &ImageDecoder::default(),
+            )?;
+            debug!("render diagnostics: {:?}", report.diagnostics());
             drop(context);
 
             let path = std::env::temp_dir()
