@@ -5,7 +5,7 @@ edition = "2021"
 description = "An OFD parser and renderer library."
 authors = ["HualetWang <hualet@hualet.org>"]
 repository = "https://github.com/hualet/rofd"
-license = "MIT"
+license = "LGPL-2.1-or-later"
 
 [features]
 default = []
@@ -32,7 +32,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license = "LGPL-2.1-or-later"
 repository = "https://github.com/hualet/rofd"
 
 [workspace.dependencies]
