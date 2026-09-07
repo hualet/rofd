@@ -39,3 +39,11 @@ fn rect_requires_exactly_four_values() {
     assert!(Rect::parse("0 0 210").is_err());
     assert!(Rect::parse("0 0 210 297 1").is_err());
 }
+
+#[test]
+fn rect_rejects_unicode_format_characters_in_numbers() {
+    // U+202C (pop directional formatting) shows up in files produced by
+    // rich-text tooling; it is not a number and not skipped as whitespace.
+    assert!(Rect::parse("0 0 15\u{202c} 10").is_err());
+    assert!(Rect::parse("0 0 \u{202c}210 297").is_err());
+}

@@ -91,4 +91,35 @@ mod tests {
             "Doc_0/Pages/Page_0/Content.xml"
         );
     }
+
+    #[test]
+    fn collapses_empty_segments_but_preserves_whitespace_in_names() {
+        assert_eq!(
+            PackagePath::new("Doc_0//Pages/Page_0/Content.xml")
+                .unwrap()
+                .as_str(),
+            "Doc_0/Pages/Page_0/Content.xml"
+        );
+        assert_eq!(
+            PackagePath::new("Doc_0/Images Fonts/font_4.ttf")
+                .unwrap()
+                .as_str(),
+            "Doc_0/Images Fonts/font_4.ttf"
+        );
+        // Whitespace-only segments are kept verbatim: entries are matched
+        // exactly, so a padded segment simply misses at lookup time.
+        assert_eq!(
+            PackagePath::new("Doc_0/   /Content.xml").unwrap().as_str(),
+            "Doc_0/   /Content.xml"
+        );
+    }
+
+    #[test]
+    fn resolves_parent_references_that_stay_inside_package() {
+        let page = PackagePath::new("Doc_0/Pages/Page_0/Content.xml").unwrap();
+        assert_eq!(
+            page.resolve("../../Signs/Signatures.xml").unwrap().as_str(),
+            "Doc_0/Signs/Signatures.xml"
+        );
+    }
 }

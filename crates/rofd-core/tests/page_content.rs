@@ -790,3 +790,40 @@ fn repository_fixture_exposes_paths_text_image_and_unsupported_nodes() {
         .expect("fixture TextObject 66");
     assert_eq!(repeated.runs()[0].delta_x(), vec![2.54; 18]);
 }
+
+fn path_object_with(attributes: &str) -> String {
+    page_with(&format!(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" {attributes}><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+    ))
+}
+
+#[test]
+fn dash_pattern_accepts_any_positive_count_including_odd() {
+    let page = Document::from_bytes(
+        minimal_ofd(&path_object_with(r#"DashPattern="3 1 2""#)),
+        LoadOptions::default(),
+    )
+    .unwrap()
+    .page(0)
+    .unwrap();
+    let PageObject::Path(path) = &page.layers()[0].objects()[0] else {
+        panic!("expected path object");
+    };
+    assert_eq!(path.stroke_style().dash_pattern(), [3.0, 1.0, 2.0]);
+}
+
+#[test]
+fn dash_pattern_rejects_hex_components_empty_and_non_positive_values() {
+    for value in ["#FF #FF", "", "3 0 1", "3 -1"] {
+        assert!(
+            Document::from_bytes(
+                minimal_ofd(&path_object_with(&format!(r#"DashPattern="{value}""#))),
+                LoadOptions::default(),
+            )
+            .unwrap()
+            .page(0)
+            .is_err(),
+            "DashPattern {value:?} must be rejected"
+        );
+    }
+}

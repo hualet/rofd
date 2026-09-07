@@ -22,6 +22,13 @@ fn missing_entry_point_is_reported() {
 }
 
 #[test]
+fn missing_file_on_disk_is_a_structured_io_error() {
+    let error =
+        Document::open("definitely/not/a/real/file.ofd", LoadOptions::default()).unwrap_err();
+    assert!(matches!(error, Error::Io { .. }));
+}
+
+#[test]
 fn multiple_doc_bodies_are_explicitly_unsupported_in_v02() {
     let error = Document::from_bytes(
         support::ofd_with_doc_bodies(PAGE_XML, 2),

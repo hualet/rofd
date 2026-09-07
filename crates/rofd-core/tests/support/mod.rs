@@ -127,3 +127,12 @@ pub const PAGE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area>
   <ofd:Content><ofd:Layer ID="1"/></ofd:Content>
 </ofd:Page>"#;
+
+#[allow(dead_code)]
+pub const OFD_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016" DocType="OFD" Version="1.0">
+  <ofd:DocBody>
+    <ofd:DocInfo><ofd:DocID>fixture-id</ofd:DocID></ofd:DocInfo>
+    <ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>
+  </ofd:DocBody>
+</ofd:OFD>"#;
