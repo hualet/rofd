@@ -19,9 +19,12 @@ extern "C" {
  * NULL. A page retains the document data it needs, so its document may be
  * freed before the page.
  *
- * Every non-NULL input C string must point to readable NUL-terminated UTF-8 bytes
- * that remain valid for the entire call. Individual functions specify whether
- * NULL or an empty string is allowed. The string returned by
+ * Every non-NULL input C string must point to the first byte of a valid readable
+ * character array object containing UTF-8 bytes. The terminating NUL byte must
+ * occur within that same object; its readable extent and byte length must be
+ * representable by ptrdiff_t. The complete sequence must remain valid for the
+ * entire call. Individual functions specify whether NULL or an empty string is
+ * allowed. The string returned by
  * rofd_library_version() has static storage and must not be freed. A
  * diagnostic message is borrowed from its report and remains valid only
  * until that report is freed. A cairo_t passed for rendering is borrowed;
@@ -39,9 +42,11 @@ extern "C" {
  * or after the previous boundary and must never reuse an older version's tail
  * padding. Thus a new library initializes the complete older prefix that an old
  * caller can hold, while an old library preserves a new caller's unknown tail.
- * Non-NULL options must be correctly aligned and readable through struct_size.
- * When struct_size declares a supported version boundary, the complete prefix
- * through that boundary must remain readable for the call.
+ * A non-NULL options pointer must be correctly aligned for its record type and
+ * designate a valid object whose struct_size field is initialized and readable.
+ * When struct_size declares the v1 boundary or a larger supported boundary, the
+ * complete v1 prefix must be initialized and readable; every additional declared
+ * supported prefix must likewise be initialized and readable for the call.
  *
  * Read-only calls on live handles may run concurrently. Callers must ensure
  * that no handle is freed while another call is using it. Cairo context
@@ -106,7 +111,11 @@ typedef struct rofd_load_options {
  * NULL options, or fallback_families == NULL and fallback_family_count == 0,
  * select built-in default families. Non-NULL fallback_families with a zero
  * count explicitly disables fallback. A count greater than zero requires a
- * valid array of non-NULL UTF-8 strings.
+ * pointer correctly aligned for const char * that designates the first element
+ * of a single valid, initialized, readable array object containing at least
+ * fallback_family_count elements. Its total extent must be representable by
+ * ptrdiff_t. Every element must be non-NULL and satisfy the input C string
+ * contract above.
  */
 typedef struct rofd_renderer_options {
     uint32_t struct_size;

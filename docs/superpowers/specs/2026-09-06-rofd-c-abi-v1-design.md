@@ -72,16 +72,21 @@ removed, or reinterpreted. A new field must start at or after the preceding
 version boundary and may not consume that version's tail padding; use explicit
 padding or an equivalent layout constraint when an ABI requires it.
 
-Every non-NULL input C string must point to readable NUL-terminated UTF-8 bytes
-that remain valid for the entire call. Individual functions define whether
-NULL or empty input is allowed. For `rofd_document_open`, a NULL path is a
+Every non-NULL input C string must point to the first byte of a valid readable
+character array object containing UTF-8 bytes. The terminating NUL byte must
+occur within that same object; its readable extent and byte length must be
+representable by `ptrdiff_t`. The complete sequence must remain valid for the
+entire call. Individual functions define whether NULL or empty input is allowed.
+For `rofd_document_open`, a NULL path is a
 defined input that returns `ROFD_STATUS_INVALID_ARGUMENT` under the normal
 output transaction. An empty path also returns `ROFD_STATUS_INVALID_ARGUMENT`.
 A non-NULL path must satisfy the general string validity, lifetime, and
 non-overlap contract.
-Non-NULL options must be correctly aligned and readable through struct_size.
-If `struct_size` declares a supported version boundary, the complete prefix
-through that boundary must remain readable for the call.
+A non-NULL options pointer must be correctly aligned for its record type and
+designate a valid object whose `struct_size` field is initialized and readable.
+When `struct_size` declares the v1 boundary or a larger supported boundary, the
+complete v1 prefix must be initialized and readable; every additional declared
+supported prefix must likewise be initialized and readable for the call.
 
 The initial records are:
 
@@ -137,7 +142,12 @@ and selects the ordered families `Noto Sans CJK SC`, `Noto Sans`, and
 `fallback_family_count == 0`, select these built-in default families;
 `fallback_families != NULL` and `fallback_family_count == 0` explicitly
 disable fallback; `fallback_family_count > 0` requires a valid array of
-non-null UTF-8 strings. Explicit zero byte limits are invalid.
+non-null UTF-8 strings. Specifically, the array pointer must be correctly
+aligned for `const char *` and designate the first element of a single valid,
+initialized, readable array object containing at least
+`fallback_family_count` elements. Its total extent must be representable by
+`ptrdiff_t`; every element must satisfy the general input C string contract.
+Explicit zero byte limits are invalid.
 
 ## Functions and Ownership
 

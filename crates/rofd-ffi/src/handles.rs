@@ -33,6 +33,11 @@ pub(crate) struct PageHandle {
     pub(crate) inner: rofd_core::Page,
 }
 
+pub(crate) struct RendererHandle {
+    pub(crate) font_resolver: rofd_render::SystemFontResolver,
+    pub(crate) image_decoder: rofd_render::ImageDecoder,
+}
+
 mod token_private {
     pub(super) trait Sealed {}
 }
@@ -62,6 +67,12 @@ impl token_private::Sealed for rofd_page_t {}
 
 impl HandleToken for rofd_page_t {
     type Storage = PageHandle;
+}
+
+impl token_private::Sealed for rofd_renderer_t {}
+
+impl HandleToken for rofd_renderer_t {
+    type Storage = RendererHandle;
 }
 
 pub(crate) fn into_raw_handle<Token: HandleToken>(storage: Box<Token::Storage>) -> *mut Token {
@@ -114,13 +125,14 @@ impl HandleToken for TestHandleToken {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentHandle, PageHandle};
+    use super::{DocumentHandle, PageHandle, RendererHandle};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
-    fn document_and_page_storage_are_send_and_sync() {
+    fn document_page_and_renderer_storage_are_send_and_sync() {
         assert_send_sync::<DocumentHandle>();
         assert_send_sync::<PageHandle>();
+        assert_send_sync::<RendererHandle>();
     }
 }
