@@ -28,5 +28,10 @@ int main() {
     (void)renderer;
     (void)report;
     (void)error;
-    return 0;
+    return rofd_abi_version() == ROFD_ABI_VERSION &&
+                   load_options.struct_size == sizeof(load_options) &&
+                   renderer_options.struct_size == sizeof(renderer_options) &&
+                   render_options.struct_size == sizeof(render_options)
+               ? 0
+               : 1;
 }

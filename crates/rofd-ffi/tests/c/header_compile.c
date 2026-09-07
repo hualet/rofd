@@ -19,7 +19,7 @@ _Static_assert(offsetof(rofd_render_options_t, struct_size) == 0,
 _Static_assert(offsetof(rofd_render_diagnostic_t, struct_size) == 0,
                "render diagnostic struct_size must be first");
 
-static void initialize_options(void) {
+static int consume_api(void) {
     rofd_load_options_t load_options;
     rofd_renderer_options_t renderer_options;
     rofd_render_options_t render_options;
@@ -27,9 +27,15 @@ static void initialize_options(void) {
     rofd_load_options_init(&load_options, sizeof(load_options));
     rofd_renderer_options_init(&renderer_options, sizeof(renderer_options));
     rofd_render_options_init(&render_options, sizeof(render_options));
+
+    return rofd_abi_version() == ROFD_ABI_VERSION &&
+           load_options.struct_size == sizeof(load_options) &&
+           renderer_options.struct_size == sizeof(renderer_options) &&
+           render_options.struct_size == sizeof(render_options)
+               ? 0
+               : 1;
 }
 
 int main(void) {
-    initialize_options();
-    return 0;
+    return consume_api();
 }
