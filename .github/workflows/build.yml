@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/hualet/deepin:25.1-builder
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            build-essential \
+            curl \
+            pkg-config \
+            libcairo2-dev \
+            libfreetype-dev \
+            qt6-base-dev \
+            qt6-declarative-dev
+
+      # The distro cargo/rustc (1.81) is too old for the locked
+      # dependencies (image 0.25 needs Rust 1.88), so use rustup.
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal \
+              -c clippy -c rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint reusable crates
+        run: cargo clippy -p rofd-core -p rofd-render -p rofd-ffi --all-targets -- -D warnings
+
+      - name: Test reusable crates
+        run: cargo test -p rofd-core -p rofd-render -p rofd-ffi
+
+      - name: Build application and FFI library
+        run: cargo build --release -p rofd-ffi -p rofd --features rofd/qt-reader

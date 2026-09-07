@@ -1,0 +1,46 @@
+Source: rofd
+Section: utils
+Priority: optional
+Maintainer: HualetWang <hualet@hualet.org>
+Build-Depends: debhelper-compat (= 13),
+               cargo,
+               rustc,
+               pkg-config,
+               libcairo2-dev,
+               libfreetype-dev,
+               qt6-base-dev,
+               qt6-declarative-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/hualet/rofd
+
+Package: rofd
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         qml6-module-qtquick,
+         qml6-module-qtquick-window
+Description: OFD document reader (Qt/QML application)
+ rofd is an OFD (Open Fixed-layout Document) parser and renderer.
+ .
+ This package ships the Qt6/QML reader application.
+
+Package: librofd-ffi0
+Section: libs
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Stable C ABI for the rofd OFD reader and renderer
+ Shared library exposing the rofd OFD parsing and rendering
+ functionality through a stable C ABI.
+
+Package: librofd-ffi-dev
+Section: libdevel
+Architecture: any
+Multi-Arch: same
+Depends: librofd-ffi0 (= ${binary:Version}),
+         ${misc:Depends},
+         libcairo2-dev
+Description: Development files for the rofd C ABI
+ C header and linker symlink for developing against the rofd
+ OFD reader and renderer shared library. The public header
+ includes cairo.h, hence the dependency on libcairo2-dev.

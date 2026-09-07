@@ -1,0 +1,7 @@
+rofd (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging, shipping the Qt6/QML reader application
+    together with the rofd-ffi shared library and its C development
+    files.
+
+ -- HualetWang <hualet@hualet.org>  Mon, 07 Sep 2026 15:00:00 +0800

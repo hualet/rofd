@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=rofd
+Comment=OFD document reader
+Exec=rofd
+Icon=rofd
+Type=Application
+Categories=Office;Viewer;
