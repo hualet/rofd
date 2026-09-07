@@ -10,7 +10,7 @@ This Rust 2021 workspace is migrating from a legacy renderer to a reusable OFD l
 - `cargo fmt --all -- --check` verifies formatting without modifying files; run `cargo fmt --all` to apply it.
 - `cargo clippy -p rofd-core --all-targets -- -D warnings` enforces the CI lint policy.
 - `cargo test -p rofd` exercises the legacy root package when changing legacy code.
-- `cargo run --features qt-reader --bin rofd` launches the prototype; it requires Qt development packages and Cairo.
+- `cargo run -p rofd --features qt-reader --bin rofd [file.ofd]` launches the prototype; it requires Qt6 development packages and Cairo. The `-p rofd` flag is needed because the root package is not in the workspace's `default-members`.
 - `dpkg-buildpackage -us -uc -b` builds the Debian packages (`rofd` Qt/QML app, `librofd-ffi0`, `librofd-ffi-dev`) from `debian/`; it needs a Rust toolchain newer than the distro's (image 0.25 requires Rust 1.88), e.g. via rustup.
 
 CI runs in the `docker.io/hualet/deepin:25.1-builder` container: `.github/workflows/build.yml` verifies formatting, Clippy, tests, and the release build on every push and pull request, and `.github/workflows/deb.yml` builds the Debian packages and attaches them to the GitHub release when a `v*` tag is pushed.
