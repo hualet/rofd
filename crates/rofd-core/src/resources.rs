@@ -397,7 +397,22 @@ impl ResourceCatalog {
                 format!("expected Image, found {kind}"),
             ));
         }
-        let raw_format = required(entry.format, "Format", id, catalog_path)?;
+        let media_file = required(entry.media_file, "MediaFile", id, catalog_path)?;
+        let raw_format = match entry.format.filter(|format| !format.trim().is_empty()) {
+            Some(format) => format,
+            None => media_file
+                .rsplit_once('.')
+                .map(|(_, extension)| extension.to_owned())
+                .filter(|extension| !extension.is_empty())
+                .ok_or_else(|| {
+                    invalid_resource(
+                        catalog_path,
+                        Some(id),
+                        "Format",
+                        "required value is missing".to_owned(),
+                    )
+                })?,
+        };
         let format = match raw_format.to_ascii_lowercase().as_str() {
             "png" => ImageFormat::Png,
             "jpg" | "jpeg" => ImageFormat::Jpeg,
@@ -410,7 +425,6 @@ impl ResourceCatalog {
                 ))
             }
         };
-        let media_file = required(entry.media_file, "MediaFile", id, catalog_path)?;
         let path = asset_path(catalog_path, base_loc.as_deref(), &media_file)?;
         self.insert(
             id,
@@ -840,11 +854,20 @@ fn required(
 }
 
 fn asset_path(path: &PackagePath, base_loc: Option<&str>, value: &str) -> Result<PackagePath> {
-    let relative = match base_loc {
-        Some(base) if !base.is_empty() => format!("{base}/{value}"),
-        _ => value.to_owned(),
+    let resolved = match base_loc {
+        Some(base) if base.starts_with('/') => {
+            let root = base.trim_start_matches('/');
+            let combined = if root.is_empty() {
+                value.to_owned()
+            } else {
+                format!("{root}/{value}")
+            };
+            PackagePath::new(&combined)
+        }
+        Some(base) if !base.is_empty() => path.resolve(&format!("{base}/{value}")),
+        _ => path.resolve(value),
     };
-    path.resolve(&relative).map_err(|error| match error {
+    resolved.map_err(|error| match error {
         Error::InvalidValue {
             field,
             value,
@@ -885,10 +908,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, OnceLock};
 
-    use super::{Asset, DrawParamRecord, ResourceCatalog, ResourceEntry};
+    use super::{asset_path, Asset, DrawParamRecord, ResourceCatalog, ResourceEntry};
     use crate::paint::PaintParameters;
     use crate::path::PackagePath;
-    use crate::{Error, Result};
+    use crate::raw::MultiMediaEntry;
+    use crate::{Error, ImageFormat, Result};
 
     fn draw_param_catalog(length: u64) -> ResourceCatalog {
         let mut catalog = ResourceCatalog::empty();
@@ -941,6 +965,82 @@ mod tests {
             .iter()
             .skip(1)
             .all(|bytes| Arc::ptr_eq(&results[0], bytes)));
+    }
+
+    fn image_entry(id: &str, format: Option<&str>, media_file: &str) -> MultiMediaEntry {
+        MultiMediaEntry {
+            id: id.to_owned(),
+            kind: Some("Image".to_owned()),
+            format: format.map(str::to_owned),
+            media_file: Some(media_file.to_owned()),
+        }
+    }
+
+    #[test]
+    fn image_format_is_inferred_from_media_file_extension_when_format_missing() {
+        let mut catalog = ResourceCatalog::empty();
+        let path = PackagePath::new("Doc_0/DocumentRes.xml").unwrap();
+        catalog
+            .insert_image(image_entry("1", None, "image_1.PNG"), &None, &path)
+            .unwrap();
+        catalog
+            .insert_image(image_entry("2", None, "image_2.jpeg"), &None, &path)
+            .unwrap();
+        assert_eq!(catalog.image_format(1).unwrap(), ImageFormat::Png);
+        assert_eq!(catalog.image_format(2).unwrap(), ImageFormat::Jpeg);
+    }
+
+    #[test]
+    fn explicit_image_format_takes_precedence_over_media_file_extension() {
+        let mut catalog = ResourceCatalog::empty();
+        let path = PackagePath::new("Doc_0/DocumentRes.xml").unwrap();
+        catalog
+            .insert_image(image_entry("1", Some("png"), "image_1.dat"), &None, &path)
+            .unwrap();
+        assert_eq!(catalog.image_format(1).unwrap(), ImageFormat::Png);
+    }
+
+    #[test]
+    fn missing_format_with_unrecognized_extension_is_rejected() {
+        let mut catalog = ResourceCatalog::empty();
+        let path = PackagePath::new("Doc_0/DocumentRes.xml").unwrap();
+        let error = catalog
+            .insert_image(image_entry("1", None, "image_1.xyz"), &None, &path)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidResource {
+                field: "Format",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn root_base_loc_resolves_assets_from_package_root() {
+        let catalog_path = PackagePath::new("PublicRes.xml").unwrap();
+        let path = asset_path(&catalog_path, Some("/"), "font_4.ttf").unwrap();
+        assert_eq!(path.as_str(), "font_4.ttf");
+    }
+
+    #[test]
+    fn absolute_base_loc_resolves_assets_from_package_root_directory() {
+        let catalog_path = PackagePath::new("PublicRes.xml").unwrap();
+        let path = asset_path(&catalog_path, Some("/Res"), "font_4.ttf").unwrap();
+        assert_eq!(path.as_str(), "Res/font_4.ttf");
+    }
+
+    #[test]
+    fn root_base_loc_rejects_paths_escaping_package_root() {
+        let catalog_path = PackagePath::new("PublicRes.xml").unwrap();
+        assert!(asset_path(&catalog_path, Some("/"), "../evil.ttf").is_err());
+    }
+
+    #[test]
+    fn relative_base_loc_resolves_against_declaring_file() {
+        let catalog_path = PackagePath::new("Doc_0/DocumentRes.xml").unwrap();
+        let path = asset_path(&catalog_path, Some("Res"), "image_1.png").unwrap();
+        assert_eq!(path.as_str(), "Doc_0/Res/image_1.png");
     }
 
     #[test]
