@@ -77,22 +77,17 @@ fn build_ui(application: &gtk::Application) {
 }
 */
 
-use log::debug;
 use qmetaobject::prelude::*;
+use qmetaobject::QUrl;
 
-use std::fs;
-use std::path::Path;
+mod resources_qml;
 
 fn main() {
     env_logger::init();
 
-    let mut engine = QmlEngine::new();
-    let qml_root_path = Path::new(file!())
-        .parent()
-        .unwrap()
-        .join("ui/main_window.qml");
-    let qml_root_content = fs::read_to_string(qml_root_path).unwrap();
+    resources_qml::rsrc_qml();
 
-    engine.load_data(qml_root_content.into());
+    let mut engine = QmlEngine::new();
+    engine.load_url(QUrl::from(QString::from("qrc:/main_window.qml")));
     engine.exec();
 }

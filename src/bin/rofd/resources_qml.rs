@@ -3,7 +3,7 @@
 use qmetaobject::qrc;
 
 qrc!(pub rsrc_qml,
-    "/" {
-        "src/bin/rofd/ui/main_window.qml",
+    "src/bin/rofd/ui" as "/" {
+        "main_window.qml",
     }
 );
