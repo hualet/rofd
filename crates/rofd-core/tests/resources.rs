@@ -213,7 +213,7 @@ fn unknown_ids_kind_mismatches_and_invalid_image_declarations_are_structured() {
 
     for xml in [
         br#"<Res><MultiMedias><MultiMedia ID="3" Type="Video" Format="PNG"><MediaFile>x</MediaFile></MultiMedia></MultiMedias></Res>"#.as_slice(),
-        br#"<Res><MultiMedias><MultiMedia ID="3" Type="Image" Format="GIF"><MediaFile>x</MediaFile></MultiMedia></MultiMedias></Res>"#.as_slice(),
+        br#"<Res><MultiMedias><MultiMedia ID="3" Type="Image" Format="WEBP"><MediaFile>x</MediaFile></MultiMedia></MultiMedias></Res>"#.as_slice(),
         br#"<Res><MultiMedias><MultiMedia ID="3" Type="Image" Format="PNG"/></MultiMedias></Res>"#.as_slice(),
         br#"<Res><MultiMedias><MultiMedia ID="3" Type="Image"><MediaFile>x</MediaFile></MultiMedia></MultiMedias></Res>"#.as_slice(),
     ] {

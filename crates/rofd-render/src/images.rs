@@ -493,6 +493,9 @@ fn preflight(resource: &ImageResource, limits: &ResourceLimits) -> Result<Decode
     let decoder_format = match detected {
         ImageFormat::Png => DecoderFormat::Png,
         ImageFormat::Jpeg => DecoderFormat::Jpeg,
+        ImageFormat::Bmp => DecoderFormat::Bmp,
+        ImageFormat::Gif => DecoderFormat::Gif,
+        ImageFormat::Tiff => DecoderFormat::Tiff,
         _ => {
             return Err(Error::UnsupportedImageFormat {
                 resource_id: resource.id(),
@@ -512,6 +515,15 @@ fn detect_format(resource: &ImageResource) -> Result<ImageFormat> {
     }
     if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         return Ok(ImageFormat::Jpeg);
+    }
+    if bytes.starts_with(b"BM") {
+        return Ok(ImageFormat::Bmp);
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Ok(ImageFormat::Gif);
+    }
+    if bytes.starts_with(b"II\x2a\x00") || bytes.starts_with(b"MM\x00\x2a") {
+        return Ok(ImageFormat::Tiff);
     }
     Err(Error::UnsupportedImageFormat {
         resource_id: resource.id(),

@@ -31,6 +31,12 @@ pub enum ImageFormat {
     Png,
     /// JPEG image data.
     Jpeg,
+    /// Windows bitmap image data.
+    Bmp,
+    /// Graphics Interchange Format image data.
+    Gif,
+    /// Tagged Image File Format image data.
+    Tiff,
 }
 
 /// Opaque process-local identity of one validated resource declaration.
@@ -416,6 +422,9 @@ impl ResourceCatalog {
         let format = match raw_format.to_ascii_lowercase().as_str() {
             "png" => ImageFormat::Png,
             "jpg" | "jpeg" => ImageFormat::Jpeg,
+            "bmp" => ImageFormat::Bmp,
+            "gif" => ImageFormat::Gif,
+            "tif" | "tiff" => ImageFormat::Tiff,
             _ => {
                 return Err(invalid_resource(
                     catalog_path,
@@ -1014,6 +1023,46 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn bmp_gif_and_tiff_formats_are_accepted() {
+        let mut catalog = ResourceCatalog::empty();
+        let path = PackagePath::new("Doc_0/DocumentRes.xml").unwrap();
+        catalog
+            .insert_image(image_entry("1", Some("bmp"), "image_1.dat"), &None, &path)
+            .unwrap();
+        catalog
+            .insert_image(image_entry("2", Some("GIF"), "image_2.dat"), &None, &path)
+            .unwrap();
+        catalog
+            .insert_image(image_entry("3", Some("tiff"), "image_3.dat"), &None, &path)
+            .unwrap();
+        assert_eq!(catalog.image_format(1).unwrap(), ImageFormat::Bmp);
+        assert_eq!(catalog.image_format(2).unwrap(), ImageFormat::Gif);
+        assert_eq!(catalog.image_format(3).unwrap(), ImageFormat::Tiff);
+    }
+
+    #[test]
+    fn bmp_gif_and_tiff_formats_are_inferred_from_media_file_extension() {
+        let mut catalog = ResourceCatalog::empty();
+        let path = PackagePath::new("Doc_0/DocumentRes.xml").unwrap();
+        catalog
+            .insert_image(image_entry("1", None, "image_1.bmp"), &None, &path)
+            .unwrap();
+        catalog
+            .insert_image(image_entry("2", None, "image_2.GIF"), &None, &path)
+            .unwrap();
+        catalog
+            .insert_image(image_entry("3", None, "image_3.tif"), &None, &path)
+            .unwrap();
+        catalog
+            .insert_image(image_entry("4", None, "image_4.tiff"), &None, &path)
+            .unwrap();
+        assert_eq!(catalog.image_format(1).unwrap(), ImageFormat::Bmp);
+        assert_eq!(catalog.image_format(2).unwrap(), ImageFormat::Gif);
+        assert_eq!(catalog.image_format(3).unwrap(), ImageFormat::Tiff);
+        assert_eq!(catalog.image_format(4).unwrap(), ImageFormat::Tiff);
     }
 
     #[test]

@@ -230,3 +230,25 @@ fn pixel(surface: &mut ImageSurface, x: i32, y: i32) -> [u8; 4] {
         ((native >> 24) & 0xff) as u8,
     ]
 }
+
+#[test]
+fn package_structure_fixture_decodes_bmp_gif_jpeg_png_and_tiff_images() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/ofd_files/6.2.001 正常文件结构.ofd");
+    let document = Document::open(fixture, LoadOptions::default()).unwrap();
+    let page = document.page(0).unwrap();
+    let font_resolver = SystemFontResolver::with_system_fonts(
+        vec!["Noto Sans CJK SC".to_owned(), "Noto Sans Mono".to_owned()],
+        page.resource_limits().max_font_bytes,
+    );
+    let image_decoder = ImageDecoder::default();
+    let display_list = DisplayListBuilder::new(&font_resolver, &image_decoder)
+        .build(&page)
+        .unwrap();
+    let images = display_list
+        .commands()
+        .iter()
+        .filter(|command| matches!(command, Command::DrawImage { .. }))
+        .count();
+    assert_eq!(images, 6);
+}

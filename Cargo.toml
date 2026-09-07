@@ -39,7 +39,7 @@ repository = "https://github.com/hualet/rofd"
 cairo-rs = { version = "0.20.7", features = ["freetype", "png"] }
 fontdb = "0.23.0"
 freetype-rs = "0.37.0"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }
 serde = { version = "1.0.217", features = ["derive"] }
 serde-xml-rs = "0.6.0"
 thiserror = "2.0.20"

@@ -8,6 +8,9 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 
 const PNG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgba.png");
 const JPEG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgb.jpg");
+const BMP: &[u8] = include_bytes!("fixtures/images/asymmetric-rgb.bmp");
+const GIF: &[u8] = include_bytes!("fixtures/images/asymmetric-rgb.gif");
+const TIFF: &[u8] = include_bytes!("fixtures/images/asymmetric-rgb.tiff");
 
 fn package(bytes: &[u8], format: &str, limits: ResourceLimits) -> Document {
     package_many(&[(10, format, "image.bin", bytes)], limits)
@@ -131,6 +134,24 @@ fn jpeg_decodes_in_source_orientation_with_opaque_rgba_channels() {
 }
 
 #[test]
+fn lossless_formats_decode_in_source_orientation_with_opaque_rgba_channels() {
+    for (bytes, format) in [(BMP, "bmp"), (GIF, "gif"), (TIFF, "tiff")] {
+        let image = decode(bytes, format).unwrap();
+        assert_eq!(image.dimensions(), (3, 2), "{format}");
+        for ((x, y), expected) in [
+            ((0, 0), [224, 32, 32, 255]),
+            ((1, 0), [32, 224, 32, 255]),
+            ((2, 0), [32, 32, 224, 255]),
+            ((0, 1), [224, 224, 32, 255]),
+            ((1, 1), [224, 32, 224, 255]),
+            ((2, 1), [32, 224, 224, 255]),
+        ] {
+            assert_eq!(image.pixel(x, y), Some(expected), "{format} at ({x}, {y})");
+        }
+    }
+}
+
+#[test]
 fn magic_is_required_and_must_match_the_declared_format() {
     assert!(matches!(
         decode(PNG, "JPEG"),
@@ -151,7 +172,7 @@ fn magic_is_required_and_must_match_the_declared_format() {
         })
     ));
     assert!(matches!(
-        decode(b"GIF89a-not-supported", "PNG"),
+        decode(b"WEBP-not-supported", "PNG"),
         Err(Error::UnsupportedImageFormat {
             resource_id: 10,
             ..
