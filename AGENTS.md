@@ -15,6 +15,16 @@ This Rust 2021 workspace is migrating from a legacy renderer to a reusable OFD l
 
 CI runs in the `docker.io/hualet/deepin:25.1-builder` container: `.github/workflows/build.yml` verifies formatting, Clippy, tests, and the release build on every push and pull request, and `.github/workflows/deb.yml` builds the Debian packages and attaches them to the GitHub release when a `v*` tag is pushed.
 
+## Version Bumps & Releases
+
+Keep these places in sync when bumping the version; the tag `v<X.Y.Z>` must match the version in `debian/changelog`:
+
+- `Cargo.toml` (root package): the reader application version.
+- `crates/rofd-core/Cargo.toml`, `crates/rofd-render/Cargo.toml`, `crates/rofd-ffi/Cargo.toml`: each crate versions independently (`rofd-core` is ahead of the others). Run any cargo command afterwards so `Cargo.lock` picks up the new versions.
+- `debian/changelog`: add a new `rofd (X.Y.Z-1) unstable; urgency=medium` entry on top (e.g. with `dch -v X.Y.Z-1`).
+- `debian/rules`: the installed library filename `librofd_ffi.so.0.1.0` mirrors the `rofd-ffi` crate version.
+- `crates/rofd-ffi/build.rs`: the SONAME `librofd_ffi.so.0` is the ABI major version; bump the trailing number only when the C ABI breaks, not on every release.
+
 ## Coding Style & Naming Conventions
 
 Use standard `rustfmt` output (four-space indentation). Name modules, functions, and test cases in `snake_case`; types and traits use `UpperCamelCase`; constants use `SCREAMING_SNAKE_CASE`. Keep public `rofd-core` APIs documented: the crate denies missing documentation and forbids unsafe code. Prefer small modules, explicit errors, and resource-bounded parsing for untrusted OFD archives.
