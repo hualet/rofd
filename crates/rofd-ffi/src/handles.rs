@@ -38,6 +38,16 @@ pub(crate) struct RendererHandle {
     pub(crate) image_decoder: rofd_render::ImageDecoder,
 }
 
+pub(crate) struct OwnedDiagnostic {
+    pub(crate) kind: u32,
+    pub(crate) object_id: u64,
+    pub(crate) message: CString,
+}
+
+pub(crate) struct RenderReportHandle {
+    pub(crate) diagnostics: Vec<OwnedDiagnostic>,
+}
+
 mod token_private {
     pub(super) trait Sealed {}
 }
@@ -73,6 +83,12 @@ impl token_private::Sealed for rofd_renderer_t {}
 
 impl HandleToken for rofd_renderer_t {
     type Storage = RendererHandle;
+}
+
+impl token_private::Sealed for rofd_render_report_t {}
+
+impl HandleToken for rofd_render_report_t {
+    type Storage = RenderReportHandle;
 }
 
 pub(crate) fn into_raw_handle<Token: HandleToken>(storage: Box<Token::Storage>) -> *mut Token {
@@ -125,14 +141,15 @@ impl HandleToken for TestHandleToken {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentHandle, PageHandle, RendererHandle};
+    use super::{DocumentHandle, PageHandle, RenderReportHandle, RendererHandle};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
-    fn document_page_and_renderer_storage_are_send_and_sync() {
+    fn document_page_renderer_and_report_storage_are_send_and_sync() {
         assert_send_sync::<DocumentHandle>();
         assert_send_sync::<PageHandle>();
         assert_send_sync::<RendererHandle>();
+        assert_send_sync::<RenderReportHandle>();
     }
 }

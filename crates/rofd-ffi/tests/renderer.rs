@@ -1,16 +1,23 @@
-use std::ffi::CString;
-use std::mem::size_of;
+use std::ffi::{CStr, CString};
+use std::mem::{size_of, MaybeUninit};
 use std::path::PathBuf;
 use std::ptr;
 
 use rofd_ffi::{
     rofd_document_free, rofd_document_get_page, rofd_document_open, rofd_document_t,
-    rofd_error_free, rofd_error_t, rofd_page_free, rofd_page_t, rofd_render_options_init,
-    rofd_render_options_t, rofd_renderer_free, rofd_renderer_get_pixel_size, rofd_renderer_new,
-    rofd_renderer_options_init, rofd_renderer_options_t, rofd_renderer_t,
+    rofd_error_free, rofd_error_t, rofd_page_free, rofd_page_t, rofd_render_diagnostic_t,
+    rofd_render_options_init, rofd_render_options_t, rofd_render_report_free,
+    rofd_render_report_get_count, rofd_render_report_get_diagnostic, rofd_render_report_t,
+    rofd_renderer_free, rofd_renderer_get_pixel_size, rofd_renderer_new,
+    rofd_renderer_options_init, rofd_renderer_options_t, rofd_renderer_render_page_cairo,
+    rofd_renderer_t, ROFD_DIAGNOSTIC_FONT_FALLBACK, ROFD_DIAGNOSTIC_IMAGE_BORDER_UNSUPPORTED,
+    ROFD_DIAGNOSTIC_IMAGE_MASK_UNSUPPORTED, ROFD_DIAGNOSTIC_IMAGE_SUBSTITUTION_UNSUPPORTED,
+    ROFD_DIAGNOSTIC_MISSING_GLYPH, ROFD_DIAGNOSTIC_UNSUPPORTED_OBJECT,
     ROFD_IMAGE_INTERPOLATION_BILINEAR, ROFD_STATUS_INVALID_ARGUMENT, ROFD_STATUS_LIMIT_EXCEEDED,
-    ROFD_STATUS_OK,
+    ROFD_STATUS_OK, ROFD_STATUS_PAGE_OUT_OF_RANGE, ROFD_STATUS_RENDER_ERROR,
 };
+
+use cairo::{Context, Format, ImageSurface};
 
 fn fixture_path() -> CString {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../learning/test.ofd");
@@ -529,5 +536,377 @@ fn renderer_output_is_nulled_on_invalid_options_and_free_accepts_null() {
     unsafe {
         free_error(&mut error);
         rofd_renderer_free(ptr::null_mut());
+    }
+}
+
+unsafe fn render_fixture(
+    renderer: *const rofd_renderer_t,
+    page: *const rofd_page_t,
+    context: *mut cairo::ffi::cairo_t,
+    options: *const rofd_render_options_t,
+    report: *mut *mut rofd_render_report_t,
+    error: *mut *mut rofd_error_t,
+) -> u32 {
+    // SAFETY: Each caller supplies the complete pointer and lifetime contract under test.
+    unsafe { rofd_renderer_render_page_cairo(renderer, page, context, options, report, error) }
+}
+
+#[test]
+fn render_report_renders_real_fixture_and_keeps_cairo_context_borrowed() {
+    // SAFETY: All returned handles and Cairo objects stay live through the call and are freed once.
+    unsafe {
+        let (document, page) = open_fixture_page();
+        let renderer = new_renderer(ptr::null()).unwrap();
+        let mut options = initialized_render_options();
+        options.dpi = 254.0;
+        let surface = ImageSurface::create(Format::ARgb32, 2115, 1400).unwrap();
+        let context = Context::new(&surface).unwrap();
+        let mut report = ptr::null_mut();
+        let mut error = ptr::null_mut();
+
+        assert_eq!(
+            render_fixture(
+                renderer,
+                page,
+                context.to_raw_none(),
+                &options,
+                &mut report,
+                &mut error,
+            ),
+            ROFD_STATUS_OK
+        );
+        assert!(!report.is_null());
+        assert!(error.is_null());
+
+        let mut count = 0;
+        assert_eq!(
+            rofd_render_report_get_count(report, &mut count, &mut error),
+            ROFD_STATUS_OK
+        );
+        assert!(count > 0);
+        for index in 0..count {
+            let mut diagnostic = rofd_render_diagnostic_t {
+                struct_size: size_of::<rofd_render_diagnostic_t>() as u32,
+                kind: u32::MAX,
+                object_id: u64::MAX,
+                message: ptr::null(),
+            };
+            assert_eq!(
+                rofd_render_report_get_diagnostic(report, index, &mut diagnostic, &mut error),
+                ROFD_STATUS_OK
+            );
+            assert!([
+                ROFD_DIAGNOSTIC_UNSUPPORTED_OBJECT,
+                ROFD_DIAGNOSTIC_FONT_FALLBACK,
+                ROFD_DIAGNOSTIC_MISSING_GLYPH,
+                ROFD_DIAGNOSTIC_IMAGE_SUBSTITUTION_UNSUPPORTED,
+                ROFD_DIAGNOSTIC_IMAGE_MASK_UNSUPPORTED,
+                ROFD_DIAGNOSTIC_IMAGE_BORDER_UNSUPPORTED,
+            ]
+            .contains(&diagnostic.kind));
+            assert_ne!(diagnostic.object_id, u64::MAX);
+            assert!(!diagnostic.message.is_null());
+            assert!(!CStr::from_ptr(diagnostic.message).to_bytes().is_empty());
+        }
+
+        context.move_to(7.0, 9.0);
+        assert_eq!(context.current_point().unwrap(), (7.0, 9.0));
+
+        rofd_render_report_free(report);
+        rofd_renderer_free(renderer);
+        rofd_page_free(page);
+        rofd_document_free(document);
+    }
+}
+
+#[test]
+fn render_report_output_is_optional_but_context_is_required() {
+    // SAFETY: Live handles and distinct outputs satisfy the contracts except for deliberate NULLs.
+    unsafe {
+        let (document, page) = open_fixture_page();
+        let renderer = new_renderer(ptr::null()).unwrap();
+        let mut options = initialized_render_options();
+        options.dpi = 254.0;
+        let surface = ImageSurface::create(Format::ARgb32, 2115, 1400).unwrap();
+        let context = Context::new(&surface).unwrap();
+        let mut error = ptr::null_mut();
+
+        assert_eq!(
+            render_fixture(
+                renderer,
+                page,
+                context.to_raw_none(),
+                &options,
+                ptr::null_mut(),
+                &mut error,
+            ),
+            ROFD_STATUS_OK
+        );
+        assert!(error.is_null());
+
+        let mut report = ptr::NonNull::<rofd_render_report_t>::dangling().as_ptr();
+        assert_eq!(
+            render_fixture(
+                renderer,
+                page,
+                ptr::null_mut(),
+                &options,
+                &mut report,
+                &mut error,
+            ),
+            ROFD_STATUS_INVALID_ARGUMENT
+        );
+        assert!(report.is_null());
+        free_error(&mut error);
+
+        rofd_renderer_free(renderer);
+        rofd_page_free(page);
+        rofd_document_free(document);
+    }
+}
+
+#[test]
+fn failed_render_leaves_report_null_and_returns_render_error() {
+    // SAFETY: All live inputs and distinct outputs remain valid for the call.
+    unsafe {
+        let (document, page) = open_fixture_page();
+        let renderer = new_renderer(ptr::null()).unwrap();
+        let mut options = initialized_render_options();
+        options.dpi = 254.0;
+        let surface = ImageSurface::create(Format::ARgb32, 64, 64).unwrap();
+        let context = Context::new(&surface).unwrap();
+        let mut report = ptr::NonNull::<rofd_render_report_t>::dangling().as_ptr();
+        let mut error = ptr::null_mut();
+
+        assert_eq!(
+            render_fixture(
+                renderer,
+                page,
+                context.to_raw_none(),
+                &options,
+                &mut report,
+                &mut error,
+            ),
+            ROFD_STATUS_RENDER_ERROR
+        );
+        assert!(report.is_null());
+        free_error(&mut error);
+
+        rofd_renderer_free(renderer);
+        rofd_page_free(page);
+        rofd_document_free(document);
+    }
+}
+
+#[repr(C)]
+struct ExtendedDiagnostic {
+    v1: rofd_render_diagnostic_t,
+    future_tail: [u64; 2],
+}
+
+#[test]
+fn diagnostic_access_is_transactional_and_preserves_the_version_boundary() {
+    // SAFETY: All handles, Cairo objects, records, and distinct output slots remain valid.
+    unsafe {
+        let (document, page) = open_fixture_page();
+        let renderer = new_renderer(ptr::null()).unwrap();
+        let mut options = initialized_render_options();
+        options.dpi = 254.0;
+        let surface = ImageSurface::create(Format::ARgb32, 2115, 1400).unwrap();
+        let context = Context::new(&surface).unwrap();
+        let mut report = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        assert_eq!(
+            render_fixture(
+                renderer,
+                page,
+                context.to_raw_none(),
+                &options,
+                &mut report,
+                &mut error,
+            ),
+            ROFD_STATUS_OK
+        );
+
+        let declared_size = size_of::<ExtendedDiagnostic>() as u32;
+        let mut extended = ExtendedDiagnostic {
+            v1: rofd_render_diagnostic_t {
+                struct_size: declared_size,
+                kind: u32::MAX,
+                object_id: u64::MAX,
+                message: ptr::NonNull::<i8>::dangling().as_ptr(),
+            },
+            future_tail: [0xa5a5_a5a5_a5a5_a5a5; 2],
+        };
+        assert_eq!(
+            rofd_render_report_get_diagnostic(report, 0, &mut extended.v1, &mut error),
+            ROFD_STATUS_OK
+        );
+        assert_eq!(extended.v1.struct_size, declared_size);
+        assert_ne!(extended.v1.kind, u32::MAX);
+        assert_ne!(extended.v1.object_id, u64::MAX);
+        assert!(!extended.v1.message.is_null());
+        assert_eq!(extended.future_tail, [0xa5a5_a5a5_a5a5_a5a5; 2]);
+
+        extended.v1.kind = u32::MAX;
+        extended.v1.object_id = u64::MAX;
+        extended.v1.message = ptr::NonNull::<i8>::dangling().as_ptr();
+        assert_eq!(
+            rofd_render_report_get_diagnostic(report, usize::MAX, &mut extended.v1, &mut error),
+            ROFD_STATUS_PAGE_OUT_OF_RANGE
+        );
+        assert_eq!(extended.v1.struct_size, declared_size);
+        assert_eq!(extended.v1.kind, 0);
+        assert_eq!(extended.v1.object_id, 0);
+        assert!(extended.v1.message.is_null());
+        assert_eq!(extended.future_tail, [0xa5a5_a5a5_a5a5_a5a5; 2]);
+        free_error(&mut error);
+
+        let mut raw = MaybeUninit::<ExtendedDiagnostic>::uninit();
+        ptr::write_bytes(
+            raw.as_mut_ptr().cast::<u8>(),
+            0xa5,
+            size_of::<ExtendedDiagnostic>(),
+        );
+        ptr::addr_of_mut!((*raw.as_mut_ptr()).v1.struct_size).write(declared_size);
+        assert_eq!(
+            rofd_render_report_get_diagnostic(
+                report,
+                usize::MAX,
+                ptr::addr_of_mut!((*raw.as_mut_ptr()).v1),
+                &mut error,
+            ),
+            ROFD_STATUS_PAGE_OUT_OF_RANGE
+        );
+        let raw_bytes =
+            std::slice::from_raw_parts(raw.as_ptr().cast::<u8>(), size_of::<ExtendedDiagnostic>());
+        assert_eq!(&raw_bytes[..size_of::<u32>()], &declared_size.to_ne_bytes());
+        assert!(
+            raw_bytes[size_of::<u32>()..size_of::<rofd_render_diagnostic_t>()]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert!(raw_bytes[size_of::<rofd_render_diagnostic_t>()..]
+            .iter()
+            .all(|byte| *byte == 0xa5));
+        free_error(&mut error);
+
+        let mut undersized = 4_u32;
+        assert_eq!(
+            rofd_render_report_get_diagnostic(
+                report,
+                0,
+                ptr::addr_of_mut!(undersized).cast(),
+                &mut error,
+            ),
+            ROFD_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(undersized, 4);
+        free_error(&mut error);
+
+        rofd_render_report_free(report);
+        rofd_renderer_free(renderer);
+        rofd_page_free(page);
+        rofd_document_free(document);
+    }
+}
+
+#[test]
+fn report_access_rejects_nulls_and_detectable_input_output_aliases() {
+    // SAFETY: Calls deliberately pass defined NULLs and raw aliased addresses without creating
+    // Rust references; the live report must remain untouched by rejected operations.
+    unsafe {
+        let mut count = usize::MAX;
+        let mut error = ptr::null_mut();
+        assert_eq!(
+            rofd_render_report_get_count(ptr::null(), &mut count, &mut error),
+            ROFD_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(count, 0);
+        free_error(&mut error);
+        assert_eq!(
+            rofd_render_report_get_count(ptr::null(), ptr::null_mut(), &mut error),
+            ROFD_STATUS_INVALID_ARGUMENT
+        );
+        free_error(&mut error);
+
+        let (document, page) = open_fixture_page();
+        let renderer = new_renderer(ptr::null()).unwrap();
+        let mut options = initialized_render_options();
+        options.dpi = 254.0;
+        let surface = ImageSurface::create(Format::ARgb32, 2115, 1400).unwrap();
+        let context = Context::new(&surface).unwrap();
+        let mut report = ptr::null_mut();
+        assert_eq!(
+            render_fixture(
+                renderer,
+                page,
+                context.to_raw_none(),
+                &options,
+                &mut report,
+                &mut error,
+            ),
+            ROFD_STATUS_OK
+        );
+
+        assert_eq!(
+            rofd_render_report_get_diagnostic(report, 0, ptr::null_mut(), &mut error),
+            ROFD_STATUS_INVALID_ARGUMENT
+        );
+        free_error(&mut error);
+
+        let diagnostic_alias = report.cast::<rofd_render_diagnostic_t>();
+        assert_eq!(
+            rofd_render_report_get_diagnostic(report, 0, diagnostic_alias, &mut error),
+            ROFD_STATUS_INVALID_ARGUMENT
+        );
+        free_error(&mut error);
+        assert_eq!(
+            rofd_render_report_get_count(report, &mut count, &mut error),
+            ROFD_STATUS_OK
+        );
+        assert!(count > 0);
+
+        rofd_render_report_free(report);
+        rofd_render_report_free(ptr::null_mut());
+        rofd_renderer_free(renderer);
+        rofd_page_free(page);
+        rofd_document_free(document);
+    }
+}
+
+#[test]
+fn render_preflight_rejects_an_output_slot_inside_the_options_input() {
+    // SAFETY: The deliberate alias is passed only as raw pointers. Preflight must reject it before
+    // writing either the report slot or the readable options record.
+    unsafe {
+        let (document, page) = open_fixture_page();
+        let renderer = new_renderer(ptr::null()).unwrap();
+        let mut options = initialized_render_options();
+        options.dpi = 254.0;
+        let original_size = options.struct_size;
+        let surface = ImageSurface::create(Format::ARgb32, 2115, 1400).unwrap();
+        let context = Context::new(&surface).unwrap();
+        let report_inside_options = ptr::addr_of_mut!(options).cast::<*mut rofd_render_report_t>();
+        let mut error = ptr::null_mut();
+
+        assert_eq!(
+            render_fixture(
+                renderer,
+                page,
+                context.to_raw_none(),
+                &options,
+                report_inside_options,
+                &mut error,
+            ),
+            ROFD_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(options.struct_size, original_size);
+        assert!(!error.is_null());
+        free_error(&mut error);
+
+        rofd_renderer_free(renderer);
+        rofd_page_free(page);
+        rofd_document_free(document);
     }
 }

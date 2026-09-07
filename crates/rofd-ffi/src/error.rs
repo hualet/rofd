@@ -1,9 +1,10 @@
+use crate::abi::ROFD_RENDER_DIAGNOSTIC_V1_SIZE;
 use crate::handles::{drop_raw_handle, handle_ref, into_raw_handle, ErrorHandle, HandleToken};
 use crate::{
-    rofd_error_t, rofd_status_t, ROFD_STATUS_INTERNAL, ROFD_STATUS_INVALID_ARGUMENT,
-    ROFD_STATUS_INVALID_DOCUMENT, ROFD_STATUS_IO, ROFD_STATUS_LIMIT_EXCEEDED, ROFD_STATUS_OK,
-    ROFD_STATUS_OUT_OF_MEMORY, ROFD_STATUS_PAGE_OUT_OF_RANGE, ROFD_STATUS_RENDER_ERROR,
-    ROFD_STATUS_UNSUPPORTED,
+    rofd_error_t, rofd_render_diagnostic_t, rofd_status_t, ROFD_STATUS_INTERNAL,
+    ROFD_STATUS_INVALID_ARGUMENT, ROFD_STATUS_INVALID_DOCUMENT, ROFD_STATUS_IO,
+    ROFD_STATUS_LIMIT_EXCEEDED, ROFD_STATUS_OK, ROFD_STATUS_OUT_OF_MEMORY,
+    ROFD_STATUS_PAGE_OUT_OF_RANGE, ROFD_STATUS_RENDER_ERROR, ROFD_STATUS_UNSUPPORTED,
 };
 use std::any::Any;
 use std::ffi::{c_char, CString};
@@ -183,6 +184,38 @@ pub(crate) struct ScalarOutput<T> {
     output: *mut T,
 }
 
+pub(crate) struct DiagnosticFields {
+    pub(crate) kind: u32,
+    pub(crate) object_id: u64,
+    pub(crate) message: *const c_char,
+}
+
+pub(crate) struct DiagnosticOutput {
+    output: *mut rofd_render_diagnostic_t,
+    declared_size: u32,
+}
+
+impl DiagnosticOutput {
+    /// Captures the caller's input `struct_size` before the output transaction.
+    ///
+    /// # Safety
+    ///
+    /// A non-null pointer must be readable for its first `u32`; alignment is
+    /// checked by the transaction before any output write.
+    pub(crate) unsafe fn required(output: *mut rofd_render_diagnostic_t) -> Self {
+        let declared_size = if output.is_null() {
+            0
+        } else {
+            // SAFETY: The caller provides an initialized, readable prefix field.
+            unsafe { output.cast::<u32>().read_unaligned() }
+        };
+        Self {
+            output,
+            declared_size,
+        }
+    }
+}
+
 #[allow(dead_code)] // Consumed by fallible entry points added in subsequent tasks.
 impl<T> ScalarOutput<T> {
     pub(crate) fn required(output: *mut T) -> Self {
@@ -250,6 +283,18 @@ impl SlotRange {
     fn overlaps(self, other: Self) -> bool {
         self.start < other.end && other.start < self.end
     }
+
+    fn for_region(pointer: *const u8, size: usize, alignment: usize) -> Result<Option<Self>, ()> {
+        if pointer.is_null() {
+            return Ok(None);
+        }
+        let start = pointer as usize;
+        if !start.is_multiple_of(alignment) {
+            return Err(());
+        }
+        let end = start.checked_add(size).ok_or(())?;
+        Ok(Some(Self { start, end }))
+    }
 }
 
 const MAX_OUTPUT_SLOTS: usize = 3;
@@ -284,6 +329,47 @@ impl SlotRanges {
     }
 }
 
+const MAX_INPUT_REGIONS: usize = 5;
+
+/// Read-only regions that must remain disjoint from every FFI output slot.
+#[derive(Default)]
+pub(crate) struct InputRanges {
+    regions: [SlotRange; MAX_INPUT_REGIONS],
+    len: usize,
+}
+
+impl InputRanges {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn push<T>(&mut self, pointer: *const T) -> Result<(), ()> {
+        self.push_region(pointer.cast(), size_of::<T>(), align_of::<T>())
+    }
+
+    pub(crate) fn push_region(
+        &mut self,
+        pointer: *const u8,
+        size: usize,
+        alignment: usize,
+    ) -> Result<(), ()> {
+        let range = SlotRange::for_region(pointer, size, alignment)?;
+        let Some(range) = range else {
+            return Ok(());
+        };
+        if self.len == self.regions.len() {
+            return Err(());
+        }
+        self.regions[self.len] = range;
+        self.len += 1;
+        Ok(())
+    }
+
+    fn iter(&self) -> impl Iterator<Item = SlotRange> + '_ {
+        self.regions[..self.len].iter().copied()
+    }
+}
+
 mod output_private {
     pub(super) trait Slot {}
     pub(super) trait Set {}
@@ -294,9 +380,11 @@ mod output_private {
 ///
 /// # Safety
 ///
-/// Implementations must initialize every non-null slot even when returning
-/// `false`. `commit` may only perform operations that cannot unwind, and must
-/// consume or publish every staged value exactly once.
+/// Implementations must initialize every valid non-null slot even when another
+/// slot returns `false`. A versioned record may leave itself untouched when its
+/// declared prefix is too small to initialize safely. `commit` may only perform
+/// operations that cannot unwind, and must consume or publish every staged value
+/// exactly once.
 #[allow(private_bounds)]
 pub(crate) unsafe trait OutputSlot: output_private::Slot {
     type Staged;
@@ -357,6 +445,43 @@ unsafe impl<T: ZeroScalar> OutputSlot for ScalarOutput<T> {
         // SAFETY: boundary calls commit only after initialize returned true. A raw write of Copy
         // data invokes no destructor and cannot unwind.
         unsafe { self.output.write(staged) };
+    }
+}
+
+impl output_private::Slot for DiagnosticOutput {}
+
+unsafe impl OutputSlot for DiagnosticOutput {
+    type Staged = DiagnosticFields;
+
+    fn collect_range(&self, ranges: &mut SlotRanges) -> Result<(), ()> {
+        if self.declared_size as usize >= ROFD_RENDER_DIAGNOSTIC_V1_SIZE {
+            ranges.push(self.output)
+        } else {
+            ranges.push(self.output.cast::<u32>())
+        }
+    }
+
+    unsafe fn initialize(&self) -> bool {
+        if self.output.is_null() || (self.declared_size as usize) < ROFD_RENDER_DIAGNOSTIC_V1_SIZE {
+            return false;
+        }
+        // SAFETY: The declared supported boundary guarantees a writable complete v1 prefix.
+        // Byte clearing includes all internal and tail padding before individual fields are set.
+        unsafe {
+            ptr::write_bytes(self.output.cast::<u8>(), 0, ROFD_RENDER_DIAGNOSTIC_V1_SIZE);
+            ptr::addr_of_mut!((*self.output).struct_size).write(self.declared_size);
+        }
+        true
+    }
+
+    unsafe fn commit(self, staged: Self::Staged) {
+        // SAFETY: initialize validated and cleared the complete v1 record; raw field writes are
+        // non-panicking and keep the caller's captured struct_size and unknown tail unchanged.
+        unsafe {
+            ptr::addr_of_mut!((*self.output).kind).write(staged.kind);
+            ptr::addr_of_mut!((*self.output).object_id).write(staged.object_id);
+            ptr::addr_of_mut!((*self.output).message).write(staged.message);
+        }
     }
 }
 
@@ -435,6 +560,28 @@ unsafe impl<T: ZeroScalar> OutputSet for ScalarOutput<T> {
     }
 }
 
+impl output_private::Set for DiagnosticOutput {}
+
+unsafe impl OutputSet for DiagnosticOutput {
+    type Staged = <Self as OutputSlot>::Staged;
+
+    fn ranges(&self) -> Result<SlotRanges, ()> {
+        let mut ranges = SlotRanges::default();
+        self.collect_range(&mut ranges)?;
+        Ok(ranges)
+    }
+
+    unsafe fn initialize(&self) -> bool {
+        // SAFETY: Delegate to this set's sole record slot while preserving its contract.
+        unsafe { OutputSlot::initialize(self) }
+    }
+
+    unsafe fn commit(self, staged: Self::Staged) {
+        // SAFETY: Delegate after successful transactional initialization.
+        unsafe { OutputSlot::commit(self, staged) };
+    }
+}
+
 macro_rules! output_set_tuple {
     ($(($slot_type:ident, $slot:ident, $staged:ident)),+ $(,)?) => {
         impl<$($slot_type: OutputSlot),+> output_private::Set for ($($slot_type,)+) {}
@@ -499,6 +646,26 @@ where
     Outputs: OutputSet,
     Operation: FnOnce() -> Result<Outputs::Staged, FfiError>,
 {
+    // SAFETY: This is the no-explicit-input form of the same boundary contract.
+    unsafe { boundary_with_inputs(error, outputs, InputRanges::new(), operation) }
+}
+
+/// Runs one fallible FFI operation after preflighting input/output disjointness.
+///
+/// # Safety
+///
+/// In addition to [`boundary`]'s requirements, every region in `inputs` must
+/// describe caller-owned storage that stays readable and immutable for the call.
+pub(crate) unsafe fn boundary_with_inputs<Outputs, Operation>(
+    error: *mut *mut rofd_error_t,
+    outputs: Outputs,
+    inputs: InputRanges,
+    operation: Operation,
+) -> rofd_status_t
+where
+    Outputs: OutputSet,
+    Operation: FnOnce() -> Result<Outputs::Staged, FfiError>,
+{
     catch_unwind(AssertUnwindSafe(|| {
         let error_range = match SlotRange::for_pointer(error) {
             Ok(range) => range,
@@ -508,6 +675,14 @@ where
             Ok(ranges) => ranges,
             Err(()) => return ROFD_STATUS_INVALID_ARGUMENT,
         };
+
+        if error_range.is_some_and(|error_range| {
+            inputs
+                .iter()
+                .any(|input_range| error_range.overlaps(input_range))
+        }) {
+            return ROFD_STATUS_INVALID_ARGUMENT;
+        }
 
         if error_range.is_some_and(|error_range| {
             output_ranges
@@ -530,13 +705,33 @@ where
             };
         }
 
+        if output_ranges.iter().any(|output_range| {
+            inputs
+                .iter()
+                .any(|input_range| output_range.overlaps(input_range))
+        }) {
+            if error.is_null() {
+                return ROFD_STATUS_INVALID_ARGUMENT;
+            }
+            // SAFETY: The error range is validated and disjoint from inputs and ordinary outputs.
+            let mut error_slot = unsafe { ErrorSlot::new(error) };
+            // SAFETY: error_slot is the sole writable location on this preflight failure.
+            return unsafe {
+                error_slot.publish(FfiError::invalid_argument(
+                    "input and output storage overlap",
+                ))
+            };
+        }
+
         // SAFETY: The caller of boundary forwards an optional writable error-output slot.
         let mut error_slot = unsafe { ErrorSlot::new(error) };
         // SAFETY: OutputSet guarantees full, non-short-circuiting entry initialization.
         if !unsafe { outputs.initialize() } {
             // SAFETY: error_slot owns the only access to the optional output for this call.
             return unsafe {
-                error_slot.publish(FfiError::invalid_argument("required output is NULL"))
+                error_slot.publish(FfiError::invalid_argument(
+                    "required output is NULL or has an invalid record size",
+                ))
             };
         }
 

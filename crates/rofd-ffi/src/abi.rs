@@ -194,6 +194,14 @@ pub(crate) const ROFD_RENDER_OPTIONS_V1_SIZE: usize = c_record_size(
     offset_of!(rofd_render_options_t, max_raster_bytes) + size_of::<u64>(),
     max_alignment(&[align_of::<u32>(), align_of::<f64>(), align_of::<u64>()]),
 );
+pub(crate) const ROFD_RENDER_DIAGNOSTIC_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_render_diagnostic_t, message) + size_of::<*const c_char>(),
+    max_alignment(&[
+        align_of::<u32>(),
+        align_of::<u64>(),
+        align_of::<*const c_char>(),
+    ]),
+);
 
 const ROFD_LOAD_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_LOAD_OPTIONS_V1_SIZE];
 const ROFD_RENDERER_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_RENDERER_OPTIONS_V1_SIZE];

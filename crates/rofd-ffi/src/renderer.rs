@@ -1,10 +1,13 @@
 use crate::abi::{ROFD_RENDERER_OPTIONS_V1_SIZE, ROFD_RENDER_OPTIONS_V1_SIZE};
 use crate::document::page_ref;
-use crate::error::{boundary, FfiError, HandleOutput, ScalarOutput};
-use crate::handles::{drop_raw_handle, handle_ref, RendererHandle};
+use crate::error::{
+    boundary, boundary_with_inputs, FfiError, HandleOutput, InputRanges, ScalarOutput,
+};
+use crate::handles::{drop_raw_handle, handle_ref, PageHandle, RenderReportHandle, RendererHandle};
 use crate::{
-    rofd_error_t, rofd_page_t, rofd_render_options_t, rofd_renderer_options_t, rofd_renderer_t,
-    rofd_status_t, ROFD_IMAGE_INTERPOLATION_BILINEAR, ROFD_IMAGE_INTERPOLATION_NEAREST,
+    rofd_error_t, rofd_page_t, rofd_render_options_t, rofd_render_report_t,
+    rofd_renderer_options_t, rofd_renderer_t, rofd_status_t, ROFD_IMAGE_INTERPOLATION_BILINEAR,
+    ROFD_IMAGE_INTERPOLATION_NEAREST,
 };
 use rofd_core::{Color, Rect};
 use rofd_render::{
@@ -289,6 +292,121 @@ pub unsafe extern "C" fn rofd_renderer_get_pixel_size(
                 Ok(size)
             },
         )
+    }
+}
+
+fn render_input_ranges(
+    renderer: *const rofd_renderer_t,
+    page: *const rofd_page_t,
+    context: *mut cairo::ffi::cairo_t,
+    options: *const rofd_render_options_t,
+) -> Result<InputRanges, ()> {
+    let mut inputs = InputRanges::new();
+    inputs.push(renderer.cast::<RendererHandle>())?;
+    inputs.push(page.cast::<PageHandle>())?;
+    inputs.push(options)?;
+    // Cairo deliberately keeps cairo_t opaque. One byte is enough to reject an output slot that
+    // starts at the same detectable address; all other overlap remains forbidden by contract.
+    inputs.push_region(context.cast(), 1, 1)?;
+    Ok(inputs)
+}
+
+unsafe fn render_page(
+    renderer: *const rofd_renderer_t,
+    page: *const rofd_page_t,
+    context: *mut cairo::ffi::cairo_t,
+    options: *const rofd_render_options_t,
+) -> Result<rofd_render::RenderReport, FfiError> {
+    let renderer = unsafe { renderer_ref(renderer)? };
+    let page = unsafe { page_ref(page)? };
+    if context.is_null() {
+        return Err(FfiError::invalid_argument("Cairo context is NULL"));
+    }
+    let options = unsafe { RenderOptionsInput::from_ffi(options)? };
+    // SAFETY: The caller guarantees a live cairo_t on a thread permitted to use it. from_raw_none
+    // acquires one temporary Cairo reference; dropping this wrapper cannot consume the caller's
+    // reference. Input/output preflight has already completed before this operation begins.
+    let context = unsafe { cairo::Context::from_raw_none(context) };
+    CairoRenderer
+        .render_page_with_services(
+            &page.inner,
+            &context,
+            &options,
+            &renderer.font_resolver,
+            &renderer.image_decoder,
+        )
+        .map_err(FfiError::from)
+}
+
+/// Renders a page into a borrowed Cairo context and optionally returns diagnostics.
+///
+/// Successful calls with a non-null `report` publish one owned report even when
+/// it contains no diagnostics. A null `report` discards diagnostics. Every
+/// failure leaves a non-null report output set to null.
+///
+/// # Safety
+///
+/// `renderer` and `page` must be live matching handles returned by this library,
+/// kept immutable and not freed for the call. `context` must be a non-null live
+/// `cairo_t` whose target and referenced objects remain valid; the calling thread
+/// must be allowed to use it under Cairo's synchronization rules, and no other
+/// thread may mutate it during this call. The FFI borrows it by taking and later
+/// dropping one temporary Cairo reference without consuming caller ownership.
+/// Non-null `options` must be aligned and readable through its initialized,
+/// supported `struct_size`. All handle storage, the options prefix, and the
+/// detectable Cairo address must be disjoint from the writable, aligned `report`
+/// and `error` slots. The inputs and outputs remain live, non-overlapping, and
+/// inaccessible to concurrent mutation for the complete call.
+#[no_mangle]
+pub unsafe extern "C" fn rofd_renderer_render_page_cairo(
+    renderer: *const rofd_renderer_t,
+    page: *const rofd_page_t,
+    context: *mut cairo::ffi::cairo_t,
+    options: *const rofd_render_options_t,
+    report: *mut *mut rofd_render_report_t,
+    error: *mut *mut rofd_error_t,
+) -> rofd_status_t {
+    let inputs = match render_input_ranges(renderer, page, context, options) {
+        Ok(inputs) => inputs,
+        Err(()) => {
+            // SAFETY: Empty preflight inputs allow the output transaction to publish the error.
+            return if report.is_null() {
+                unsafe {
+                    boundary(error, (), || {
+                        Err(FfiError::invalid_argument(
+                            "input region is misaligned or overflows",
+                        ))
+                    })
+                }
+            } else {
+                unsafe {
+                    boundary(error, HandleOutput::required(report), || {
+                        Err(FfiError::invalid_argument(
+                            "input region is misaligned or overflows",
+                        ))
+                    })
+                }
+            };
+        }
+    };
+
+    if report.is_null() {
+        // SAFETY: The boundary validates the optional error output against all declared inputs.
+        unsafe {
+            boundary_with_inputs(error, (), inputs, || {
+                let _ = render_page(renderer, page, context, options)?;
+                Ok(())
+            })
+        }
+    } else {
+        // SAFETY: The boundary nulls the requested report on entry, preflights all aliases, and
+        // publishes ownership only after rendering and diagnostic copying both succeed.
+        unsafe {
+            boundary_with_inputs(error, HandleOutput::required(report), inputs, || {
+                let report = render_page(renderer, page, context, options)?;
+                Ok(Box::new(RenderReportHandle::from_render_report(report)?))
+            })
+        }
     }
 }
 

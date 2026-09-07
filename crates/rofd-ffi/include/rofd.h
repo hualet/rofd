@@ -214,6 +214,14 @@ rofd_status_t rofd_renderer_get_pixel_size(
  * Render a page into a borrowed Cairo context.
  *
  * The report output may be NULL when the caller wants to discard diagnostics.
+ * Otherwise it is set to NULL on entry and receives one owned report on
+ * success, even when the report is empty. cairo must be a non-NULL live
+ * context whose target and referenced objects remain valid for the call. The
+ * caller must obey Cairo's context/thread synchronization rules and prevent
+ * concurrent context mutation. rofd takes and drops one temporary reference;
+ * it does not consume the caller's reference. Renderer/page handle storage,
+ * the readable options prefix, and the detectable Cairo address must not
+ * overlap report or error output storage.
  */
 rofd_status_t rofd_renderer_render_page_cairo(
     const rofd_renderer_t *renderer,
@@ -224,6 +232,11 @@ rofd_status_t rofd_renderer_render_page_cairo(
     rofd_error_t **error);
 void rofd_renderer_free(rofd_renderer_t *renderer);
 
+/** Borrow a live report and return its diagnostic count. report and
+ * diagnostic_count are required; diagnostic_count must be writable and
+ * aligned. error is optional. When error is non-NULL, it and diagnostic_count
+ * must satisfy the global writable, aligned, and mutually disjoint output
+ * contract. Report storage must be disjoint from every non-NULL output. */
 rofd_status_t rofd_render_report_get_count(const rofd_render_report_t *report,
                                            size_t *diagnostic_count,
                                            rofd_error_t **error);
@@ -231,7 +244,12 @@ rofd_status_t rofd_render_report_get_count(const rofd_render_report_t *report,
  * Get one diagnostic from a render report.
  *
  * Before calling, set diagnostic->struct_size to
- * sizeof(rofd_render_diagnostic_t).
+ * sizeof(rofd_render_diagnostic_t) or any larger caller record size.
+ * A valid output has its complete v1 prefix, including padding, cleared before
+ * lookup while preserving the caller's input struct_size and unknown tail.
+ * Thus failure after record validation leaves kind/object_id zero and message
+ * NULL. The returned message is borrowed until the report is freed. The report
+ * handle storage must not overlap diagnostic or error output storage.
  */
 rofd_status_t rofd_render_report_get_diagnostic(
     const rofd_render_report_t *report,
