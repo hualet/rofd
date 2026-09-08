@@ -39,6 +39,9 @@ pub struct Metadata {
 pub enum WarningCode {
     /// The page omitted Area and inherited the document PageArea.
     PageAreaFallback,
+    /// The document CommonData omitted PageArea; only pages declaring their
+    /// own Area remain loadable.
+    DocumentPageAreaMissing,
 }
 
 /// A recoverable OFD conformance diagnostic.
@@ -79,7 +82,7 @@ struct DocumentInner {
     container: Container,
     limits: crate::ResourceLimits,
     metadata: Metadata,
-    default_page_area: crate::raw::PageArea,
+    default_page_area: Option<crate::raw::PageArea>,
     pages: Vec<PageReference>,
     templates: HashMap<u64, TemplateReference>,
     strictness: crate::Strictness,
@@ -192,6 +195,21 @@ impl Document {
             document_res,
             template_pages,
         } = root.common_data;
+        let mut initial_warnings = Vec::new();
+        if page_area.is_none() {
+            if strictness == crate::Strictness::Strict {
+                return Err(Error::InvalidStructure {
+                    path: document_path.as_str().to_owned(),
+                    message: "CommonData.PageArea is missing".to_owned(),
+                });
+            }
+            initial_warnings.push(Warning {
+                code: WarningCode::DocumentPageAreaMissing,
+                path: document_path.as_str().to_owned(),
+                message: "CommonData.PageArea is missing; pages must declare their own Area"
+                    .to_owned(),
+            });
+        }
         let mut resource_paths = Vec::new();
         for declaration in [public_res, document_res].into_iter().flatten() {
             if resource_paths.len() >= limits.max_resource_files {
@@ -266,7 +284,7 @@ impl Document {
             pages,
             templates,
             strictness,
-            warnings: Mutex::new(Vec::new()),
+            warnings: Mutex::new(initial_warnings),
             resource_paths,
             resource_catalog: OnceLock::new(),
             resource_initialization: Mutex::new(()),
@@ -342,14 +360,23 @@ impl Document {
                     message: "Page.Area is missing".to_owned(),
                 });
             }
-            None => (
-                self.0.default_page_area.clone(),
-                Some(Warning {
-                    code: WarningCode::PageAreaFallback,
-                    path: reference.path.as_str().to_owned(),
-                    message: "Page.Area is missing; inherited Document PageArea".to_owned(),
-                }),
-            ),
+            None => {
+                let Some(default) = self.0.default_page_area.clone() else {
+                    return Err(Error::InvalidStructure {
+                        path: reference.path.as_str().to_owned(),
+                        message: "Page.Area is missing and the document declares no PageArea"
+                            .to_owned(),
+                    });
+                };
+                (
+                    default,
+                    Some(Warning {
+                        code: WarningCode::PageAreaFallback,
+                        path: reference.path.as_str().to_owned(),
+                        message: "Page.Area is missing; inherited Document PageArea".to_owned(),
+                    }),
+                )
+            }
         };
         let size = crate::Rect::parse(&area.physical_box)
             .map_err(|error| with_error_path(error, &reference.path))?;

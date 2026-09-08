@@ -40,7 +40,9 @@ pub(crate) struct DocumentRoot {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct CommonData {
-    pub(crate) page_area: PageArea,
+    /// Optional because real-world producers omit it; documents without it
+    /// are only usable when every page declares its own Area.
+    pub(crate) page_area: Option<PageArea>,
     pub(crate) public_res: Option<String>,
     pub(crate) document_res: Option<String>,
     #[serde(rename = "TemplatePage", default)]

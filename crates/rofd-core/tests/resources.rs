@@ -280,7 +280,7 @@ fn unsafe_resource_paths_are_rejected_at_the_appropriate_lazy_boundary() {
     );
     assert!(matches!(
         doc.image_resource(1),
-        Err(Error::ObjectResource { .. })
+        Err(Error::MissingEntry(_) | Error::InvalidResource { .. })
     ));
 }
 

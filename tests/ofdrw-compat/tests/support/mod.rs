@@ -64,12 +64,12 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     ),
     (
         "reader/发票示例.ofd",
-        "Document.xml without PageArea rejected",
+        "template Content.xml declares duplicate object ID 15",
     ),
     ("converter/1.ofd", "GBIG2 image format unsupported"),
     (
         "converter/20240531141733.ofd",
-        "Document.xml without PageArea rejected",
+        "template Content.xml declares duplicate object ID 15",
     ),
     (
         "converter/999.ofd",
