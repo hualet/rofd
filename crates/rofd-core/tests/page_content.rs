@@ -898,3 +898,26 @@ fn dash_pattern_rejects_hex_components_empty_and_non_positive_values() {
         );
     }
 }
+
+#[test]
+fn path_object_with_trailing_clips_does_not_consume_the_following_graphic_unit() {
+    // ofdrw's reader/path_unstd.ofd templates end PathObjects with Clips and
+    // declare StrokeColor before AbbreviatedData; serde-xml-rs 0.6 loses the
+    // following sibling unless the payload is extracted standalone.
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" Stroke="true"><ofd:StrokeColor Value="0 0 0"/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData><ofd:Clips TransFlag="false"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 5 5" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 1 0 L 1 1 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips></ofd:PathObject><ofd:PathObject ID="3" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 0 0 L 2 2</ofd:AbbreviatedData></ofd:PathObject><ofd:CompositeObject ID="4" Boundary="0 0 10 10" ResourceID="9"/></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap();
+    let objects = page.layers()[0].objects();
+    assert_eq!(objects.len(), 3);
+    let PageObject::Path(clipped) = &objects[0] else {
+        panic!("expected path object");
+    };
+    assert_eq!(clipped.object_id(), 2);
+    assert_eq!(clipped.clips().len(), 1);
+    assert!(matches!(&objects[1], PageObject::Path(path) if path.object_id() == 3));
+    assert!(matches!(
+        &objects[2],
+        PageObject::Unsupported(object) if object.object_id() == 4
+    ));
+}

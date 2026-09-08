@@ -482,10 +482,14 @@ impl ConversionContext<'_> {
         let mut converted = Vec::new();
         for object in objects {
             let object = match object {
-                raw::GraphicUnit::Path(path) => {
-                    let object_id = self.resolve_object_id(path.id.as_deref())?;
+                raw::GraphicUnit::Path(object) => {
+                    let object_id = self.resolve_object_id(object.id.as_deref())?;
                     self.register_id(object_id)?;
-                    PageObject::Path(self.convert_path(*path, object_id)?)
+                    let object = object.object.ok_or_else(|| Error::InvalidStructure {
+                        path: self.path.to_owned(),
+                        message: format!("PathObject {object_id} payload was not parsed"),
+                    })?;
+                    PageObject::Path(self.convert_path(*object, object_id)?)
                 }
                 raw::GraphicUnit::Group(group) => {
                     let object_id = self.resolve_object_id(group.id.as_deref())?;

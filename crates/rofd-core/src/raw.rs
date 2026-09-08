@@ -240,7 +240,7 @@ pub(crate) struct Layer {
 #[derive(Debug, Deserialize)]
 pub(crate) enum GraphicUnit {
     #[serde(rename = "PathObject")]
-    Path(Box<PathObject>),
+    Path(PathObjectEnvelope),
     #[serde(rename = "PageBlock")]
     Group(PageBlock),
     #[serde(rename = "TextObject")]
@@ -279,6 +279,17 @@ pub(crate) struct ImageObjectEnvelope {
     pub(crate) id: Option<String>,
     #[serde(skip)]
     pub(crate) object: Option<Box<ImageObject>>,
+}
+
+/// PathObject is parsed standalone like TextObject/ImageObject: serde-xml-rs
+/// 0.6 mishandles its nested Clips vectors when a sibling graphic unit
+/// follows, so the streaming pass extracts the payload separately.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PathObjectEnvelope {
+    #[serde(rename = "ID")]
+    pub(crate) id: Option<String>,
+    #[serde(skip)]
+    pub(crate) object: Option<Box<PathObject>>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -973,25 +973,34 @@ fn parse_page_xml(
 ) -> Result<raw::PageRoot> {
     let bytes = container.read(path)?;
     preflight_page_xml(&bytes, path, limits)?;
-    let (text_objects, image_objects) = extract_rich_objects(&bytes, path)?;
+    let rich = extract_rich_objects(&bytes, path)?;
     let mut deserializer = serde_xml_rs::Deserializer::new_from_reader(bytes.as_slice())
         .non_contiguous_seq_elements(true);
     let mut page = raw::PageRoot::deserialize(&mut deserializer).map_err(|error| Error::Xml {
         path: path.as_str().to_owned(),
         message: error.to_string(),
     })?;
-    inject_rich_objects(&mut page, text_objects, image_objects, path)?;
+    inject_rich_objects(&mut page, rich, path)?;
     Ok(page)
 }
 
-fn extract_rich_objects(
-    bytes: &[u8],
-    path: &PackagePath,
-) -> Result<(Vec<raw::TextObject>, Vec<raw::ImageObject>)> {
+/// Graphic-unit payloads parsed standalone from their captured XML.
+///
+/// serde-xml-rs 0.6 corrupts its reader state when a graphic unit containing
+/// a nested `Vec` field (the Clips chain of PathObject) is followed by
+/// another sibling unit, so these payloads never go through the main pass.
+struct RichObjects {
+    paths: Vec<raw::PathObject>,
+    texts: Vec<raw::TextObject>,
+    images: Vec<raw::ImageObject>,
+}
+
+fn extract_rich_objects(bytes: &[u8], path: &PackagePath) -> Result<RichObjects> {
     use xml::reader::{EventReader, XmlEvent};
 
     #[derive(Clone, Copy)]
     enum Kind {
+        Path,
         Text,
         Image,
     }
@@ -1005,6 +1014,7 @@ fn extract_rich_objects(
     }
 
     let mut capture = None::<Capture>;
+    let mut paths = Vec::new();
     let mut texts = Vec::new();
     let mut images = Vec::new();
     let mut elements = Vec::<String>::new();
@@ -1018,6 +1028,7 @@ fn extract_rich_objects(
                 );
                 let kind = is_graphic_unit
                     .then_some(match name.local_name.as_str() {
+                        "PathObject" => Some(Kind::Path),
                         "TextObject" => Some(Kind::Text),
                         "ImageObject" => Some(Kind::Image),
                         _ => None,
@@ -1085,6 +1096,9 @@ fn extract_rich_objects(
                         message: error.to_string(),
                     };
                     match completed.kind {
+                        Kind::Path => paths.push(
+                            raw::PathObject::deserialize(&mut deserializer).map_err(map_error)?,
+                        ),
                         Kind::Text => {
                             let mut text = raw::TextObject::deserialize(&mut deserializer)
                                 .map_err(map_error)?;
@@ -1111,23 +1125,40 @@ fn extract_rich_objects(
             elements.pop();
         }
     }
-    Ok((texts, images))
+    Ok(RichObjects {
+        paths,
+        texts,
+        images,
+    })
 }
 
 fn inject_rich_objects(
     page: &mut raw::PageRoot,
-    texts: Vec<raw::TextObject>,
-    images: Vec<raw::ImageObject>,
+    rich: RichObjects,
     path: &PackagePath,
 ) -> Result<()> {
     fn visit(
         objects: &mut [raw::GraphicUnit],
+        paths: &mut impl Iterator<Item = raw::PathObject>,
         texts: &mut impl Iterator<Item = raw::TextObject>,
         images: &mut impl Iterator<Item = raw::ImageObject>,
         path: &PackagePath,
     ) -> Result<()> {
         for object in objects {
             match object {
+                raw::GraphicUnit::Path(path_object) => {
+                    let parsed = paths.next().ok_or_else(|| Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: "missing parsed PathObject payload".to_owned(),
+                    })?;
+                    if parsed.id != path_object.id {
+                        return Err(Error::InvalidStructure {
+                            path: path.as_str().to_owned(),
+                            message: "PathObject extraction order mismatch".to_owned(),
+                        });
+                    }
+                    path_object.object = Some(Box::new(parsed));
+                }
                 raw::GraphicUnit::Text(text) => {
                     let parsed = texts.next().ok_or_else(|| Error::InvalidStructure {
                         path: path.as_str().to_owned(),
@@ -1154,21 +1185,35 @@ fn inject_rich_objects(
                     }
                     image.object = Some(Box::new(parsed));
                 }
-                raw::GraphicUnit::Group(group) => visit(&mut group.objects, texts, images, path)?,
+                raw::GraphicUnit::Group(group) => {
+                    visit(&mut group.objects, paths, texts, images, path)?
+                }
                 _ => {}
             }
         }
         Ok(())
     }
 
+    let RichObjects {
+        paths,
+        texts,
+        images,
+    } = rich;
+    let mut paths = paths.into_iter();
     let mut texts = texts.into_iter();
     let mut images = images.into_iter();
     if let Some(content) = &mut page.content {
         for layer in &mut content.layers {
-            visit(&mut layer.objects, &mut texts, &mut images, path)?;
+            visit(
+                &mut layer.objects,
+                &mut paths,
+                &mut texts,
+                &mut images,
+                path,
+            )?;
         }
     }
-    if texts.next().is_some() || images.next().is_some() {
+    if paths.next().is_some() || texts.next().is_some() || images.next().is_some() {
         return Err(Error::InvalidStructure {
             path: path.as_str().to_owned(),
             message: "rich object extraction did not match parsed page structure".to_owned(),
