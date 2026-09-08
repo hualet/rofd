@@ -54,15 +54,7 @@ pub fn open_document(path: &Path) -> Document {
 /// `package_edge.rs` fails when an unlisted fixture breaks or a listed one
 /// starts passing (remove the entry once the parser handles it).
 pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
-    (
-        "reader/path_unstd.ofd",
-        "Document.xml with duplicate TemplatePage elements rejected",
-    ),
     ("converter/1.ofd", "GBIG2 image format unsupported"),
-    (
-        "converter/ano.ofd",
-        "PublicRes.xml with duplicate Fonts elements rejected",
-    ),
     (
         "converter/intro-数科.ofd",
         "page 5 object 187: FillColor element without a value rejected",
@@ -70,10 +62,6 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     (
         "converter/n.ofd",
         "space-separated color value `#ee #20 #25` rejected",
-    ),
-    (
-        "converter/透明度文字.ofd",
-        "PublicRes.xml with duplicate Fonts elements rejected",
     ),
     (
         "layout/no_page_container.ofd",

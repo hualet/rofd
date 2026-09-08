@@ -96,10 +96,11 @@ fn keyword_extractor_keyword2_contains() {
 
 /// Ported from `IssueCase.github_293`: page directories not named `Page_N`
 /// must still load. ofdrw asserts nothing beyond not throwing.
-/// Currently ignored: rofd-core rejects the file's leading-slash package path
-/// (see KNOWN_LOAD_FAILURES).
+///
+/// This fixture also exercises three lenient parser paths: leading-slash
+/// package paths, non-contiguous duplicate TemplatePage declarations, and an
+/// ImageObject without ResourceID (skipped, matching ofdrw).
 #[test]
-#[ignore = "known parser gap: path_unstd.ofd uses leading-slash package paths"]
 fn issue_case_github_293_unstandard_page_dirs() {
     let document = open_document(&fixture("reader/path_unstd.ofd"));
     assert!(document.page_count() >= 1);

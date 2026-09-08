@@ -71,32 +71,23 @@ cargo test -p ofdrw-compat
 `tests/support/mod.rs` 的 `KNOWN_LOAD_FAILURES` 表中；全量冒烟测试会校验
 "表外文件不得失败、表内文件一旦能打开就必须删表项"：
 
-- 前导斜杠包路径（`/Doc_0/Document.xml`、`/Doc_0/Res/2.gif`）被拒绝：
-  reader/path_unstd.ofd、converter/n.ofd、converter/不规范资源路径.ofd
-- Document.xml 缺少 PageArea 被拒绝：reader/发票示例.ofd、converter/20240531141733.ofd
-- 零宽/零高 Boundary 的页面对象被拒绝：reader/keyword.ofd、converter/SignScaleError.ofd、
-  converter/ano.ofd、converter/intro-数科.ofd
-- DeltaX/DeltaY 位移个数或符号超出 rofd 的校验：converter/999.ofd、
-  converter/draw_param_ref.ofd、converter/zsbk.ofd
-- 首个 TextCode 省略原点坐标被拒绝：converter/发票监制章-数科.ofd、converter/文字横向-数科.ofd
-- 页面 XML 对象缺少 ID：converter/发票示例.ofd
-- PublicRes.xml 含重复 Fonts 元素：converter/透明度文字.ofd
 - 不支持的图像格式 JB2 / GBIG2：layout/no_page_container.ofd、converter/1.ofd
+- 空格分隔的颜色值 `#ee #20 #25` 被拒绝：converter/n.ofd
+- FillColor 元素缺少 Value 属性：converter/intro-数科.ofd（第 5 页对象 187）
 
-这些大多是 ofdrw 宽容而 rofd 严格的真实世界文件写法，是未来提升
-rofd-core 兼容性的具体切入点。
+早期迁移时记录的解析差异（前导斜杠包路径、缺 PageArea、零/负 Boundary、
+DeltaX/Y 个数与符号、首个 TextCode 省略原点、对象缺 ID、重复 Fonts 元素、
+非连续 TemplatePage 声明等）已逐项修复；ofdrw 宽容而 rofd 严格的写法以
+"lenient 容忍、strict 报错"的方式支持。
 
 ## 已知渲染差异
 
 能打开但渲染层面与 ofdrw 有差距的 fixture，记录在 `support/mod.rs` 的
 `KNOWN_RENDER_FAILURES` / `UNUSABLE_REFERENCES` / 阈值表中：
 
-- converter/containsJPEG.ofd：`Doc_0/Res/Image_N.JPEG` 条目被报缺失（ofdrw 能
-  解析，疑似资源路径解析差异），渲染中止
-- converter/z.ofd 第 2-4 页：显式 glyph ID 需要已解析的主字体，但字体未内嵌，
-  无法排版
-- converter/y.ofd 第 2-3 页：正文使用未内嵌字体的显式 glyph ID，rofd 只渲染出
-  页脚（不匹配约 16%，阈值放宽至 18% 并注明原因）
+- converter/y.ofd 第 2-3 页：正文使用未内嵌字体的显式 glyph ID，rofd 把
+  glyph ID 应用到回退字体而 ofdrw 用它自己的默认字体，字形表不同导致
+  正文文字形状不同（不匹配约 16%，阈值放宽至 18% 并注明原因）
 - converter/pattern类型.ofd：**ofdrw 自己渲染成全黑页**（其 pattern 填充 bug），
   而 rofd 渲染出了可见的标题文字；参考图不可用，排除出对比
 
