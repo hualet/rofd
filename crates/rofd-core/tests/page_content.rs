@@ -934,3 +934,44 @@ fn subpath_start_operator_s_loads_in_lenient_and_strict_modes() {
         assert_eq!(path.path_data().commands().len(), 3);
     }
 }
+
+#[test]
+fn lenient_mode_defaults_missing_path_boundary_to_the_origin() {
+    // ofdrw's converter/intro-数科.ofd omits Boundary on gradient-filled
+    // PathObjects; ofdrw draws them untranslated.
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2"><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap();
+    let PageObject::Path(path) = &page.layers()[0].objects()[0] else {
+        panic!("expected path object");
+    };
+    assert_eq!(
+        path.boundary(),
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        }
+    );
+}
+
+#[test]
+fn strict_mode_rejects_missing_path_boundary() {
+    let error = open_page_strict(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2"><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::InvalidPageObject {
+                object_id: 2,
+                field: "Boundary",
+                ..
+            }
+        ),
+        "expected missing Boundary, got {error:?}"
+    );
+}

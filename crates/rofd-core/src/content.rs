@@ -546,11 +546,31 @@ impl ConversionContext<'_> {
     }
 
     fn convert_path(&mut self, path: raw::PathObject, object_id: u64) -> Result<PathObject> {
-        let boundary =
-            Rect::parse(&path.boundary).map_err(|_| invalid_value("boundary", &path.boundary))?;
         let strict = self.document.strictness() == crate::Strictness::Strict;
+        let boundary = match path.boundary.as_deref() {
+            Some(value) => Rect::parse(value).map_err(|_| invalid_value("boundary", value))?,
+            None if strict => {
+                return Err(object_error(
+                    self.path,
+                    object_id,
+                    "Boundary",
+                    "required attribute is missing".to_owned(),
+                ));
+            }
+            // Lenient: ofdrw draws paths without Boundary at the current
+            // origin (converter/intro-数科.ofd pages 8-9).
+            None => crate::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+        };
         if strict && (boundary.width <= 0.0 || boundary.height <= 0.0) {
-            return Err(invalid_value("boundary", &path.boundary));
+            return Err(invalid_value(
+                "boundary",
+                path.boundary.as_deref().unwrap_or_default(),
+            ));
         }
         let transform = path
             .transform

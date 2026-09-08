@@ -296,8 +296,11 @@ pub(crate) struct PathObjectEnvelope {
 pub(crate) struct PathObject {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
+    /// Optional because real-world producers omit it (ofdrw's
+    /// converter/intro-数科.ofd); ofdrw draws such paths without the boundary
+    /// translation.
     #[serde(rename = "Boundary")]
-    pub(crate) boundary: String,
+    pub(crate) boundary: Option<String>,
     #[serde(rename = "CTM")]
     pub(crate) transform: Option<String>,
     #[serde(rename = "Stroke")]
