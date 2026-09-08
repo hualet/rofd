@@ -329,16 +329,34 @@ impl<'a> DisplayListBuilder<'a> {
                         });
                     }
                 };
-                let decoded = self
-                    .image_decoder
-                    .decode(&resource, page.resource_limits())
-                    .map_err(|source| Error::ObjectResourceProcessing {
-                        object_id: image.object_id(),
-                        resource_id: image.resource_id(),
-                        kind: ResourceKind::Image,
-                        asset_path: resource.asset_path().to_owned(),
-                        source: Box::new(source),
-                    })?;
+                let decoded = match self.image_decoder.decode(&resource, page.resource_limits()) {
+                    Ok(decoded) => decoded,
+                    // ofdrw ships a JBIG2 decoder; rofd-render does not, so a
+                    // JB2/GBIG2 image is skipped and the rest of the page
+                    // still renders (converter/1.ofd, layout/no_page_container.ofd).
+                    // Unrecognized encodings keep failing loudly.
+                    Err(Error::UnsupportedImageFormat { .. })
+                        if resource.format() == rofd_core::ImageFormat::Jbig2 =>
+                    {
+                        display_list.push_diagnostic(
+                            image.object_id(),
+                            source,
+                            RenderDiagnosticKind::ImageFormatUnsupported {
+                                resource_id: image.resource_id(),
+                            },
+                        );
+                        return Ok(());
+                    }
+                    Err(source_error) => {
+                        return Err(Error::ObjectResourceProcessing {
+                            object_id: image.object_id(),
+                            resource_id: image.resource_id(),
+                            kind: ResourceKind::Image,
+                            asset_path: resource.asset_path().to_owned(),
+                            source: Box::new(source_error),
+                        })
+                    }
+                };
                 image_budget.account(&decoded)?;
                 display_list.lower_image(image, decoded, source)
             }
@@ -668,6 +686,13 @@ pub enum RenderDiagnosticKind {
         /// Referenced image resource that could not be resolved.
         resource_id: u64,
     },
+    /// The referenced image uses an encoding rofd-render cannot decode (for
+    /// example JBIG2); the object is skipped so the rest of the page still
+    /// renders.
+    ImageFormatUnsupported {
+        /// Referenced image resource with an undecodable encoding.
+        resource_id: u64,
+    },
 }
 
 /// A non-fatal source-aware notice produced while lowering a page object.
@@ -740,6 +765,9 @@ fn diagnostic_message(kind: &RenderDiagnosticKind) -> String {
         }
         RenderDiagnosticKind::ImageResourceMissing { resource_id } => {
             format!("image resource {resource_id} is missing from the package; object skipped")
+        }
+        RenderDiagnosticKind::ImageFormatUnsupported { resource_id } => {
+            format!("image resource {resource_id} uses an undecodable encoding; object skipped")
         }
     }
 }

@@ -365,7 +365,12 @@ impl ImageDecoder {
         self.cache_byte_budget
     }
 
-    /// Validates and decodes one PNG or JPEG resource into native RGBA8 pixels.
+    /// Validates and decodes one supported image resource into native RGBA8
+    /// pixels.
+    ///
+    /// PNG, JPEG, BMP, GIF, and TIFF resources decode through the `image`
+    /// crate. JBIG2 resources are recognized but have no decoder yet, so they
+    /// fail with [`Error::UnsupportedImageFormat`].
     ///
     /// Magic, dimensions, and the caller's per-image limits are validated before
     /// pixel allocation. Work for one resource is single-flight; unrelated resources
@@ -524,6 +529,9 @@ fn detect_format(resource: &ImageResource) -> Result<ImageFormat> {
     }
     if bytes.starts_with(b"II\x2a\x00") || bytes.starts_with(b"MM\x00\x2a") {
         return Ok(ImageFormat::Tiff);
+    }
+    if bytes.starts_with(b"\x97JB2\r\n\x1a\n") {
+        return Ok(ImageFormat::Jbig2);
     }
     Err(Error::UnsupportedImageFormat {
         resource_id: resource.id(),
