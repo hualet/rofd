@@ -1,3 +1,13 @@
+rofd (0.2.0-1) unstable; urgency=medium
+
+  * Stamp annotation seal rendering, essential reading tools in the Qt
+    reader, and broad ofdrw compatibility fixes: lenient parsing of
+    non-conforming documents, the S path operator, BMP/GIF/TIFF/JBIG2
+    image resources, and graceful handling of missing or undecodable
+    media files.
+
+ -- HualetWang <hualet@hualet.org>  Tue, 08 Sep 2026 23:24:30 +0800
+
 rofd (0.1.0-1) unstable; urgency=medium
 
   * Initial Debian packaging, shipping the Qt6/QML reader application
