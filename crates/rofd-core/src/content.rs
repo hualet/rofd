@@ -732,12 +732,19 @@ impl ConversionContext<'_> {
             let explicit_y =
                 parse_optional_finite(run.y.as_deref(), "TextCode.Y", self.path, object_id)?;
             if index == 0 && (explicit_x.is_none() || explicit_y.is_none()) {
-                return Err(object_error(
-                    self.path,
-                    object_id,
-                    "TextCode origin",
-                    "the first run must specify both X and Y; later runs inherit each omitted coordinate".to_owned(),
-                ));
+                if self.document.strictness() == crate::Strictness::Strict {
+                    return Err(object_error(
+                        self.path,
+                        object_id,
+                        "TextCode origin",
+                        "the first run must specify both X and Y; later runs inherit each omitted coordinate".to_owned(),
+                    ));
+                }
+                // Lenient: real-world producers omit a coordinate on the
+                // first run (e.g. ofdrw's 发票监制章-数科.ofd has only X="0");
+                // default it to 0 like ofdrw's ST_Base deserialization does.
+                inherited_x.get_or_insert(0.0);
+                inherited_y.get_or_insert(0.0);
             }
             if explicit_x.is_some() {
                 inherited_x = explicit_x;

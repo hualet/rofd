@@ -92,16 +92,8 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
         "page 1 object 665: DeltaX with more than 14 displacements rejected",
     ),
     (
-        "converter/发票监制章-数科.ofd",
-        "page 1 object 4: first TextCode run omits an origin coordinate",
-    ),
-    (
         "converter/发票示例.ofd",
         "page XML object without ID rejected",
-    ),
-    (
-        "converter/文字横向-数科.ofd",
-        "page 1 object 5: first TextCode run omits an origin coordinate",
     ),
     (
         "converter/透明度文字.ofd",
@@ -195,6 +187,11 @@ pub const KNOWN_RENDER_FAILURES: &[(&str, &str)] = &[
         "converter/z.ofd",
         "pages 2-4: explicit glyph IDs require a resolved primary font, but \
          the fonts are external (not embedded), so the text cannot be laid out",
+    ),
+    (
+        "converter/发票监制章-数科.ofd",
+        "object 4 has a singular CTM `0 0 0 0.3528 0 0` that cairo rejects; \
+         a degenerate transform should make the object a no-op instead",
     ),
 ];
 

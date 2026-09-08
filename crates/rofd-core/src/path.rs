@@ -31,7 +31,10 @@ fn normalize(value: &str, base: &[&str]) -> Result<String> {
         None => (replaced.as_str(), base),
     };
 
-    let mut parts = base.iter().map(|part| (*part).to_owned()).collect::<Vec<_>>();
+    let mut parts = base
+        .iter()
+        .map(|part| (*part).to_owned())
+        .collect::<Vec<_>>();
     for part in replaced.split('/') {
         match part {
             "" | "." => {}

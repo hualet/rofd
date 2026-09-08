@@ -5,6 +5,17 @@ use rofd_core::{
 };
 
 fn package(page_objects: &str, resources: &str, limits: ResourceLimits) -> Document {
+    package_with_options(
+        page_objects,
+        resources,
+        LoadOptions {
+            limits,
+            ..LoadOptions::default()
+        },
+    )
+}
+
+fn package_with_options(page_objects: &str, resources: &str, options: LoadOptions) -> Document {
     let document = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData>
   <ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>
@@ -19,10 +30,7 @@ fn package(page_objects: &str, resources: &str, limits: ResourceLimits) -> Docum
             &page,
             &[("Doc_0/Res.xml", resources.as_bytes())],
         ),
-        LoadOptions {
-            limits,
-            ..LoadOptions::default()
-        },
+        options,
     )
     .unwrap()
 }
@@ -335,12 +343,43 @@ fn truly_malformed_page_xml_remains_an_xml_error() {
 }
 
 #[test]
+fn first_run_omitted_origin_coordinate_defaults_to_zero_leniently() {
+    // ofdrw's 发票监制章-数科.ofd has a first TextCode with only X="0";
+    // lenient mode defaults the missing coordinate to 0 like ofdrw's
+    // ST_Base deserialization does.
+    let objects = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="1">A</ofd:TextCode></ofd:TextObject>"#;
+    let page = package(objects, &font_catalog(""), ResourceLimits::default())
+        .page(0)
+        .unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+    assert_eq!((text.runs()[0].x(), text.runs()[0].y()), (1.0, 0.0));
+}
+
+#[test]
+fn first_run_omitted_origin_coordinate_is_rejected_in_strict_mode() {
+    let objects = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="1">A</ofd:TextCode></ofd:TextObject>"#;
+    let document = package_with_options(
+        objects,
+        &font_catalog(""),
+        LoadOptions {
+            strictness: rofd_core::Strictness::Strict,
+            ..LoadOptions::default()
+        },
+    );
+    assert!(matches!(
+        document.page(0),
+        Err(Error::InvalidPageObject {
+            field: "TextCode origin",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn rejects_invalid_origins_delta_grammar_and_nonfinite_values_with_context() {
     let cases = [
-        (
-            r#"<ofd:TextCode Y="0">AB</ofd:TextCode>"#,
-            "TextCode origin",
-        ),
         (
             r#"<ofd:TextCode X="0" Y="0" DeltaX="1 2 3">AB</ofd:TextCode>"#,
             "DeltaX",

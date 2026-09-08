@@ -87,7 +87,11 @@ fn document_without_page_area_is_rejected_in_strict_mode() {
 #[test]
 fn page_without_any_area_cannot_be_sized() {
     let document = Document::from_bytes(
-        support::ofd_with_document_page_and_entries(DOCUMENT_WITHOUT_PAGE_AREA, PAGE_WITHOUT_AREA, &[]),
+        support::ofd_with_document_page_and_entries(
+            DOCUMENT_WITHOUT_PAGE_AREA,
+            PAGE_WITHOUT_AREA,
+            &[],
+        ),
         LoadOptions::default(),
     )
     .unwrap();
