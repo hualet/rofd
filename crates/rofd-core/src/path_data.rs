@@ -51,8 +51,10 @@ pub struct PathData {
 impl PathData {
     /// Parses an OFD abbreviated path.
     ///
-    /// Each command must be explicit. Drawing and close commands are rejected
-    /// until a move command has introduced the first subpath. Closing a
+    /// Each command must be explicit. Both `M` and the subpath-start
+    /// operator `S` begin a subpath and are accepted in either strict or
+    /// lenient mode. Drawing and close commands are rejected until a move
+    /// command has introduced the first subpath. Closing a
     /// subpath keeps it active, so later drawing or close commands remain
     /// valid until another move starts a new subpath.
     pub fn parse(value: &str) -> Result<Self> {
@@ -77,7 +79,7 @@ impl PathData {
                 )));
             }
             let parsed = match command {
-                b'M' => {
+                b'M' | b'S' => {
                     has_subpath = true;
                     PathCommand::MoveTo(parser.point()?)
                 }
@@ -144,7 +146,7 @@ impl<'a> Parser<'a> {
         let Some(command) = self.byte() else {
             return Ok(None);
         };
-        if !matches!(command, b'M' | b'L' | b'Q' | b'B' | b'A' | b'C') {
+        if !matches!(command, b'M' | b'S' | b'L' | b'Q' | b'B' | b'A' | b'C') {
             return Err(invalid_path(self.value));
         }
         self.offset += 1;

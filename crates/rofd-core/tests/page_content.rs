@@ -921,3 +921,16 @@ fn path_object_with_trailing_clips_does_not_consume_the_following_graphic_unit()
         PageObject::Unsupported(object) if object.object_id() == 4
     ));
 }
+
+#[test]
+fn subpath_start_operator_s_loads_in_lenient_and_strict_modes() {
+    // `S` begins a subpath like `M` (ofdrw's converter/n.ofd uses it).
+    let content = r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10"><ofd:AbbreviatedData>S 0 0 L 156 0 C</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#;
+    for page in [open_page(content), open_page_strict(content)] {
+        let page = page.unwrap();
+        let PageObject::Path(path) = &page.layers()[0].objects()[0] else {
+            panic!("expected path object");
+        };
+        assert_eq!(path.path_data().commands().len(), 3);
+    }
+}

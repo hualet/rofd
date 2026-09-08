@@ -48,6 +48,22 @@ fn parses_every_standard_path_command_in_source_order() {
 }
 
 #[test]
+fn parses_subpath_start_operator_s_as_move() {
+    // `S` begins a subpath just like `M` (GB/T 33190 表 36); producers emit it
+    // (ofdrw's n.ofd fixture), and ofdrw renders it as a move.
+    let path = PathData::parse("S 0 0 L 156 0 C").unwrap();
+
+    assert_eq!(
+        path.commands(),
+        &[
+            PathCommand::MoveTo(point(0.0, 0.0)),
+            PathCommand::LineTo(point(156.0, 0.0)),
+            PathCommand::Close,
+        ]
+    );
+}
+
+#[test]
 fn parses_multiple_subpaths_and_letters_adjacent_to_numbers() {
     let path = PathData::parse("M0 0L200 0 C M-2.5 3L4 -5C").unwrap();
 
