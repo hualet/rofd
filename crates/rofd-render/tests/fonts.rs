@@ -388,6 +388,109 @@ fn cgtransform_glyphs_override_charmap_and_validate_font_range() {
 }
 
 #[test]
+fn cgtransform_glyphs_apply_to_the_substitute_face_when_primary_is_unresolved() {
+    // ofdrw's z.ofd/y.ofd declare external fonts (e.g. Tahoma) with explicit
+    // glyph IDs; ofdrw applies the IDs to its substitute face instead of
+    // failing the object. Mirror that with the configured fallback chain.
+    let document = package_named(
+        None,
+        r#"<ofd:TextCode X="0" Y="0">AB</ofd:TextCode>"#,
+        r#"<ofd:CGTransform CodePosition="0" CodeCount="2" GlyphCount="2"><ofd:Glyphs>3 2</ofd:Glyphs></ofd:CGTransform>"#,
+        "External Missing",
+    );
+    let mut database = Database::new();
+    database.load_font_data(FONT.to_vec());
+    let resolver =
+        SystemFontResolver::from_database(database, vec!["Noto Sans CJK SC".to_owned()], 1 << 20);
+    let runs = position_glyph_runs(
+        &resolver,
+        &document.font_resource(10).unwrap(),
+        &text_object(&document),
+        &ResourceLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runs[0]
+            .glyphs()
+            .iter()
+            .map(|glyph| glyph.glyph_id())
+            .collect::<Vec<_>>(),
+        [3, 2]
+    );
+    assert!(runs[0]
+        .glyphs()
+        .iter()
+        .all(|glyph| matches!(glyph.font_source(), FontSource::ConfiguredFallback { .. })));
+    assert!(matches!(
+        runs[0].diagnostics()[0],
+        FontDiagnostic::FamilyFallback { .. }
+    ));
+}
+
+#[test]
+fn cgtransform_substitute_skips_out_of_range_glyph_ids_like_ofdrw() {
+    let document = package_named(
+        None,
+        r#"<ofd:TextCode X="0" Y="0">AB</ofd:TextCode>"#,
+        r#"<ofd:CGTransform CodePosition="0" CodeCount="2" GlyphCount="2"><ofd:Glyphs>3 99999</ofd:Glyphs></ofd:CGTransform>"#,
+        "External Missing",
+    );
+    let mut database = Database::new();
+    database.load_font_data(FONT.to_vec());
+    let resolver =
+        SystemFontResolver::from_database(database, vec!["Noto Sans CJK SC".to_owned()], 1 << 20);
+    let runs = position_glyph_runs(
+        &resolver,
+        &document.font_resource(10).unwrap(),
+        &text_object(&document),
+        &ResourceLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runs[0]
+            .glyphs()
+            .iter()
+            .map(|glyph| glyph.glyph_id())
+            .collect::<Vec<_>>(),
+        [3]
+    );
+    assert!(runs[0].diagnostics().iter().any(|diagnostic| matches!(
+        diagnostic,
+        FontDiagnostic::MissingGlyph {
+            used_visible_replacement: false,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn cgtransform_without_any_face_reports_missing_glyphs_instead_of_failing() {
+    let document = package_named(
+        None,
+        r#"<ofd:TextCode X="0" Y="0">AB</ofd:TextCode>"#,
+        r#"<ofd:CGTransform CodePosition="0" CodeCount="2" GlyphCount="1"><ofd:Glyphs>3</ofd:Glyphs></ofd:CGTransform>"#,
+        "External Missing",
+    );
+    let resolver = SystemFontResolver::empty(Vec::new(), 1 << 20);
+    let runs = position_glyph_runs(
+        &resolver,
+        &document.font_resource(10).unwrap(),
+        &text_object(&document),
+        &ResourceLimits::default(),
+    )
+    .unwrap();
+    assert!(runs[0].glyphs().is_empty());
+    assert_eq!(runs[0].diagnostics().len(), 2);
+    assert!(runs[0].diagnostics().iter().all(|diagnostic| matches!(
+        diagnostic,
+        FontDiagnostic::MissingGlyph {
+            used_visible_replacement: false,
+            ..
+        }
+    )));
+}
+
+#[test]
 fn cumulative_deltas_cross_run_cg_ranges_and_renderer_limits_are_exact() {
     let deltas = package(
         Some(FONT),

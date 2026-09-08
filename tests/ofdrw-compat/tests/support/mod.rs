@@ -153,11 +153,7 @@ pub fn render_page(page: &Page) -> std::result::Result<ImageSurface, String> {
 /// Fixtures rofd-render currently cannot render although they load, with the
 /// observed failure. Tracked like [`KNOWN_LOAD_FAILURES`]: the comparison
 /// test fails when a listed fixture starts rendering.
-pub const KNOWN_RENDER_FAILURES: &[(&str, &str)] = &[(
-    "converter/z.ofd",
-    "pages 2-4: explicit glyph IDs require a resolved primary font, but \
-         the fonts are external (not embedded), so the text cannot be laid out",
-)];
+pub const KNOWN_RENDER_FAILURES: &[(&str, &str)] = &[];
 
 /// Returns the recorded reason when the fixture is a known render failure.
 pub fn known_render_failure(relative_fixture: &str) -> Option<&'static str> {
@@ -254,8 +250,10 @@ pub fn diff_against_reference(surface: &mut ImageSurface, reference: &Path) -> D
 /// tightened as the renderer converges with ofdrw's output.
 pub fn max_mismatch_fraction(relative_fixture: &str) -> f64 {
     const OVERRIDES: &[(&str, f64)] = &[
-        // Pages 2-3 carry the article body as explicit glyph IDs whose fonts
-        // are not embedded; rofd skips most of that text (observed ~16%).
+        // Pages 1-2 carry the article body as explicit glyph IDs whose fonts
+        // are not embedded; rofd applies the IDs to the configured fallback
+        // face while ofdrw uses its own default font, and the unrelated glyph
+        // tables produce different body text (observed ~16%).
         ("converter/y.ofd", 0.18),
     ];
     OVERRIDES

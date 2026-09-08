@@ -1046,13 +1046,26 @@ pub fn position_glyph_runs(
                 continue;
             }
             if let Some(map) = map_starts.get(&scalar_index) {
-                let selected = primary.as_ref().ok_or_else(|| {
-                    layout_error(
-                        text,
-                        "CGTransform",
-                        "explicit glyph IDs require a resolved primary font",
-                    )
-                })?;
+                // ofdrw applies explicit glyph IDs to whatever face it
+                // loaded, substituting a default font when the declared one
+                // is unavailable; mirror that with the configured fallback
+                // chain instead of failing the whole text object.
+                let substitute = match primary.as_ref() {
+                    Some(_) => None,
+                    None => {
+                        let font = resolver.resolve_fallback(characters[local].1)?;
+                        if let Some(font) = &font {
+                            if !matches!(font.source(), FontSource::ConfiguredFallback { .. }) {
+                                return Err(Error::InvalidFont {
+                                    identity: font.identity().to_owned(),
+                                    message: "fallback resolver returned a font with an inconsistent source".to_owned(),
+                                });
+                            }
+                        }
+                        font
+                    }
+                };
+                let selected = primary.as_ref().or(substitute.as_ref());
                 let consumed = map.code_count().min(characters.len() - local);
                 covered_until = scalar_index.checked_add(map.code_count()).ok_or_else(|| {
                     layout_error(text, "CGTransform", "mapped scalar range overflow")
@@ -1062,40 +1075,91 @@ pub fn position_glyph_runs(
                 let end_byte = characters
                     .get(end_local)
                     .map_or(run.text().len(), |(offset, _)| *offset);
-                let mut inferred_x = 0.0;
-                let mut inferred_y = 0.0;
-                for (glyph_offset, glyph_id) in map.glyphs().iter().copied().enumerate() {
-                    validate_glyph(selected, glyph_id)?;
-                    let character =
-                        (glyph_offset < consumed).then(|| characters[local + glyph_offset].1);
-                    glyphs.push(PositionedGlyph {
-                        glyph_id,
-                        x: finite_coordinate(text, "glyph x", x + inferred_x)?,
-                        y: finite_coordinate(text, "glyph y", y + inferred_y)?,
-                        character,
-                        source_range: start_byte..end_byte,
-                        scalar_index,
-                        source_scalar_range: scalar_index..covered_until,
-                        font: Some(selected.clone()),
-                        font_source: selected.source().clone(),
-                        transform: None,
-                    });
-                    let advance = selected.advance_mm(glyph_id, text.font_size())?;
-                    inferred_x = finite_coordinate(text, "advance x", inferred_x + advance.0)?;
-                    inferred_y = finite_coordinate(text, "advance y", inferred_y + advance.1)?;
+                if let Some(selected) = selected {
+                    if substitute.is_some() {
+                        diagnostics.push(FontDiagnostic::FamilyFallback {
+                            character: characters[local].1,
+                            scalar_index,
+                            requested: requested.clone(),
+                            selected: selected.identity().to_owned(),
+                        });
+                    }
+                    let mut inferred_x = 0.0;
+                    let mut inferred_y = 0.0;
+                    for (glyph_offset, glyph_id) in map.glyphs().iter().copied().enumerate() {
+                        if substitute.is_some() {
+                            // The substitute face has an unrelated glyph
+                            // table, so an out-of-range glyph ID is skipped
+                            // (ofdrw draws a null glyph) instead of failing.
+                            if glyph_id >= selected.glyph_count() {
+                                diagnostics.push(FontDiagnostic::MissingGlyph {
+                                    character: characters[local].1,
+                                    scalar_index,
+                                    object_id: text.object_id(),
+                                    used_visible_replacement: false,
+                                });
+                                continue;
+                            }
+                        } else {
+                            validate_glyph(selected, glyph_id)?;
+                        }
+                        let character =
+                            (glyph_offset < consumed).then(|| characters[local + glyph_offset].1);
+                        glyphs.push(PositionedGlyph {
+                            glyph_id,
+                            x: finite_coordinate(text, "glyph x", x + inferred_x)?,
+                            y: finite_coordinate(text, "glyph y", y + inferred_y)?,
+                            character,
+                            source_range: start_byte..end_byte,
+                            scalar_index,
+                            source_scalar_range: scalar_index..covered_until,
+                            font: Some(selected.clone()),
+                            font_source: selected.source().clone(),
+                            transform: None,
+                        });
+                        let advance = selected.advance_mm(glyph_id, text.font_size())?;
+                        inferred_x = finite_coordinate(text, "advance x", inferred_x + advance.0)?;
+                        inferred_y = finite_coordinate(text, "advance y", inferred_y + advance.1)?;
+                    }
+                    let delta_x = if run.has_explicit_delta_x() {
+                        run.delta_x()[local..end_local].iter().sum()
+                    } else {
+                        inferred_x
+                    };
+                    let delta_y = if run.has_explicit_delta_y() {
+                        run.delta_y()[local..end_local].iter().sum()
+                    } else {
+                        inferred_y
+                    };
+                    x = finite_coordinate(text, "glyph x", x + delta_x)?;
+                    y = finite_coordinate(text, "glyph y", y + delta_y)?;
+                } else {
+                    // No face at all: report every consumed scalar as missing
+                    // and advance past the mapped range like ofdrw does when
+                    // the font fails to load.
+                    for offset in 0..consumed {
+                        diagnostics.push(FontDiagnostic::MissingGlyph {
+                            character: characters[local + offset].1,
+                            scalar_index,
+                            object_id: text.object_id(),
+                            used_visible_replacement: false,
+                        });
+                    }
+                    if run.has_explicit_delta_x() {
+                        x = finite_coordinate(
+                            text,
+                            "glyph x",
+                            x + run.delta_x()[local..end_local].iter().sum::<f64>(),
+                        )?;
+                    }
+                    if run.has_explicit_delta_y() {
+                        y = finite_coordinate(
+                            text,
+                            "glyph y",
+                            y + run.delta_y()[local..end_local].iter().sum::<f64>(),
+                        )?;
+                    }
                 }
-                let delta_x = if run.has_explicit_delta_x() {
-                    run.delta_x()[local..end_local].iter().sum()
-                } else {
-                    inferred_x
-                };
-                let delta_y = if run.has_explicit_delta_y() {
-                    run.delta_y()[local..end_local].iter().sum()
-                } else {
-                    inferred_y
-                };
-                x = finite_coordinate(text, "glyph x", x + delta_x)?;
-                y = finite_coordinate(text, "glyph y", y + delta_y)?;
                 local = end_local;
                 continue;
             }
