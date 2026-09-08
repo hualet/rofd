@@ -32,6 +32,13 @@ if [ ! -f "$ROFD_FFI_LIBRARY" ]; then
     exit 1
 fi
 
+# The cdylib carries a versioned SONAME, so test binaries need the
+# versioned name to resolve at runtime; provide it like ldconfig would.
+ROFD_FFI_SONAME=$(readelf -d "$ROFD_FFI_LIBRARY" | sed -n 's/^.*Library soname: \[\(.*\)\]$/\1/p')
+if [ -n "$ROFD_FFI_SONAME" ] && [ "$ROFD_FFI_SONAME" != "librofd_ffi.so" ]; then
+    ln -sf librofd_ffi.so "$ROFD_FFI_DEBUG_DIR/$ROFD_FFI_SONAME"
+fi
+
 cc -std=c11 -Wall -Wextra -Werror -pedantic $(pkg-config --cflags cairo) \
     -I"$INCLUDE_DIR" "$TEST_DIR/header_compile.c" -L"$ROFD_FFI_DEBUG_DIR" \
     -lrofd_ffi $(pkg-config --libs cairo) -Wl,-rpath,"$ROFD_FFI_DEBUG_DIR" \
@@ -51,5 +58,5 @@ cc -std=c11 -Wall -Wextra -Werror -pedantic $(pkg-config --cflags cairo) \
 "$ROFD_SMOKE_BIN" "$ROFD_REPO_ROOT/learning/test.ofd"
 
 nm -D --defined-only "$ROFD_FFI_LIBRARY" | awk '{print $3}' | \
-    sed -n '/^rofd_/p' | sort > "$ROFD_SYMBOLS_FILE"
+    sed -n '/^rofd_/p' | LC_ALL=C sort > "$ROFD_SYMBOLS_FILE"
 diff -u "$TEST_DIR/expected-symbols.txt" "$ROFD_SYMBOLS_FILE"
