@@ -2,11 +2,12 @@
 
 ## Project Structure & Module Organization
 
-This Rust 2021 workspace is migrating from a legacy renderer to a reusable OFD library. Active development belongs in `crates/rofd-core/`; its public API is exported from `src/lib.rs`, implementation modules live beside it, and integration tests are in `crates/rofd-core/tests/`. The root `src/` tree contains the legacy parser and Cairo renderer. The optional Qt/QML prototype lives under `src/bin/rofd/`. Repository fixtures are under `tests/fixtures/`, visual assets under `resources/`, and design or implementation notes under `docs/superpowers/`. Treat `learning/` as reference material, not production code.
+This Rust 2021 workspace is migrating from a legacy renderer to a reusable OFD library. Active development belongs in `crates/rofd-core/`; its public API is exported from `src/lib.rs`, implementation modules live beside it, and integration tests are in `crates/rofd-core/tests/`. The root `src/` tree contains the legacy parser and Cairo renderer. The optional Qt/QML prototype lives under `src/bin/rofd/`. Repository fixtures are under `tests/fixtures/`, visual assets under `resources/`, and design or implementation notes under `docs/superpowers/`. The ofdrw-migrated compatibility tests live in `tests/ofdrw-compat/`: real-world `.ofd` fixtures copied from ofdrw, ported parsing assertions, and rendering comparisons against ofdrw-rendered reference PNGs (see its `README.md` and `PROVENANCE.md`). Treat `learning/` as reference material, not production code.
 
 ## Build, Test, and Development Commands
 
 - `cargo test -p rofd-core` runs the primary library test suite and matches CI.
+- `cargo test -p ofdrw-compat` runs the ofdrw-migrated compatibility suite (not in `default-members`); rendering comparisons need system Noto CJK fonts, and the reference PNGs are regenerated only via `tests/ofdrw-compat/tools/render-references.sh` (requires JDK and Maven).
 - `cargo fmt --all -- --check` verifies formatting without modifying files; run `cargo fmt --all` to apply it.
 - `cargo clippy -p rofd-core --all-targets -- -D warnings` enforces the CI lint policy.
 - `cargo test -p rofd` exercises the legacy root package when changing legacy code.

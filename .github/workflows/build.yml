@@ -42,10 +42,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint reusable crates
-        run: cargo clippy -p rofd-core -p rofd-render -p rofd-ffi --all-targets -- -D warnings
+        run: cargo clippy -p rofd-core -p rofd-render -p rofd-ffi -p ofdrw-compat --all-targets -- -D warnings
 
       - name: Test reusable crates
-        run: cargo test -p rofd-core -p rofd-render -p rofd-ffi
+        run: cargo test -p rofd-core -p rofd-render -p rofd-ffi -p ofdrw-compat
 
       - name: Build application and FFI library
         run: cargo build --release -p rofd-ffi -p rofd --features rofd/qt-reader

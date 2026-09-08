@@ -936,6 +936,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofdrw-compat"
+version = "0.0.0"
+dependencies = [
+ "cairo-rs",
+ "image",
+ "rofd-core",
+ "rofd-render",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
