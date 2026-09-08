@@ -60,7 +60,7 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     ),
     (
         "reader/path_unstd.ofd",
-        "leading-slash package path /Doc_0/Document.xml rejected",
+        "Document.xml with duplicate TemplatePage elements rejected",
     ),
     (
         "reader/发票示例.ofd",
@@ -93,15 +93,11 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     ),
     (
         "converter/n.ofd",
-        "leading-slash package path /Doc_0/Document.xml rejected",
+        "space-separated color value `#ee #20 #25` rejected",
     ),
     (
         "converter/zsbk.ofd",
         "page 1 object 665: DeltaX with more than 14 displacements rejected",
-    ),
-    (
-        "converter/不规范资源路径.ofd",
-        "PublicRes leading-slash path /Doc_0/Res/2.gif rejected",
     ),
     (
         "converter/发票监制章-数科.ofd",

@@ -21,14 +21,17 @@ impl PackagePath {
 
 fn normalize(value: &str, base: &[&str]) -> Result<String> {
     let replaced = value.replace('\\', "/");
-    if replaced.starts_with('/') {
-        return Err(invalid_path(value));
-    }
+    // A leading slash denotes a package-root-absolute path. Real-world
+    // producers use it liberally (e.g. `/Doc_0/Document.xml`), and ofdrw
+    // resolves it against the package root, so do the same instead of
+    // rejecting it. Normalization below still forbids escaping the root
+    // via `..`, so this cannot turn into a zip-slip primitive.
+    let (replaced, base) = match replaced.strip_prefix('/') {
+        Some(rest) => (rest, &[][..]),
+        None => (replaced.as_str(), base),
+    };
 
-    let mut parts = base
-        .iter()
-        .map(|part| (*part).to_owned())
-        .collect::<Vec<_>>();
+    let mut parts = base.iter().map(|part| (*part).to_owned()).collect::<Vec<_>>();
     for part in replaced.split('/') {
         match part {
             "" | "." => {}
@@ -75,11 +78,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_absolute_and_escaping_paths() {
-        assert!(PackagePath::new("/etc/passwd").is_err());
+    fn treats_leading_slash_as_package_root_absolute() {
+        assert_eq!(
+            PackagePath::new("/Doc_0/Document.xml").unwrap().as_str(),
+            "Doc_0/Document.xml"
+        );
+        let page = PackagePath::new("Doc_0/Pages/Page_0/Content.xml").unwrap();
+        assert_eq!(
+            page.resolve("/Doc_0/Res/2.gif").unwrap().as_str(),
+            "Doc_0/Res/2.gif"
+        );
+    }
+
+    #[test]
+    fn rejects_root_escapes_and_bare_separators() {
         assert!(PackagePath::new("../OFD.xml").is_err());
+        assert!(PackagePath::new("/").is_err());
+        assert!(PackagePath::new("/../OFD.xml").is_err());
         let document = PackagePath::new("Doc_0/Document.xml").unwrap();
         assert!(document.resolve("../../outside").is_err());
+        assert!(document.resolve("/../outside").is_err());
     }
 
     #[test]

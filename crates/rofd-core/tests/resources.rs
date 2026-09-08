@@ -266,11 +266,22 @@ fn unsafe_resource_paths_are_rejected_at_the_appropriate_lazy_boundary() {
 
     for xml in [
         br#"<Res BaseLoc="../../../escape"><Fonts><Font ID="1" FontName="bad"><FontFile>x</FontFile></Font></Fonts></Res>"#.as_slice(),
-        br#"<Res><MultiMedias><MultiMedia ID="1" Type="Image" Format="PNG"><MediaFile>/abs</MediaFile></MultiMedia></MultiMedias></Res>"#.as_slice(),
     ] {
         let doc = open("<ofd:PublicRes>Res/r.xml</ofd:PublicRes>", &[("Doc_0/Res/r.xml", xml)]);
         assert!(matches!(doc.font_resource(1), Err(Error::InvalidValue { .. })) || matches!(doc.image_resource(1), Err(Error::InvalidValue { .. })));
     }
+
+    // A leading slash is a package-root-absolute path, not an unsafe one:
+    // `/abs` normalizes to `abs` and then simply misses at lookup time.
+    let xml = br#"<Res><MultiMedias><MultiMedia ID="1" Type="Image" Format="PNG"><MediaFile>/abs</MediaFile></MultiMedia></MultiMedias></Res>"#;
+    let doc = open(
+        "<ofd:PublicRes>Res/r.xml</ofd:PublicRes>",
+        &[("Doc_0/Res/r.xml", xml)],
+    );
+    assert!(matches!(
+        doc.image_resource(1),
+        Err(Error::ObjectResource { .. })
+    ));
 }
 
 #[test]

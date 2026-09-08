@@ -53,7 +53,6 @@ fn nalazhuyi_page6_loads() {
 }
 
 #[test]
-#[ignore = "known parser gap: leading-slash resource paths rejected (see KNOWN_LOAD_FAILURES)"]
 fn non_standard_resource_paths_load() {
     assert_package_loads("converter/不规范资源路径.ofd");
 }
