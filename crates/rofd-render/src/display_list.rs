@@ -304,14 +304,31 @@ impl<'a> DisplayListBuilder<'a> {
                     );
                     return Ok(());
                 }
-                let resource = page.image_resource(image.resource_id()).map_err(|source| {
-                    Error::ObjectResource {
-                        object_id: image.object_id(),
-                        resource_id: image.resource_id(),
-                        kind: ResourceKind::Image,
-                        source,
+                let resource = match page.image_resource(image.resource_id()) {
+                    Ok(resource) => resource,
+                    // ofdrw logs the lookup failure and draws the rest of the
+                    // page (its containsJPEG.ofd reference renders the images
+                    // as nothing because the package stores them under
+                    // `DOC_0/` while the XML references `Doc_0/`).
+                    Err(rofd_core::Error::MissingEntry(_)) => {
+                        display_list.push_diagnostic(
+                            image.object_id(),
+                            source,
+                            RenderDiagnosticKind::ImageResourceMissing {
+                                resource_id: image.resource_id(),
+                            },
+                        );
+                        return Ok(());
                     }
-                })?;
+                    Err(source) => {
+                        return Err(Error::ObjectResource {
+                            object_id: image.object_id(),
+                            resource_id: image.resource_id(),
+                            kind: ResourceKind::Image,
+                            source,
+                        });
+                    }
+                };
                 let decoded = self
                     .image_decoder
                     .decode(&resource, page.resource_limits())
@@ -645,6 +662,12 @@ pub enum RenderDiagnosticKind {
     ImageBorderUnsupported,
     /// The object transform is singular; the object is invisible and skipped.
     SingularTransform,
+    /// The referenced image resource is missing from the package; the object
+    /// is skipped so the rest of the page still renders.
+    ImageResourceMissing {
+        /// Referenced image resource that could not be resolved.
+        resource_id: u64,
+    },
 }
 
 /// A non-fatal source-aware notice produced while lowering a page object.
@@ -714,6 +737,9 @@ fn diagnostic_message(kind: &RenderDiagnosticKind) -> String {
         RenderDiagnosticKind::ImageBorderUnsupported => "image border is not drawn".to_owned(),
         RenderDiagnosticKind::SingularTransform => {
             "object transform is singular; object skipped".to_owned()
+        }
+        RenderDiagnosticKind::ImageResourceMissing { resource_id } => {
+            format!("image resource {resource_id} is missing from the package; object skipped")
         }
     }
 }

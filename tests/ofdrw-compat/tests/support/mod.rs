@@ -153,18 +153,11 @@ pub fn render_page(page: &Page) -> std::result::Result<ImageSurface, String> {
 /// Fixtures rofd-render currently cannot render although they load, with the
 /// observed failure. Tracked like [`KNOWN_LOAD_FAILURES`]: the comparison
 /// test fails when a listed fixture starts rendering.
-pub const KNOWN_RENDER_FAILURES: &[(&str, &str)] = &[
-    (
-        "converter/containsJPEG.ofd",
-        "image entries Doc_0/Res/Image_N.JPEG are reported missing although \
-         ofdrw resolves them (likely a resource path resolution gap)",
-    ),
-    (
-        "converter/z.ofd",
-        "pages 2-4: explicit glyph IDs require a resolved primary font, but \
+pub const KNOWN_RENDER_FAILURES: &[(&str, &str)] = &[(
+    "converter/z.ofd",
+    "pages 2-4: explicit glyph IDs require a resolved primary font, but \
          the fonts are external (not embedded), so the text cannot be laid out",
-    ),
-];
+)];
 
 /// Returns the recorded reason when the fixture is a known render failure.
 pub fn known_render_failure(relative_fixture: &str) -> Option<&'static str> {

@@ -333,22 +333,25 @@ fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics()
 }
 
 #[test]
-fn missing_image_asset_is_a_hard_object_resource_error_and_publishes_no_list() {
+fn missing_image_asset_skips_the_object_with_a_diagnostic() {
+    // ofdrw logs the missing media file and renders the rest of the page
+    // (its containsJPEG.ofd references render without the images), so a
+    // missing asset is a non-fatal diagnostic, not a hard error.
     let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="6" Boundary="0 0 6 4" ResourceID="20"/></ofd:Layer></ofd:Content></ofd:Page>"#;
     let document = document(page, &resources("missing.png"), &[("Doc_0/font.ttf", FONT)]);
     let page = document.page(0).unwrap();
     let resolver = SystemFontResolver::empty(Vec::new(), 1 << 20);
     let decoder = ImageDecoder::default();
 
-    assert!(matches!(
-        builder(&resolver, &decoder).build(&page),
-        Err(Error::ObjectResource {
-            object_id: 6,
-            resource_id: 20,
-            kind: ResourceKind::Image,
-            ..
-        })
-    ));
+    let display_list = builder(&resolver, &decoder).build(&page).unwrap();
+    assert!(!display_list.commands().is_empty());
+    assert_eq!(display_list.diagnostics().len(), 1);
+    let diagnostic = &display_list.diagnostics()[0];
+    assert_eq!(diagnostic.object_id(), 6);
+    assert_eq!(
+        diagnostic.kind(),
+        &RenderDiagnosticKind::ImageResourceMissing { resource_id: 20 }
+    );
 }
 
 #[test]
