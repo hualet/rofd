@@ -53,13 +53,7 @@ pub fn open_document(path: &Path) -> Document {
 /// README.md's known-differences section. The smoke test in
 /// `package_edge.rs` fails when an unlisted fixture breaks or a listed one
 /// starts passing (remove the entry once the parser handles it).
-pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
-    ("converter/1.ofd", "GBIG2 image format unsupported"),
-    (
-        "layout/no_page_container.ofd",
-        "JB2 image format unsupported",
-    ),
-];
+pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[];
 
 /// Returns the recorded reason when the fixture is a known load failure.
 pub fn known_load_failure(relative_fixture: &str) -> Option<&'static str> {
