@@ -9,9 +9,11 @@ license = "LGPL-2.1-or-later"
 
 [features]
 default = []
-qt-reader = ["dep:qmetaobject", "dep:rofd-core", "dep:rofd-render"]
+qt-reader = ["dep:qmetaobject", "dep:rofd-core", "dep:rofd-render", "dep:serde_json", "dep:base64"]
 
 [dependencies]
+serde_json = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
 cairo-rs = { version = "0.20.7", features = ["png"] }
 env_logger = "0.11.6"
 log = { version = "0.4.25", features = ["kv"] }

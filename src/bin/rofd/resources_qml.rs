@@ -5,5 +5,12 @@ use qmetaobject::qrc;
 qrc!(pub rsrc_qml,
     "src/bin/rofd/ui" as "/" {
         "main_window.qml",
+        "ZoomControl.qml",
+        "ReaderMath.js",
+        "ReaderButton.qml",
+        "ReaderIcon.qml",
+        "PageSurface.qml",
+        "DocumentView.qml",
+        "NavigationPane.qml",
     }
 );

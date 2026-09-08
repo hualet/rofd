@@ -359,6 +359,73 @@ impl Document {
         )
     }
 
+    /// Reads the physical page box without loading or caching graphical objects.
+    ///
+    /// This metadata-only operation respects XML/package limits and strictness,
+    /// but does not validate page content. Call [`Self::page`] to load content.
+    pub fn page_size(&self, index: usize) -> Result<crate::Rect> {
+        #[derive(Deserialize)]
+        struct Geometry {
+            #[serde(rename = "Area")]
+            area: Option<raw::PageArea>,
+        }
+        let reference = self.0.pages.get(index).ok_or(Error::PageOutOfRange {
+            index,
+            page_count: self.page_count(),
+        })?;
+        let validate = |size: crate::Rect| {
+            if size.width <= 0. || size.height <= 0. {
+                Err(Error::InvalidStructure {
+                    path: reference.path.as_str().to_owned(),
+                    message: "page dimensions must be positive".into(),
+                })
+            } else {
+                Ok(size)
+            }
+        };
+        if let Some(data) = reference.cache.get() {
+            return validate(data.size);
+        }
+        let geometry: Geometry = parse_xml(
+            &self.0.container,
+            &reference.path,
+            self.0.limits.max_xml_depth,
+        )?;
+        let area = match geometry.area {
+            Some(area) if area.physical_box.is_some() => area,
+            area => {
+                let missing = if area.is_some() {
+                    "Page.Area PhysicalBox is missing"
+                } else {
+                    "Page.Area is missing"
+                };
+                if self.0.strictness == crate::Strictness::Strict {
+                    return Err(Error::InvalidStructure {
+                        path: reference.path.as_str().to_owned(),
+                        message: missing.to_owned(),
+                    });
+                }
+                self.0
+                    .default_page_area
+                    .clone()
+                    .ok_or_else(|| Error::InvalidStructure {
+                        path: reference.path.as_str().to_owned(),
+                        message: format!("{missing} and the document declares no PageArea"),
+                    })?
+            }
+        };
+        let physical_box = area.physical_box.as_deref().ok_or_else(|| {
+            Error::InvalidStructure {
+                path: reference.path.as_str().to_owned(),
+                message: "Page.Area PhysicalBox is missing and the document PageArea declares no PhysicalBox"
+                    .to_owned(),
+            }
+        })?;
+        let size = crate::Rect::parse(physical_box)
+            .map_err(|error| with_error_path(error, &reference.path))?;
+        validate(size)
+    }
+
     /// Loads and returns a page by zero-based index.
     pub fn page(&self, index: usize) -> Result<Page> {
         let reference = self.0.pages.get(index).ok_or(Error::PageOutOfRange {
@@ -1324,4 +1391,74 @@ fn xml_error(path: &PackagePath, error: xml::reader::Error) -> Error {
 
 fn xml_depth_error(depth: usize, limit: usize) -> Error {
     Error::LimitExceeded(format!("XML depth {depth} exceeds limit {limit}"))
+}
+
+#[cfg(test)]
+mod page_size_tests {
+    use super::*;
+    mod support {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/mod.rs"));
+    }
+    #[test]
+    fn metadata_rejects_nonpositive_sizes_before_and_after_content_cache() {
+        for physical_box in ["0 0 0 100", "0 0 100 -1"] {
+            let xml = format!(
+                r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>{physical_box}</ofd:PhysicalBox></ofd:Area></ofd:Page>"#
+            );
+            let document =
+                Document::from_bytes(support::minimal_ofd(&xml), LoadOptions::default()).unwrap();
+            assert!(document.page_size(0).is_err());
+            document.page(0).unwrap();
+            assert!(document.page_size(0).is_err());
+        }
+    }
+    #[test]
+    fn metadata_does_not_initialize_page_content_cache() {
+        let bytes = support::minimal_ofd(
+            r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>10 20 120 180</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="1"><ofd:TextObject ID="2" Boundary="0 0 20 10" Font="999" Size="4"><ofd:TextCode X="0" Y="4">text</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content></ofd:Page>"#,
+        );
+        let document = Document::from_bytes(bytes, LoadOptions::default()).unwrap();
+        assert_eq!(
+            document.page_size(0).unwrap(),
+            crate::Rect {
+                x: 10.,
+                y: 20.,
+                width: 120.,
+                height: 180.
+            }
+        );
+        assert!(document.0.pages[0].cache.get().is_none());
+        assert!(document.page(0).is_err());
+        assert!(document.page_size(1).is_err());
+    }
+    #[test]
+    fn metadata_obeys_area_fallback_and_strictness() {
+        let bytes = support::minimal_ofd(r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"/>"#);
+        let document = Document::from_bytes(bytes.clone(), LoadOptions::default()).unwrap();
+        assert_eq!(document.page_size(0).unwrap().width, 210.);
+        let options = LoadOptions {
+            strictness: crate::Strictness::Strict,
+            ..Default::default()
+        };
+        assert!(Document::from_bytes(bytes, options)
+            .unwrap()
+            .page_size(0)
+            .is_err());
+    }
+
+    #[test]
+    fn metadata_rejects_a_missing_page_area_without_a_document_fallback() {
+        let document_xml = r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:CommonData><ofd:MaxUnitID>2</ofd:MaxUnitID></ofd:CommonData>
+  <ofd:Pages><ofd:Page ID="2" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages>
+</ofd:Document>"#;
+        let page_xml = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"/>"#;
+        let bytes = support::ofd_with_document_page_and_entries(document_xml, page_xml, &[]);
+        let document = Document::from_bytes(bytes, LoadOptions::default()).unwrap();
+
+        let error = document.page_size(0).unwrap_err().to_string();
+
+        assert!(error.contains("document declares no PageArea"), "{error}");
+        assert!(document.0.pages[0].cache.get().is_none());
+    }
 }

@@ -27,7 +27,17 @@ jobs:
             libcairo2-dev \
             libfreetype-dev \
             qt6-base-dev \
-            qt6-declarative-dev
+            qt6-declarative-dev \
+            qt6-declarative-dev-tools \
+            qml6-module-qtquick \
+            qml6-module-qtquick-window \
+            qml6-module-qtquick-dialogs \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates \
+            qml6-module-qtqml-models \
+            qml6-module-qtqml-workerscript \
+            qml6-module-qttest
 
       # The distro cargo/rustc (1.81) is too old for the locked
       # dependencies (image 0.25 needs Rust 1.88), so use rustup.
@@ -46,6 +56,15 @@ jobs:
 
       - name: Test reusable crates
         run: cargo test -p rofd-core -p rofd-render -p rofd-ffi -p ofdrw-compat
+
+      - name: Test Qt reader backend
+        run: cargo test -p rofd --features qt-reader --bin rofd
+
+      - name: Test Qt reader interface
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+        run: /usr/lib/qt6/bin/qmltestrunner -input src/bin/rofd/ui/tests
 
       - name: Build application and FFI library
         run: cargo build --release -p rofd-ffi -p rofd --features rofd/qt-reader

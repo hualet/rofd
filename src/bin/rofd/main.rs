@@ -1,15 +1,18 @@
 use qmetaobject::prelude::*;
 use qmetaobject::QUrl;
 
+mod cache;
+mod reader;
 mod resources_qml;
 mod viewer;
+mod worker;
 
 fn main() {
     env_logger::init();
 
     resources_qml::rsrc_qml();
 
-    let mut viewer = viewer::OfdViewer::default();
+    let mut viewer = viewer::OfdViewer::new();
 
     // Optionally open a document passed on the command line.
     if let Some(path) = std::env::args().nth(1) {
