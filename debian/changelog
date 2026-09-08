@@ -1,3 +1,10 @@
+rofd (0.2.1-1) unstable; urgency=medium
+
+  * Fix the FFI C consumer test script: link against the SONAME
+    symlink and sort exported symbols locale-independently.
+
+ -- HualetWang <hualet@hualet.org>  Tue, 08 Sep 2026 23:39:25 +0800
+
 rofd (0.2.0-1) unstable; urgency=medium
 
   * Stamp annotation seal rendering, essential reading tools in the Qt
