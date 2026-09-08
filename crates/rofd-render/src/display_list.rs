@@ -249,8 +249,26 @@ impl<'a> DisplayListBuilder<'a> {
         image_budget: &mut DecodedImageBudget,
     ) -> Result<()> {
         match object {
-            PageObject::Path(path) => display_list.lower_path(path),
+            PageObject::Path(path) => {
+                if path.transform().is_singular() {
+                    display_list.push_diagnostic(
+                        path.object_id(),
+                        source,
+                        RenderDiagnosticKind::SingularTransform,
+                    );
+                    return Ok(());
+                }
+                display_list.lower_path(path)
+            }
             PageObject::Text(text) => {
+                if text.transform().is_singular() {
+                    display_list.push_diagnostic(
+                        text.object_id(),
+                        source,
+                        RenderDiagnosticKind::SingularTransform,
+                    );
+                    return Ok(());
+                }
                 let resource =
                     page.font_resource(text.font_id())
                         .map_err(|source| Error::ObjectResource {
@@ -278,6 +296,14 @@ impl<'a> DisplayListBuilder<'a> {
                 display_list.lower_text(text, runs, source)
             }
             PageObject::Image(image) => {
+                if image.transform().is_singular() {
+                    display_list.push_diagnostic(
+                        image.object_id(),
+                        source,
+                        RenderDiagnosticKind::SingularTransform,
+                    );
+                    return Ok(());
+                }
                 let resource = page.image_resource(image.resource_id()).map_err(|source| {
                     Error::ObjectResource {
                         object_id: image.object_id(),
@@ -617,6 +643,8 @@ pub enum RenderDiagnosticKind {
     },
     /// An explicitly declared image border is retained but not drawn yet.
     ImageBorderUnsupported,
+    /// The object transform is singular; the object is invisible and skipped.
+    SingularTransform,
 }
 
 /// A non-fatal source-aware notice produced while lowering a page object.
@@ -684,5 +712,8 @@ fn diagnostic_message(kind: &RenderDiagnosticKind) -> String {
             format!("image mask resource {resource_id} is not composited")
         }
         RenderDiagnosticKind::ImageBorderUnsupported => "image border is not drawn".to_owned(),
+        RenderDiagnosticKind::SingularTransform => {
+            "object transform is singular; object skipped".to_owned()
+        }
     }
 }

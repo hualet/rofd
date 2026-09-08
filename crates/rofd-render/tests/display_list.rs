@@ -320,6 +320,35 @@ fn direct_page_layers_follow_effective_category_order() {
 }
 
 #[test]
+fn singular_object_transforms_skip_the_object_with_a_diagnostic() {
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1">
+  <ofd:PathObject ID="2" Boundary="0 0 10 10" CTM="0 0 0 0.3528 0 0">
+    <ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData>
+  </ofd:PathObject>
+  <ofd:PathObject ID="3" Boundary="0 0 10 10">
+    <ofd:AbbreviatedData>M 2 0</ofd:AbbreviatedData>
+  </ofd:PathObject>
+</ofd:Layer></ofd:Content>"#,
+    );
+
+    let display_list = DisplayList::from_page(&page).unwrap();
+
+    assert_eq!(
+        drawn_paths(&display_list),
+        [PathData::parse("M 2 0").unwrap()]
+            .iter()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(display_list.diagnostics().len(), 1);
+    assert_eq!(display_list.diagnostics()[0].object_id(), 2);
+    assert_eq!(
+        display_list.diagnostics()[0].kind(),
+        &RenderDiagnosticKind::SingularTransform
+    );
+}
+
+#[test]
 fn unsupported_composites_produce_diagnostics_and_no_drawing_commands() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1">

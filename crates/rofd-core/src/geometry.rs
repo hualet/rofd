@@ -100,6 +100,20 @@ impl Transform {
         )
     }
 
+    /// Returns the determinant of the linear part (`a*d - b*c`).
+    pub fn determinant(self) -> f64 {
+        self.a * self.d - self.b * self.c
+    }
+
+    /// Returns whether the linear part is singular, collapsing every point
+    /// onto a line or a single point.
+    ///
+    /// A singular transform has no inverse, so renderers cannot draw content
+    /// using it; such content is invisible and should be skipped.
+    pub fn is_singular(self) -> bool {
+        self.determinant() == 0.0
+    }
+
     /// Applies this transform to a point.
     ///
     /// Returns an error if mapping overflows to a non-finite coordinate.

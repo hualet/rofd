@@ -164,11 +164,6 @@ pub const KNOWN_RENDER_FAILURES: &[(&str, &str)] = &[
         "pages 2-4: explicit glyph IDs require a resolved primary font, but \
          the fonts are external (not embedded), so the text cannot be laid out",
     ),
-    (
-        "converter/发票监制章-数科.ofd",
-        "object 4 has a singular CTM `0 0 0 0.3528 0 0` that cairo rejects; \
-         a degenerate transform should make the object a no-op instead",
-    ),
 ];
 
 /// Returns the recorded reason when the fixture is a known render failure.
