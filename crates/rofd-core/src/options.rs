@@ -54,6 +54,10 @@ pub struct ResourceLimits {
     pub max_glyphs_per_page: usize,
     /// Maximum text-run, glyph-map, expanded-delta, and glyph entries on one page.
     pub max_text_expansion_entries: usize,
+    /// Maximum number of signature entries processed from one Signatures.xml.
+    pub max_signatures: usize,
+    /// Maximum byte length of one `SignedValue.dat`.
+    pub max_signature_bytes: u64,
 }
 
 impl Default for ResourceLimits {
@@ -75,6 +79,8 @@ impl Default for ResourceLimits {
             max_text_characters_per_page: 1_000_000,
             max_glyphs_per_page: 1_000_000,
             max_text_expansion_entries: 2_000_000,
+            max_signatures: 256,
+            max_signature_bytes: 64 * 1024 * 1024,
         }
     }
 }

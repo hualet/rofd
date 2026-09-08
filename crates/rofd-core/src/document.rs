@@ -42,6 +42,9 @@ pub enum WarningCode {
     /// The document CommonData omitted PageArea; only pages declaring their
     /// own Area remain loadable.
     DocumentPageAreaMissing,
+    /// A signature or one of its stamp annotations could not be parsed and
+    /// was skipped.
+    SignatureSkipped,
 }
 
 /// A recoverable OFD conformance diagnostic.
@@ -90,6 +93,9 @@ struct DocumentInner {
     resource_paths: Vec<PackagePath>,
     resource_catalog: OnceLock<Arc<crate::resources::ResourceCatalog>>,
     resource_initialization: Mutex<()>,
+    signatures_path: Option<PackagePath>,
+    stamp_annotations: OnceLock<Vec<crate::StampAnnotation>>,
+    stamp_initialization: Mutex<()>,
 }
 
 /// A read-only OFD document.
@@ -152,6 +158,20 @@ impl Page {
     /// Looks up an image resource in the document that owns this page.
     pub fn image_resource(&self, resource_id: u64) -> Result<crate::ImageResource> {
         Document(Arc::clone(&self._document)).image_resource(resource_id)
+    }
+
+    /// Returns the signature stamp annotations targeting this page.
+    ///
+    /// Signature parsing problems are recorded as warnings on the owning
+    /// document and yield no annotations, so an empty result means either no
+    /// stamps or skipped ones; inspect [`Document::warnings`] to tell apart.
+    pub fn stamp_annotations(&self) -> Vec<crate::StampAnnotation> {
+        Document(Arc::clone(&self._document))
+            .stamp_annotations()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|annotation| annotation.page_ref == self.object_id)
+            .collect()
     }
 }
 
@@ -266,6 +286,20 @@ impl Document {
             );
         }
         let info = body.doc_info;
+        let signatures_path = match body.signatures.as_deref().map(str::trim) {
+            None => None,
+            Some(declaration) => match entry_path.resolve(declaration) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    initial_warnings.push(Warning {
+                        code: WarningCode::SignatureSkipped,
+                        path: declaration.to_owned(),
+                        message: format!("Signatures location is invalid: {error}"),
+                    });
+                    None
+                }
+            },
+        };
         Ok(Self(Arc::new(DocumentInner {
             container,
             limits,
@@ -288,6 +322,9 @@ impl Document {
             resource_paths,
             resource_catalog: OnceLock::new(),
             resource_initialization: Mutex::new(()),
+            signatures_path,
+            stamp_annotations: OnceLock::new(),
+            stamp_initialization: Mutex::new(()),
         })))
     }
 
@@ -432,6 +469,120 @@ impl Document {
             .lock()
             .map(|warnings| warnings.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    /// Returns every signature stamp annotation declared by this document.
+    ///
+    /// Annotations are parsed lazily on first access from the signatures
+    /// listed in `OFD.xml`. Following ofdrw, any signature or annotation that
+    /// fails to parse is skipped and reported through [`Document::warnings`]
+    /// with [`WarningCode::SignatureSkipped`]; only lock-poisoning internal
+    /// errors surface as `Err`.
+    pub fn stamp_annotations(&self) -> Result<Vec<crate::StampAnnotation>> {
+        if let Some(annotations) = self.0.stamp_annotations.get() {
+            return Ok(annotations.clone());
+        }
+        let _initialization = self.0.stamp_initialization.lock().map_err(|_| {
+            Error::Internal("stamp annotation initialization lock is poisoned".to_owned())
+        })?;
+        if let Some(annotations) = self.0.stamp_annotations.get() {
+            return Ok(annotations.clone());
+        }
+        let parsed = self.load_stamp_annotations();
+        Ok(self.0.stamp_annotations.get_or_init(|| parsed).clone())
+    }
+
+    fn load_stamp_annotations(&self) -> Vec<crate::StampAnnotation> {
+        let Some(signatures_path) = self.0.signatures_path.clone() else {
+            return Vec::new();
+        };
+        let signatures: raw::SignaturesRoot = match parse_xml(
+            &self.0.container,
+            &signatures_path,
+            self.0.limits.max_xml_depth,
+        ) {
+            Ok(signatures) => signatures,
+            Err(error) => {
+                self.push_signature_warning(
+                    signatures_path.as_str(),
+                    format!("signatures file could not be parsed: {error}"),
+                );
+                return Vec::new();
+            }
+        };
+        let mut annotations = Vec::new();
+        for entry in signatures
+            .signatures
+            .iter()
+            .take(self.0.limits.max_signatures)
+        {
+            self.load_signature_stamps(&signatures_path, entry, &mut annotations);
+        }
+        annotations
+    }
+
+    fn load_signature_stamps(
+        &self,
+        signatures_path: &PackagePath,
+        entry: &raw::SignatureEntry,
+        annotations: &mut Vec<crate::StampAnnotation>,
+    ) {
+        let label = entry.id.as_deref().unwrap_or("<unknown>");
+        let loaded = (|| -> Result<Vec<crate::StampAnnotation>> {
+            let signature_path = signatures_path.resolve(entry.base_loc.trim())?;
+            let signature: raw::SignatureRoot = parse_xml(
+                &self.0.container,
+                &signature_path,
+                self.0.limits.max_xml_depth,
+            )?;
+            if signature.signed_info.stamp_annots.is_empty() {
+                return Ok(Vec::new());
+            }
+            let signed_value = signature
+                .signed_value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| Error::InvalidStructure {
+                    path: signature_path.as_str().to_owned(),
+                    message: "SignedValue is missing".to_owned(),
+                })?;
+            let value_path = signature_path.resolve(signed_value)?;
+            let value_bytes = self.0.container.read_with_limit(
+                &value_path,
+                self.0.limits.max_signature_bytes,
+                "signed value",
+            )?;
+            let picture = crate::ses::parse_seal_picture(&value_bytes)?;
+            let mut parsed = Vec::new();
+            for annot in &signature.signed_info.stamp_annots {
+                match convert_stamp_annot(annot, &picture, &signature_path) {
+                    Ok(annotation) => parsed.push(annotation),
+                    Err(error) => self.push_signature_warning(
+                        signature_path.as_str(),
+                        format!("stamp annotation skipped: {error}"),
+                    ),
+                }
+            }
+            Ok(parsed)
+        })();
+        match loaded {
+            Ok(mut parsed) => annotations.append(&mut parsed),
+            Err(error) => self.push_signature_warning(
+                signatures_path.as_str(),
+                format!("signature {label} skipped: {error}"),
+            ),
+        }
+    }
+
+    fn push_signature_warning(&self, path: &str, message: String) {
+        if let Ok(mut warnings) = self.0.warnings.lock() {
+            warnings.push(Warning {
+                code: WarningCode::SignatureSkipped,
+                path: path.to_owned(),
+                message,
+            });
+        }
     }
 
     fn resource_catalog(&self) -> Result<&Arc<crate::resources::ResourceCatalog>> {
@@ -601,6 +752,40 @@ impl Document {
             referenced_templates,
         })
     }
+}
+
+fn convert_stamp_annot(
+    annot: &raw::StampAnnotRaw,
+    picture: &crate::ses::SealPictureData,
+    path: &PackagePath,
+) -> Result<crate::StampAnnotation> {
+    let page_ref = annot
+        .page_ref
+        .parse::<u64>()
+        .map_err(|_| Error::InvalidValue {
+            field: "stamp annotation PageRef",
+            value: annot.page_ref.clone(),
+            path: Some(path.as_str().to_owned()),
+        })?;
+    let boundary =
+        crate::Rect::parse(&annot.boundary).map_err(|error| with_error_path(error, path))?;
+    let clip = annot
+        .clip
+        .as_deref()
+        .map(|value| crate::Rect::parse(value).map_err(|error| with_error_path(error, path)))
+        .transpose()?;
+    Ok(crate::StampAnnotation {
+        page_ref,
+        id: annot.id.clone(),
+        boundary,
+        clip,
+        picture: crate::SealPicture {
+            kind: crate::SealPictureKind::from_type_name(&picture.kind),
+            data: picture.data.clone(),
+            width_mm: picture.width.map(f64::from),
+            height_mm: picture.height.map(f64::from),
+        },
+    })
 }
 
 fn parse_template_id(value: &str, path: &PackagePath) -> Result<u64> {

@@ -118,6 +118,9 @@ pub enum Error {
     /// The document uses a feature that this version cannot process correctly.
     #[error("unsupported OFD feature: {0}")]
     UnsupportedFeature(String),
+    /// A signed value (SES_Signature) cannot be parsed.
+    #[error("invalid SES signature value: {0}")]
+    InvalidSignatureValue(String),
 }
 
 fn optional_resource_id(id: Option<u64>) -> String {

@@ -12,6 +12,48 @@ pub(crate) struct OfdRoot {
 pub(crate) struct DocBody {
     pub(crate) doc_info: DocInfo,
     pub(crate) doc_root: String,
+    #[serde(rename = "Signatures")]
+    pub(crate) signatures: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SignaturesRoot {
+    #[serde(rename = "Signature", default)]
+    pub(crate) signatures: Vec<SignatureEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SignatureEntry {
+    #[serde(rename = "ID")]
+    pub(crate) id: Option<String>,
+    #[serde(rename = "BaseLoc")]
+    pub(crate) base_loc: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SignatureRoot {
+    #[serde(rename = "SignedInfo")]
+    pub(crate) signed_info: SignedInfo,
+    #[serde(rename = "SignedValue")]
+    pub(crate) signed_value: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SignedInfo {
+    #[serde(rename = "StampAnnot", default)]
+    pub(crate) stamp_annots: Vec<StampAnnotRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct StampAnnotRaw {
+    #[serde(rename = "PageRef")]
+    pub(crate) page_ref: String,
+    #[serde(rename = "ID")]
+    pub(crate) id: Option<String>,
+    #[serde(rename = "Boundary")]
+    pub(crate) boundary: String,
+    #[serde(rename = "Clip")]
+    pub(crate) clip: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
