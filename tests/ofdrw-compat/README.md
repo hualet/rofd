@@ -72,12 +72,12 @@ cargo test -p ofdrw-compat
 "表外文件不得失败、表内文件一旦能打开就必须删表项"：
 
 - 不支持的图像格式 JB2 / GBIG2：layout/no_page_container.ofd、converter/1.ofd
-- 空格分隔的颜色值 `#ee #20 #25` 被拒绝：converter/n.ofd
-- FillColor 元素缺少 Value 属性：converter/intro-数科.ofd（第 5 页对象 187）
 
 早期迁移时记录的解析差异（前导斜杠包路径、缺 PageArea、零/负 Boundary、
 DeltaX/Y 个数与符号、首个 TextCode 省略原点、对象缺 ID、重复 Fonts 元素、
-非连续 TemplatePage 声明等）已逐项修复；ofdrw 宽容而 rofd 严格的写法以
+非连续 TemplatePage 声明、`S` 路径操作符、空格/井号分隔的颜色通道
+`#ee #20 #25`、无 Value 的 FillColor/StrokeColor、PathObject 缺 Boundary
+等）已逐项修复；ofdrw 宽容而 rofd 严格的写法以
 "lenient 容忍、strict 报错"的方式支持。
 
 ## 已知渲染差异

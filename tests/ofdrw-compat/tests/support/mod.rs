@@ -56,14 +56,6 @@ pub fn open_document(path: &Path) -> Document {
 pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     ("converter/1.ofd", "GBIG2 image format unsupported"),
     (
-        "converter/intro-数科.ofd",
-        "page 5 object 187: FillColor element without a value rejected",
-    ),
-    (
-        "converter/n.ofd",
-        "space-separated color value `#ee #20 #25` rejected",
-    ),
-    (
         "layout/no_page_container.ofd",
         "JB2 image format unsupported",
     ),
