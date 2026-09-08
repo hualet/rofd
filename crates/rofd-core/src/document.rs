@@ -666,6 +666,7 @@ impl Document {
             &self.0.container,
             &self.0.resource_paths,
             &self.0.limits,
+            self.0.strictness,
         )?);
         Ok(self.0.resource_catalog.get_or_init(|| Arc::clone(&parsed)))
     }
@@ -954,7 +955,12 @@ fn parse_xml<T: DeserializeOwned>(
 ) -> Result<T> {
     let bytes = container.read(path)?;
     preflight_xml_depth(&bytes, path, max_xml_depth)?;
-    serde_xml_rs::from_reader(bytes.as_slice()).map_err(|error| Error::Xml {
+    // Real-world producers scatter repeated elements (e.g. ofdrw's
+    // path_unstd.ofd splits TemplatePage entries around other CommonData
+    // children); accept sequence members in any order like the page parser.
+    let mut deserializer = serde_xml_rs::Deserializer::new_from_reader(bytes.as_slice())
+        .non_contiguous_seq_elements(true);
+    T::deserialize(&mut deserializer).map_err(|error| Error::Xml {
         path: path.as_str().to_owned(),
         message: error.to_string(),
     })

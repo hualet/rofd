@@ -482,3 +482,40 @@ fn new_resource_limit_defaults_are_stable() {
     assert_eq!(limits.max_glyphs_per_page, 1_000_000);
     assert_eq!(limits.max_text_expansion_entries, 2_000_000);
 }
+
+const DUPLICATE_FONTS_CATALOG: &[u8] = br#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Fonts><ofd:Font ID="1" FontName="First"/></ofd:Fonts>
+  <ofd:Fonts><ofd:Font ID="2" FontName="Second"/></ofd:Fonts>
+</ofd:Res>"#;
+
+#[test]
+fn duplicate_fonts_blocks_are_merged_in_lenient_mode() {
+    // ofdrw's converter/ano.ofd and converter/透明度文字.ofd split fonts over
+    // two Fonts blocks in one catalog.
+    let document = open(
+        "<ofd:PublicRes>Res/Dup.xml</ofd:PublicRes>",
+        &[("Doc_0/Res/Dup.xml", DUPLICATE_FONTS_CATALOG)],
+    );
+    assert_eq!(document.font_resource(1).unwrap().font_name(), "First");
+    assert_eq!(document.font_resource(2).unwrap().font_name(), "Second");
+}
+
+#[test]
+fn duplicate_fonts_blocks_are_rejected_in_strict_mode() {
+    let bytes = package(
+        "<ofd:PublicRes>Res/Dup.xml</ofd:PublicRes>",
+        &[("Doc_0/Res/Dup.xml", DUPLICATE_FONTS_CATALOG)],
+    );
+    let document = Document::from_bytes(
+        bytes,
+        LoadOptions {
+            strictness: rofd_core::Strictness::Strict,
+            ..LoadOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        document.font_resource(1),
+        Err(Error::InvalidStructure { .. })
+    ));
+}

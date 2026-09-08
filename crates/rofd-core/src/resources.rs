@@ -5,6 +5,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use serde::Deserialize;
+
 use crate::container::Container;
 use crate::paint::PaintParameters;
 use crate::path::PackagePath;
@@ -266,6 +268,7 @@ impl ResourceCatalog {
         container: &Container,
         paths: &[PackagePath],
         limits: &ResourceLimits,
+        strictness: crate::Strictness,
     ) -> Result<Self> {
         let mut count = 0usize;
         let mut documents = Vec::with_capacity(paths.len());
@@ -277,11 +280,19 @@ impl ResourceCatalog {
 
         let mut catalog = Self::empty();
         for (path, bytes) in documents {
-            let root: ResourceRoot =
-                serde_xml_rs::from_reader(bytes.as_slice()).map_err(|error| Error::Xml {
+            let mut deserializer = serde_xml_rs::Deserializer::new_from_reader(bytes.as_slice())
+                .non_contiguous_seq_elements(true);
+            let root =
+                ResourceRoot::deserialize(&mut deserializer).map_err(|error| Error::Xml {
                     path: path.as_str().to_owned(),
                     message: error.to_string(),
                 })?;
+            if strictness == crate::Strictness::Strict && root.fonts.len() > 1 {
+                return Err(Error::InvalidStructure {
+                    path: path.as_str().to_owned(),
+                    message: "resource catalog declares duplicate Fonts elements".to_owned(),
+                });
+            }
             for font in root.fonts.into_iter().flat_map(|fonts| fonts.entries) {
                 catalog.insert_font(font, &root.base_loc, path)?;
             }

@@ -95,8 +95,10 @@ pub(crate) struct CommonData {
 pub(crate) struct ResourceRoot {
     #[serde(rename = "BaseLoc")]
     pub(crate) base_loc: Option<String>,
-    #[serde(rename = "Fonts")]
-    pub(crate) fonts: Option<Fonts>,
+    /// Real-world producers occasionally emit several Fonts blocks (ofdrw's
+    /// ano.ofd); every block contributes entries to the catalog.
+    #[serde(rename = "Fonts", default)]
+    pub(crate) fonts: Vec<Fonts>,
     #[serde(rename = "MultiMedias")]
     pub(crate) multi_medias: Option<MultiMedias>,
     #[serde(rename = "DrawParams")]

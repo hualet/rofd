@@ -699,3 +699,38 @@ fn concurrent_pages_share_only_complete_template_cache_results() {
     assert!(document_handle.page(0).is_err());
     assert!(document_handle.warnings().is_empty());
 }
+
+#[test]
+fn non_contiguous_template_page_declarations_all_register() {
+    // ofdrw's reader/path_unstd.ofd splits its TemplatePage declarations
+    // around other CommonData children.
+    let declarations = [
+        template_decl("10", "Templates/A.xml", None),
+        "<ofd:MaxUnitID>99</ofd:MaxUnitID>".to_owned(),
+        template_decl("20", "Templates/B.xml", None),
+    ]
+    .join("");
+    let references = [template_ref("10", None), template_ref("20", None)].join("");
+    let bytes = archive(
+        &document(&declarations),
+        &page(None, &references, &layer(901, "Body", 1901)),
+        &[
+            (
+                "Doc_0/Templates/A.xml",
+                &template("", &layer(101, "Body", 1101)),
+            ),
+            (
+                "Doc_0/Templates/B.xml",
+                &template("", &layer(102, "Body", 1102)),
+            ),
+        ],
+    );
+    let document = Document::from_bytes(bytes, LoadOptions::default()).unwrap();
+    let page = document.page(0).unwrap();
+    let ids: Vec<u64> = page
+        .layers()
+        .iter()
+        .map(|layer| layer.object_id())
+        .collect();
+    assert_eq!(ids, [101, 102, 901]);
+}
