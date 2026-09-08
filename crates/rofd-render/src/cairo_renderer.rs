@@ -1,14 +1,19 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
+use std::io::Cursor;
 
 use cairo::{
     Antialias, Context, Extend, FillRule as CairoFillRule, Filter, FontFace, FontOptions, Format,
     Glyph, HintMetrics, HintStyle, ImageSurface, LineCap, LineJoin, Matrix, Operator, Path,
     SubpixelOrder, SurfacePattern,
 };
-use rofd_core::{Color, FillRule, Page, PathCommand, PathData, Point, Rect, Transform};
+use image::{ImageReader, Limits};
+use rofd_core::{
+    Color, FillRule, Page, PathCommand, PathData, Point, Rect, SealPictureKind, StampAnnotation,
+    Transform,
+};
 
-use crate::fonts::FontAllocationKey;
+use crate::fonts::{FontAllocationKey, SystemFontResolver};
 use crate::{
     ClipPath, Command, DisplayList, DisplayListBuilder, Error, FontResolver, GlyphRun,
     ImageDecoder, RenderDiagnostic, Result,
@@ -112,7 +117,16 @@ impl CairoRenderer {
         let geometry = validate_render_target(page, context, options)?;
         let caller_path = cairo(context.copy_path(), "capture caller path")?;
         let rendered = DisplayList::from_page(page).and_then(|display_list| {
-            self.render_display_list(page, context, options, &geometry, display_list)
+            self.render_display_list(
+                page,
+                context,
+                options,
+                &geometry,
+                display_list,
+                0,
+                None,
+                None,
+            )
         });
         let restored_path = restore_path(context, &caller_path);
         combine_results(rendered, restored_path, "restore caller path")
@@ -130,17 +144,39 @@ impl CairoRenderer {
         font_resolver: &dyn FontResolver,
         image_decoder: &ImageDecoder,
     ) -> Result<RenderReport> {
+        self.render_with_services(page, context, options, font_resolver, image_decoder, 0)
+    }
+
+    fn render_with_services(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        font_resolver: &dyn FontResolver,
+        image_decoder: &ImageDecoder,
+        depth: u32,
+    ) -> Result<RenderReport> {
         let geometry = validate_render_target(page, context, options)?;
         let caller_path = cairo(context.copy_path(), "capture caller path")?;
         let rendered = DisplayListBuilder::new(font_resolver, image_decoder)
             .build(page)
             .and_then(|display_list| {
-                self.render_display_list(page, context, options, &geometry, display_list)
+                self.render_display_list(
+                    page,
+                    context,
+                    options,
+                    &geometry,
+                    display_list,
+                    depth,
+                    Some(font_resolver),
+                    Some(image_decoder),
+                )
             });
         let restored_path = restore_path(context, &caller_path);
         combine_results(rendered, restored_path, "restore caller path")
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_display_list(
         &self,
         page: &Page,
@@ -148,6 +184,9 @@ impl CairoRenderer {
         options: &RenderOptions,
         geometry: &RenderGeometry,
         display_list: DisplayList,
+        depth: u32,
+        font_resolver: Option<&dyn FontResolver>,
+        image_decoder: Option<&ImageDecoder>,
     ) -> Result<RenderReport> {
         let prepared_text = PreparedText::new(
             display_list.commands(),
@@ -163,9 +202,211 @@ impl CairoRenderer {
         cairo(context.save(), "save caller state")?;
 
         let rendered = render_saved(context, page.size(), options, geometry, &prepared);
+        if rendered.is_ok() {
+            self.draw_stamp_annotations(
+                page,
+                context,
+                options,
+                geometry,
+                depth,
+                font_resolver,
+                image_decoder,
+            );
+        }
         let restored = cairo(context.restore(), "restore caller state");
         combine_results(rendered, restored, "restore caller state").map(|()| RenderReport {
             diagnostics: prepared.display_list.diagnostics().to_vec(),
+        })
+    }
+
+    /// Paints this page's signature stamp annotations over the rendered
+    /// content, like ofdrw's `AWTMaker.writeStampAnnot`. Each stamp that
+    /// cannot be decoded or painted is skipped silently.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_stamp_annotations(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        geometry: &RenderGeometry,
+        depth: u32,
+        font_resolver: Option<&dyn FontResolver>,
+        image_decoder: Option<&ImageDecoder>,
+    ) {
+        let annotations = page.stamp_annotations();
+        if annotations.is_empty() {
+            return;
+        }
+        // `render_page` callers supply no services; defaults are created on
+        // first use for embedded mini-OFD seals only.
+        let mut owned_resolver = None::<SystemFontResolver>;
+        let mut owned_decoder = None::<ImageDecoder>;
+        for annotation in &annotations {
+            let _ = self.draw_stamp_annotation(
+                annotation,
+                page,
+                context,
+                options,
+                geometry,
+                depth,
+                font_resolver,
+                image_decoder,
+                &mut owned_resolver,
+                &mut owned_decoder,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_stamp_annotation(
+        &self,
+        annotation: &StampAnnotation,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        geometry: &RenderGeometry,
+        depth: u32,
+        font_resolver: Option<&dyn FontResolver>,
+        image_decoder: Option<&ImageDecoder>,
+        owned_resolver: &mut Option<SystemFontResolver>,
+        owned_decoder: &mut Option<ImageDecoder>,
+    ) -> Result<()> {
+        let boundary = annotation.boundary;
+        if !boundary.x.is_finite()
+            || !boundary.y.is_finite()
+            || !boundary.width.is_finite()
+            || !boundary.height.is_finite()
+            || boundary.width <= 0.0
+            || boundary.height <= 0.0
+        {
+            return Err(invalid_display_list(
+                "stamp annotation boundary must be finite and positive",
+            ));
+        }
+        let picture = &annotation.picture;
+        let prepared = match &picture.kind {
+            SealPictureKind::Ofd => {
+                // A mini-OFD seal could itself carry a seal; recurse once,
+                // like ofdrw's single ImageMaker pass.
+                if depth >= 1 {
+                    return Ok(());
+                }
+                let (resolver, decoder): (&dyn FontResolver, &ImageDecoder) =
+                    match (font_resolver, image_decoder) {
+                        (Some(resolver), Some(decoder)) => (resolver, decoder),
+                        _ => (
+                            owned_resolver.get_or_insert_with(|| {
+                                SystemFontResolver::empty(
+                                    Vec::new(),
+                                    page.resource_limits().max_font_bytes,
+                                )
+                            }),
+                            owned_decoder.get_or_insert_with(ImageDecoder::default),
+                        ),
+                    };
+                self.render_seal_ofd(&picture.data, options, resolver, decoder, depth)?
+            }
+            SealPictureKind::Png
+            | SealPictureKind::Jpeg
+            | SealPictureKind::Gif
+            | SealPictureKind::Bmp => decode_seal_raster(
+                &picture.data,
+                page.resource_limits(),
+                options.max_raster_bytes,
+            )?,
+            _ => return Ok(()),
+        };
+
+        cairo(context.save(), "save stamp state")?;
+        let drawn = (|| {
+            context.set_matrix(geometry.page_to_device);
+            if let Some(clip) = annotation.clip {
+                context.rectangle(
+                    boundary.x + clip.x,
+                    boundary.y + clip.y,
+                    clip.width,
+                    clip.height,
+                );
+                context.clip();
+            }
+            context.translate(boundary.x, boundary.y);
+            context.rectangle(0.0, 0.0, boundary.width, boundary.height);
+            context.clip();
+            context.scale(
+                boundary.width / f64::from(prepared.width),
+                boundary.height / f64::from(prepared.height),
+            );
+            let pattern = SurfacePattern::create(&prepared.surface);
+            pattern.set_extend(Extend::Pad);
+            pattern.set_filter(match options.image_interpolation {
+                ImageInterpolation::Nearest => Filter::Nearest,
+                ImageInterpolation::Bilinear => Filter::Bilinear,
+            });
+            cairo(context.set_source(&pattern), "set stamp source")?;
+            cairo(context.paint(), "paint stamp")
+        })();
+        let restored = cairo(context.restore(), "restore stamp state");
+        combine_results(drawn, restored, "restore stamp state")
+    }
+
+    /// Renders the first page of a mini-OFD seal picture to a transparent
+    /// surface, matching ofdrw's stamp pipeline.
+    fn render_seal_ofd(
+        &self,
+        data: &[u8],
+        options: &RenderOptions,
+        font_resolver: &dyn FontResolver,
+        image_decoder: &ImageDecoder,
+        depth: u32,
+    ) -> Result<PreparedImage> {
+        let document =
+            rofd_core::Document::from_bytes(data.to_vec(), rofd_core::LoadOptions::default())
+                .map_err(|error| {
+                    invalid_display_list(format!("seal mini document could not be loaded: {error}"))
+                })?;
+        if document.page_count() == 0 {
+            return Err(invalid_display_list("seal mini document has no pages"));
+        }
+        let seal_page = document.page(0).map_err(|error| {
+            invalid_display_list(format!(
+                "seal mini document page could not be loaded: {error}"
+            ))
+        })?;
+        let seal_options = RenderOptions {
+            rotation_degrees: 0,
+            clip: None,
+            background: Color {
+                alpha: 0,
+                ..options.background
+            },
+            ..options.clone()
+        };
+        let seal_geometry = RenderGeometry::new(seal_page.size(), &seal_options)?;
+        let surface = cairo(
+            ImageSurface::create(
+                Format::ARgb32,
+                seal_geometry.pixel_width,
+                seal_geometry.pixel_height,
+            ),
+            "create seal surface",
+        )?;
+        let context = cairo(Context::new(&surface), "create seal context")?;
+        let rendered = self.render_with_services(
+            &seal_page,
+            &context,
+            &seal_options,
+            font_resolver,
+            image_decoder,
+            depth + 1,
+        );
+        drop(context);
+        surface.flush();
+        let flushed = cairo(surface.status(), "flush seal surface");
+        combine_results(rendered.map(drop), flushed, "flush seal surface")?;
+        Ok(PreparedImage {
+            surface,
+            width: seal_geometry.pixel_width,
+            height: seal_geometry.pixel_height,
         })
     }
 }
@@ -908,6 +1149,93 @@ fn prepare_image_surface(image: &crate::DecodedImage) -> Result<PreparedImage> {
     let stride = Format::ARgb32
         .stride_for_width(image.width())
         .map_err(|_| invalid_display_list("image stride exceeds the Cairo integer domain"))?;
+    let surface = premultiply_rgba_to_surface(
+        width,
+        height,
+        stride,
+        byte_len,
+        image.stride(),
+        image.rgba(),
+    )?;
+    Ok(PreparedImage {
+        surface,
+        width,
+        height,
+    })
+}
+
+/// Decodes a raster seal picture (PNG/JPEG/GIF/BMP) into a Cairo source.
+fn decode_seal_raster(
+    data: &[u8],
+    limits: &rofd_core::ResourceLimits,
+    max_raster_bytes: u64,
+) -> Result<PreparedImage> {
+    let mut reader = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|error| {
+            invalid_display_list(format!(
+                "seal picture format could not be detected: {error}"
+            ))
+        })?;
+    let mut decoder_limits = Limits::default();
+    decoder_limits.max_alloc = Some(limits.max_decoded_image_bytes.min(max_raster_bytes));
+    reader.limits(decoder_limits);
+    let decoded = reader.decode().map_err(|error| {
+        invalid_display_list(format!("seal picture could not be decoded: {error}"))
+    })?;
+    let rgba = decoded.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0
+        || height == 0
+        || width > MAX_CAIRO_IMAGE_DIMENSION as u32
+        || height > MAX_CAIRO_IMAGE_DIMENSION as u32
+    {
+        return Err(invalid_display_list(
+            "seal picture dimensions are not representable",
+        ));
+    }
+    let decoded_bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| invalid_display_list("seal picture size overflow"))?;
+    if decoded_bytes > max_raster_bytes {
+        return Err(Error::RasterBudgetExceeded {
+            required_bytes: decoded_bytes,
+            max_bytes: max_raster_bytes,
+        });
+    }
+    let stride = Format::ARgb32.stride_for_width(width).map_err(|_| {
+        invalid_display_list("seal picture stride exceeds the Cairo integer domain")
+    })?;
+    let source_stride = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| invalid_display_list("seal picture stride exceeds address space"))?;
+    let surface = premultiply_rgba_to_surface(
+        width as i32,
+        height as i32,
+        stride,
+        decoded_bytes,
+        source_stride,
+        rgba.as_raw(),
+    )?;
+    Ok(PreparedImage {
+        surface,
+        width: width as i32,
+        height: height as i32,
+    })
+}
+
+/// Converts tightly packed or strided RGBA8 rows into a premultiplied ARGB32
+/// Cairo surface (native-endian BGRA bytes in memory).
+fn premultiply_rgba_to_surface(
+    width: i32,
+    height: i32,
+    stride: i32,
+    byte_len: u64,
+    source_stride: usize,
+    rgba: &[u8],
+) -> Result<ImageSurface> {
     let capacity = usize::try_from(byte_len)
         .map_err(|_| invalid_display_list("image raster byte length exceeds address space"))?;
     let mut native = Vec::new();
@@ -917,34 +1245,28 @@ fn prepare_image_surface(image: &crate::DecodedImage) -> Result<PreparedImage> {
             required_bytes: byte_len,
         })?;
     native.resize(capacity, 0);
-    let source_stride = image.stride();
     let target_stride =
         usize::try_from(stride).map_err(|_| invalid_display_list("negative Cairo image stride"))?;
-    let source_width = usize::try_from(image.width())
+    let source_width = usize::try_from(width)
         .map_err(|_| invalid_display_list("image width exceeds address space"))?;
-    let source_height = usize::try_from(image.height())
+    let source_height = usize::try_from(height)
         .map_err(|_| invalid_display_list("image height exceeds address space"))?;
     for y in 0..source_height {
         for x in 0..source_width {
             let source = y * source_stride + x * 4;
             let target = y * target_stride + x * 4;
-            let alpha = u32::from(image.rgba()[source + 3]);
-            let red = (u32::from(image.rgba()[source]) * alpha + 127) / 255;
-            let green = (u32::from(image.rgba()[source + 1]) * alpha + 127) / 255;
-            let blue = (u32::from(image.rgba()[source + 2]) * alpha + 127) / 255;
+            let alpha = u32::from(rgba[source + 3]);
+            let red = (u32::from(rgba[source]) * alpha + 127) / 255;
+            let green = (u32::from(rgba[source + 1]) * alpha + 127) / 255;
+            let blue = (u32::from(rgba[source + 2]) * alpha + 127) / 255;
             let pixel = (alpha << 24) | (red << 16) | (green << 8) | blue;
             native[target..target + 4].copy_from_slice(&pixel.to_ne_bytes());
         }
     }
-    let surface = cairo(
+    cairo(
         ImageSurface::create_for_data(native, Format::ARgb32, width, height, stride),
         "create image source surface",
-    )?;
-    Ok(PreparedImage {
-        surface,
-        width,
-        height,
-    })
+    )
 }
 
 fn draw_glyph_run_unmasked(
