@@ -38,6 +38,17 @@ fn open_page_with_limits(
     document.page(0)
 }
 
+fn open_page_strict(content: &str) -> rofd_core::Result<rofd_core::Page> {
+    let document = Document::from_bytes(
+        minimal_ofd(&page_with(content)),
+        LoadOptions {
+            strictness: rofd_core::Strictness::Strict,
+            ..LoadOptions::default()
+        },
+    )?;
+    document.page(0)
+}
+
 fn simple_path(id: u64, data: &str) -> String {
     format!(
         r#"<ofd:PathObject ID="{id}" Boundary="0 0 10 10">
@@ -496,12 +507,41 @@ fn rejects_zero_or_malformed_layer_group_and_leaf_ids() {
 
 #[test]
 fn rejects_duplicate_ids_anywhere_on_a_page() {
-    let error = open_page(
+    let error = open_page_strict(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
     )
     .unwrap_err();
     assert!(
         matches!(error, Error::InvalidStructure { message, .. } if message.contains("duplicate object ID 3"))
+    );
+}
+
+#[test]
+fn lenient_mode_tolerates_duplicate_and_missing_object_ids() {
+    // Several ofdrw converter fixtures duplicate object IDs inside one
+    // template; ofdrw's converter/发票示例.ofd omits object and layer IDs
+    // entirely. Both forms load in lenient mode.
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PathObject Boundary="0 0 2 2"><ofd:AbbreviatedData>M 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap();
+    let objects = &page.layers()[0].objects();
+    assert_eq!(objects.len(), 3);
+    let PageObject::Path(missing) = &objects[2] else {
+        panic!("expected path object");
+    };
+    assert!(missing.object_id() > 3);
+}
+
+#[test]
+fn strict_mode_rejects_missing_object_id() {
+    let error = open_page_strict(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidStructure { ref message, .. } if message.contains("object ID is missing")),
+        "{error:?}"
     );
 }
 

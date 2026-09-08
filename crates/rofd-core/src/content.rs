@@ -287,6 +287,7 @@ pub(crate) fn convert_layers(
         document,
         path,
         object_ids: HashSet::new(),
+        next_synthetic_id: u64::MAX,
         remaining_path_commands: limits.max_path_commands,
         remaining_text_characters: limits.max_text_characters_per_page,
         remaining_glyphs: limits.max_glyphs_per_page,
@@ -294,7 +295,7 @@ pub(crate) fn convert_layers(
     };
     let mut layers = Vec::new();
     for layer in content.layers {
-        let object_id = parse_object_id(&layer.id)?;
+        let object_id = context.resolve_object_id(layer.id.as_deref())?;
         context.register_id(object_id)?;
         let kind = match layer.kind.as_deref() {
             None | Some("Body") => LayerType::Body,
@@ -426,6 +427,7 @@ struct ConversionContext<'a> {
     document: &'a crate::Document,
     path: &'a str,
     object_ids: HashSet<u64>,
+    next_synthetic_id: u64,
     remaining_path_commands: usize,
     remaining_text_characters: usize,
     remaining_glyphs: usize,
@@ -441,13 +443,39 @@ impl ConversionContext<'_> {
                 self.limits.max_page_objects
             )));
         }
-        if !self.object_ids.insert(id) {
+        if !self.object_ids.insert(id) && self.document.strictness() == crate::Strictness::Strict {
             return Err(Error::InvalidStructure {
                 path: self.path.to_owned(),
                 message: format!("duplicate object ID {id}"),
             });
         }
+        // Lenient: some producers reuse object IDs (several ofdrw converter
+        // fixtures duplicate ID 15 inside one template); the ID only names
+        // the object, so tolerate the collision and keep both objects.
         Ok(())
+    }
+
+    fn resolve_object_id(&mut self, value: Option<&str>) -> Result<u64> {
+        match value {
+            Some(value) => parse_object_id(value),
+            None => {
+                if self.document.strictness() == crate::Strictness::Strict {
+                    return Err(Error::InvalidStructure {
+                        path: self.path.to_owned(),
+                        message: "page object ID is missing".to_owned(),
+                    });
+                }
+                // Lenient: some producers omit object IDs (ofdrw's
+                // converter/发票示例.ofd); synthesize unique IDs from the top
+                // of the ID space, where real-world IDs never live.
+                let id = self.next_synthetic_id;
+                self.next_synthetic_id =
+                    self.next_synthetic_id.checked_sub(1).ok_or_else(|| {
+                        Error::LimitExceeded("synthetic object IDs exhausted".to_owned())
+                    })?;
+                Ok(id)
+            }
+        }
     }
 
     fn convert_objects(&mut self, objects: Vec<raw::GraphicUnit>) -> Result<Vec<PageObject>> {
@@ -455,18 +483,18 @@ impl ConversionContext<'_> {
         for object in objects {
             let object = match object {
                 raw::GraphicUnit::Path(path) => {
-                    let object_id = parse_object_id(&path.id)?;
+                    let object_id = self.resolve_object_id(path.id.as_deref())?;
                     self.register_id(object_id)?;
                     PageObject::Path(self.convert_path(*path, object_id)?)
                 }
                 raw::GraphicUnit::Group(group) => {
-                    let object_id = parse_object_id(&group.id)?;
+                    let object_id = self.resolve_object_id(group.id.as_deref())?;
                     self.register_id(object_id)?;
                     let objects = self.convert_objects(group.objects)?;
                     PageObject::Group(PageGroup { object_id, objects })
                 }
                 raw::GraphicUnit::Text(object) => {
-                    let object_id = parse_object_id(&object.id)?;
+                    let object_id = self.resolve_object_id(object.id.as_deref())?;
                     self.register_id(object_id)?;
                     let object = object.object.ok_or_else(|| Error::InvalidStructure {
                         path: self.path.to_owned(),
@@ -475,7 +503,7 @@ impl ConversionContext<'_> {
                     PageObject::Text(self.convert_text(*object, object_id)?)
                 }
                 raw::GraphicUnit::Image(object) => {
-                    let object_id = parse_object_id(&object.id)?;
+                    let object_id = self.resolve_object_id(object.id.as_deref())?;
                     self.register_id(object_id)?;
                     let object = object.object.ok_or_else(|| Error::InvalidStructure {
                         path: self.path.to_owned(),
@@ -484,7 +512,7 @@ impl ConversionContext<'_> {
                     PageObject::Image(self.convert_image(*object, object_id)?)
                 }
                 raw::GraphicUnit::Composite(object) => {
-                    self.unsupported(&object.id, UnsupportedObjectKind::Composite)?
+                    self.unsupported(object.id.as_deref(), UnsupportedObjectKind::Composite)?
                 }
             };
             converted.push(object);
@@ -492,8 +520,12 @@ impl ConversionContext<'_> {
         Ok(converted)
     }
 
-    fn unsupported(&mut self, value: &str, kind: UnsupportedObjectKind) -> Result<PageObject> {
-        let id = parse_object_id(value)?;
+    fn unsupported(
+        &mut self,
+        value: Option<&str>,
+        kind: UnsupportedObjectKind,
+    ) -> Result<PageObject> {
+        let id = self.resolve_object_id(value)?;
         self.register_id(id)?;
         Ok(PageObject::Unsupported(UnsupportedObject {
             object_id: id,

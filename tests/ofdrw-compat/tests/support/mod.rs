@@ -58,22 +58,10 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
         "reader/path_unstd.ofd",
         "Document.xml with duplicate TemplatePage elements rejected",
     ),
-    (
-        "reader/发票示例.ofd",
-        "template Content.xml declares duplicate object ID 15",
-    ),
     ("converter/1.ofd", "GBIG2 image format unsupported"),
-    (
-        "converter/20240531141733.ofd",
-        "template Content.xml declares duplicate object ID 15",
-    ),
     (
         "converter/ano.ofd",
         "PublicRes.xml with duplicate Fonts elements rejected",
-    ),
-    (
-        "converter/draw_param_ref.ofd",
-        "template Content.xml declares duplicate object ID 217",
     ),
     (
         "converter/intro-数科.ofd",
@@ -82,10 +70,6 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     (
         "converter/n.ofd",
         "space-separated color value `#ee #20 #25` rejected",
-    ),
-    (
-        "converter/发票示例.ofd",
-        "page XML object without ID rejected",
     ),
     (
         "converter/透明度文字.ofd",

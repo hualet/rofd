@@ -186,7 +186,7 @@ pub(crate) struct PageContent {
 #[derive(Debug, Deserialize)]
 pub(crate) struct Layer {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
     #[serde(rename = "Type")]
     pub(crate) kind: Option<String>,
     #[serde(rename = "$value", default)]
@@ -210,7 +210,7 @@ pub(crate) enum GraphicUnit {
 #[derive(Debug, Deserialize)]
 pub(crate) struct PageBlock {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
     #[serde(rename = "$value", default)]
     pub(crate) objects: Vec<GraphicUnit>,
 }
@@ -218,13 +218,13 @@ pub(crate) struct PageBlock {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ObjectReference {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct TextObjectEnvelope {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
     #[serde(skip)]
     pub(crate) object: Option<Box<TextObject>>,
 }
@@ -232,7 +232,7 @@ pub(crate) struct TextObjectEnvelope {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ImageObjectEnvelope {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
     #[serde(skip)]
     pub(crate) object: Option<Box<ImageObject>>,
 }
@@ -240,7 +240,7 @@ pub(crate) struct ImageObjectEnvelope {
 #[derive(Debug, Deserialize)]
 pub(crate) struct PathObject {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
     #[serde(rename = "Boundary")]
     pub(crate) boundary: String,
     #[serde(rename = "CTM")]
@@ -280,7 +280,7 @@ pub(crate) struct PathObject {
 #[derive(Debug, Deserialize)]
 pub(crate) struct TextObject {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
     #[serde(rename = "Boundary")]
     pub(crate) boundary: Option<String>,
     #[serde(rename = "CTM")]
@@ -350,7 +350,7 @@ pub(crate) struct CgTransform {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ImageObject {
     #[serde(rename = "ID")]
-    pub(crate) id: String,
+    pub(crate) id: Option<String>,
     #[serde(rename = "Boundary")]
     pub(crate) boundary: Option<String>,
     #[serde(rename = "CTM")]
