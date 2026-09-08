@@ -294,14 +294,6 @@ fn text_required_fields_and_local_scalars_have_object_context() {
             "Area.CTM",
         ),
         (
-            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:FillColor/><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
-            "FillColor",
-        ),
-        (
-            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2" Stroke="true"><ofd:StrokeColor/><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#,
-            "StrokeColor",
-        ),
-        (
             r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2"><ofd:TextCode X="0" Y="0">A</ofd:TextCode><ofd:CGTransform><ofd:Glyphs>1</ofd:Glyphs></ofd:CGTransform></ofd:TextObject>"#,
             "CodePosition",
         ),
@@ -375,6 +367,44 @@ fn first_run_omitted_origin_coordinate_is_rejected_in_strict_mode() {
             ..
         })
     ));
+}
+
+#[test]
+fn strict_mode_reports_owner_context_for_missing_text_color_value() {
+    for (attributes, child, expected_field) in [
+        ("", "<ofd:FillColor/>", "FillColor"),
+        ("Stroke=\"true\"", "<ofd:StrokeColor/>", "StrokeColor"),
+    ] {
+        let object = format!(
+            r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2" {attributes}>{child}<ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#
+        );
+        let document = package_with_options(
+            &object,
+            &font_catalog(""),
+            LoadOptions {
+                strictness: rofd_core::Strictness::Strict,
+                ..LoadOptions::default()
+            },
+        );
+        let error = document.page(0).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidPageObject { object_id: 2, field, ref path, .. } if field == expected_field && path.ends_with("Content.xml")),
+            "expected {expected_field}, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn lenient_mode_treats_text_paint_color_without_value_as_unpainted() {
+    // ofdrw's image converter paints nothing for color elements without a
+    // Value attribute (gradient-only declarations take this path too).
+    let object = r#"<ofd:TextObject ID="2" Boundary="0 0 1 1" Font="10" Size="2" Stroke="true"><ofd:FillColor/><ofd:StrokeColor/><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#;
+    let page = page_result(object, &font_catalog(""), ResourceLimits::default()).unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+    assert_eq!(text.fill(), None);
+    assert_eq!(text.stroke(), None);
 }
 
 #[test]

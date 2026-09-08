@@ -593,35 +593,37 @@ impl ConversionContext<'_> {
             self.path,
             object_id,
         )?;
-        let stroke = stroke_enabled
-            .then(|| {
-                effective_paint_color(
-                    path.stroke_color.as_ref(),
-                    parameters.stroke_color,
-                    Color::BLACK,
-                    object_alpha,
-                    self.path,
-                    object_id,
-                    "StrokeColor",
-                )
-            })
-            .transpose()?;
-        let fill = fill_enabled
-            .then(|| {
-                effective_paint_color(
-                    path.fill_color.as_ref(),
-                    parameters.fill_color,
-                    Color {
-                        alpha: 0,
-                        ..Color::BLACK
-                    },
-                    object_alpha,
-                    self.path,
-                    object_id,
-                    "FillColor",
-                )
-            })
-            .transpose()?;
+        let stroke = if stroke_enabled {
+            effective_paint_color(
+                path.stroke_color.as_ref(),
+                parameters.stroke_color,
+                Color::BLACK,
+                object_alpha,
+                strict,
+                self.path,
+                object_id,
+                "StrokeColor",
+            )?
+        } else {
+            None
+        };
+        let fill = if fill_enabled {
+            effective_paint_color(
+                path.fill_color.as_ref(),
+                parameters.fill_color,
+                Color {
+                    alpha: 0,
+                    ..Color::BLACK
+                },
+                object_alpha,
+                strict,
+                self.path,
+                object_id,
+                "FillColor",
+            )?
+        } else {
+            None
+        };
         let stroke_style = parameters.stroke_style();
         let line_width = stroke_style.line_width();
         let fill_rule = match path.fill_rule.as_deref() {
@@ -715,32 +717,35 @@ impl ConversionContext<'_> {
             ));
         }
 
-        let stroke = stroke_enabled
-            .then(|| {
-                effective_paint_color(
-                    text.stroke_color.as_ref(),
-                    parameters.stroke_color,
-                    Color::BLACK,
-                    object_alpha,
-                    self.path,
-                    object_id,
-                    "StrokeColor",
-                )
-            })
-            .transpose()?;
-        let fill = fill_enabled
-            .then(|| {
-                effective_paint_color(
-                    text.fill_color.as_ref(),
-                    parameters.fill_color,
-                    Color::BLACK,
-                    object_alpha,
-                    self.path,
-                    object_id,
-                    "FillColor",
-                )
-            })
-            .transpose()?;
+        let strict = self.document.strictness() == crate::Strictness::Strict;
+        let stroke = if stroke_enabled {
+            effective_paint_color(
+                text.stroke_color.as_ref(),
+                parameters.stroke_color,
+                Color::BLACK,
+                object_alpha,
+                strict,
+                self.path,
+                object_id,
+                "StrokeColor",
+            )?
+        } else {
+            None
+        };
+        let fill = if fill_enabled {
+            effective_paint_color(
+                text.fill_color.as_ref(),
+                parameters.fill_color,
+                Color::BLACK,
+                object_alpha,
+                strict,
+                self.path,
+                object_id,
+                "FillColor",
+            )?
+        } else {
+            None
+        };
         let clips = self.convert_clips(text.clips, object_id)?;
         let runs = self.convert_text_runs(text.text_codes, object_id)?;
         let character_count = runs
@@ -1318,25 +1323,42 @@ fn parse_object_alpha(
         .map(|alpha| alpha.unwrap_or(255))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn effective_paint_color(
     local: Option<&raw::PaintColor>,
     inherited: Option<Color>,
     default: Color,
     object_alpha: u8,
+    strict: bool,
     path: &str,
     object_id: u64,
     field: &'static str,
-) -> Result<Color> {
+) -> Result<Option<Color>> {
     let mut color = match local {
         Some(color) => {
-            let value = required_object_field(color.value.as_deref(), field, path, object_id)?;
-            Color::parse_rgb(value, color.alpha.as_deref())
+            let value = match color.value.as_deref() {
+                Some(value) => value,
+                None if strict => {
+                    required_object_field(None, field, path, object_id)?;
+                    unreachable!("required_object_field rejects None");
+                }
+                // Lenient: ofdrw paints nothing for a color element without a
+                // Value attribute (gradient-only FillColor in ofdrw's
+                // converter/intro-数科.ofd takes this path in OFD2IMG too).
+                None => return Ok(None),
+            };
+            let parse = if strict {
+                Color::parse_rgb
+            } else {
+                Color::parse_rgb_compat
+            };
+            parse(value, color.alpha.as_deref())
                 .map_err(|error| object_error(path, object_id, field, error.to_string()))?
         }
         None => inherited.unwrap_or(default),
     };
     color.alpha = ((u16::from(color.alpha) * u16::from(object_alpha) + 127) / 255) as u8;
-    Ok(color)
+    Ok(Some(color))
 }
 
 #[allow(clippy::too_many_arguments)]

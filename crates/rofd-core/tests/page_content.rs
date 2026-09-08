@@ -396,7 +396,7 @@ fn rejects_invalid_boundary_transform_path_and_enabled_color() {
 }
 
 #[test]
-fn missing_path_color_value_has_owner_context() {
+fn strict_mode_reports_owner_context_for_missing_path_color_value() {
     for (attributes, child, expected_field) in [
         ("Fill=\"true\"", "<ofd:FillColor/>", "FillColor"),
         ("Stroke=\"true\"", "<ofd:StrokeColor/>", "StrokeColor"),
@@ -404,7 +404,7 @@ fn missing_path_color_value_has_owner_context() {
         let content = format!(
             r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1" {attributes}>{child}<ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
         );
-        let error = open_page(&content).unwrap_err();
+        let error = open_page_strict(&content).unwrap_err();
         assert!(
             matches!(error, Error::InvalidPageObject { object_id: 2, field, ref path, .. } if field == expected_field && path.ends_with("Content.xml")),
             "expected {expected_field}, got {error:?}"
@@ -973,5 +973,81 @@ fn strict_mode_rejects_missing_path_boundary() {
             }
         ),
         "expected missing Boundary, got {error:?}"
+    );
+}
+
+#[test]
+fn lenient_mode_accepts_hash_prefixed_hex_color_channels() {
+    // ofdrw's converter/n.ofd writes channels like `#ee #20 #25`, which ofdrw
+    // parses per token: `#` prefix means hexadecimal (converter/AWTMaker).
+    let page = open_page(
+        r##"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" Fill="true"><ofd:FillColor Value="#ee #20 #25"/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"##,
+    )
+    .unwrap();
+    let PageObject::Path(path) = &page.layers()[0].objects()[0] else {
+        panic!("expected path object");
+    };
+    assert_eq!(
+        path.fill(),
+        Some(Color {
+            red: 238,
+            green: 32,
+            blue: 37,
+            alpha: 255,
+        })
+    );
+}
+
+#[test]
+fn strict_mode_rejects_hash_prefixed_hex_color_channels() {
+    let error = open_page_strict(
+        r##"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" Fill="true"><ofd:FillColor Value="#ee #20 #25"/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"##,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::InvalidPageObject {
+                object_id: 2,
+                field: "FillColor",
+                ..
+            }
+        ),
+        "expected invalid FillColor, got {error:?}"
+    );
+}
+
+#[test]
+fn lenient_mode_treats_paint_color_without_value_as_unpainted() {
+    // ofdrw's converter/intro-数科.ofd declares gradient-only FillColor
+    // elements (AxialShd child, no Value attribute); ofdrw's image converter
+    // paints nothing for them.
+    let page = open_page(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" Fill="true" Stroke="true"><ofd:StrokeColor/><ofd:FillColor/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap();
+    let PageObject::Path(path) = &page.layers()[0].objects()[0] else {
+        panic!("expected path object");
+    };
+    assert_eq!(path.stroke(), None);
+    assert_eq!(path.fill(), None);
+}
+
+#[test]
+fn strict_mode_rejects_paint_color_without_value() {
+    let error = open_page_strict(
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" Fill="true"><ofd:FillColor/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::InvalidPageObject {
+                object_id: 2,
+                field: "FillColor",
+                ..
+            }
+        ),
+        "expected missing FillColor value, got {error:?}"
     );
 }

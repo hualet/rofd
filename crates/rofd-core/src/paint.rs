@@ -182,6 +182,49 @@ impl Color {
             alpha,
         })
     }
+
+    /// Parses colors the way ofdrw's `ST_Array`/`AWTMaker` pipeline does:
+    /// every whitespace-separated token is one channel, parsed as
+    /// `#`-prefixed hexadecimal, a truncated decimal float, or a plain
+    /// decimal integer. Used only in lenient mode; [`Color::parse_rgb`]
+    /// remains the strict form.
+    pub(crate) fn parse_rgb_compat(value: &str, alpha: Option<&str>) -> Result<Self> {
+        if let Ok(color) = Self::parse_rgb(value, alpha) {
+            return Ok(color);
+        }
+        let channels = value
+            .split_whitespace()
+            .map(parse_compat_channel)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| invalid_color(value))?;
+        let [red, green, blue]: [u8; 3] = channels.try_into().map_err(|_| invalid_color(value))?;
+        let alpha = alpha
+            .map(str::parse::<u8>)
+            .transpose()
+            .map_err(|_| invalid_alpha(alpha.unwrap_or_default()))?
+            .unwrap_or(255);
+        Ok(Self {
+            red,
+            green,
+            blue,
+            alpha,
+        })
+    }
+}
+
+/// Parses one ofdrw-style color channel token.
+fn parse_compat_channel(token: &str) -> std::result::Result<u8, ()> {
+    if let Some(hex) = token.strip_prefix('#') {
+        return u8::from_str_radix(hex, 16).map_err(|_| ());
+    }
+    if token.contains('.') {
+        let parsed = token.parse::<f64>().map_err(|_| ())?;
+        if parsed.is_finite() && (0.0..=255.0).contains(&parsed) {
+            return Ok(parsed as u8);
+        }
+        return Err(());
+    }
+    token.parse::<u8>().map_err(|_| ())
 }
 
 fn invalid_color(value: &str) -> Error {
