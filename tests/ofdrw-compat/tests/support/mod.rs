@@ -55,10 +55,6 @@ pub fn open_document(path: &Path) -> Document {
 /// starts passing (remove the entry once the parser handles it).
 pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     (
-        "reader/keyword.ofd",
-        "page 1 object 20: zero-size Boundary rejected",
-    ),
-    (
         "reader/path_unstd.ofd",
         "Document.xml with duplicate TemplatePage elements rejected",
     ),
@@ -76,12 +72,8 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
         "page 2 object 135: negative DeltaY rejected",
     ),
     (
-        "converter/SignScaleError.ofd",
-        "page 1 object 116: zero-size Boundary rejected",
-    ),
-    (
         "converter/ano.ofd",
-        "page 1 object 81: zero-size Boundary rejected",
+        "PublicRes.xml with duplicate Fonts elements rejected",
     ),
     (
         "converter/draw_param_ref.ofd",
@@ -89,7 +81,7 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     ),
     (
         "converter/intro-数科.ofd",
-        "page 5 object 146: zero-size Boundary rejected",
+        "page 5 object 187: FillColor element without a value rejected",
     ),
     (
         "converter/n.ofd",

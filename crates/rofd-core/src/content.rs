@@ -504,7 +504,8 @@ impl ConversionContext<'_> {
     fn convert_path(&mut self, path: raw::PathObject, object_id: u64) -> Result<PathObject> {
         let boundary =
             Rect::parse(&path.boundary).map_err(|_| invalid_value("boundary", &path.boundary))?;
-        if boundary.width <= 0.0 || boundary.height <= 0.0 {
+        let strict = self.document.strictness() == crate::Strictness::Strict;
+        if strict && (boundary.width <= 0.0 || boundary.height <= 0.0) {
             return Err(invalid_value("boundary", &path.boundary));
         }
         let transform = path
@@ -597,10 +598,11 @@ impl ConversionContext<'_> {
     }
 
     fn convert_text(&mut self, text: raw::TextObject, object_id: u64) -> Result<TextObject> {
-        let boundary = parse_positive_boundary(
+        let boundary = parse_object_boundary(
             required_object_field(text.boundary.as_deref(), "Boundary", self.path, object_id)?,
             self.path,
             object_id,
+            self.document.strictness() == crate::Strictness::Strict,
         )?;
         let transform = parse_transform(text.transform.as_deref(), self.path, object_id)?;
         let font_id = parse_nonzero_id(
@@ -897,10 +899,11 @@ impl ConversionContext<'_> {
     }
 
     fn convert_image(&mut self, image: raw::ImageObject, object_id: u64) -> Result<ImageObject> {
-        let boundary = parse_positive_boundary(
+        let boundary = parse_object_boundary(
             required_object_field(image.boundary.as_deref(), "Boundary", self.path, object_id)?,
             self.path,
             object_id,
+            self.document.strictness() == crate::Strictness::Strict,
         )?;
         let transform = parse_transform(image.transform.as_deref(), self.path, object_id)?;
         let resource_id = parse_nonzero_id(
@@ -1090,7 +1093,8 @@ impl ConversionContext<'_> {
                 error.to_string(),
             )
         })?;
-        if boundary.width <= 0.0 || boundary.height <= 0.0 {
+        let strict = self.document.strictness() == crate::Strictness::Strict;
+        if strict && (boundary.width <= 0.0 || boundary.height <= 0.0) {
             return Err(object_error(
                 self.path,
                 object_id,
@@ -1337,10 +1341,15 @@ fn apply_local_stroke_style(
     Ok(())
 }
 
-fn parse_positive_boundary(value: &str, path: &str, object_id: u64) -> Result<Rect> {
+/// Parses an object boundary. Strict mode requires positive dimensions per
+/// the specification; lenient mode tolerates zero or negative width/height,
+/// which real-world producers emit for invisible or degenerate objects
+/// (e.g. the ofdrw fixture keyword.ofd has `Boundary="269.5112 184.6262 0.529 0"`).
+/// Non-finite values are always rejected by `Rect::parse`.
+fn parse_object_boundary(value: &str, path: &str, object_id: u64, strict: bool) -> Result<Rect> {
     let boundary = Rect::parse(value)
         .map_err(|error| object_error(path, object_id, "Boundary", error.to_string()))?;
-    if boundary.width <= 0.0 || boundary.height <= 0.0 {
+    if strict && (boundary.width <= 0.0 || boundary.height <= 0.0) {
         return Err(object_error(
             path,
             object_id,

@@ -79,10 +79,7 @@ fn keyword_extractor_multi_keyword_occurrences() {
 ///
 /// ofdrw asserts one positioned match for `办理` on page 1; downgraded to a
 /// containment assertion because rofd-core exposes no keyword positions.
-/// Currently ignored: the fixture hits a known parser gap (see
-/// KNOWN_LOAD_FAILURES).
 #[test]
-#[ignore = "known parser gap: keyword.ofd has a zero-size Boundary text object"]
 fn keyword_extractor_keyword_contains() {
     let document = open_document(&fixture("reader/keyword.ofd"));
     let text = extract_page_text(&document.page(0).unwrap());

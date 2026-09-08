@@ -343,7 +343,7 @@ fn rejects_invalid_object_alpha_attributes() {
 fn rejects_invalid_boundary_transform_path_and_enabled_color() {
     let cases = [
         (
-            "Boundary=\"0 0 -1 1\"",
+            "Boundary=\"NaN 0 1 1\"",
             "<ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData>",
             "boundary",
         ),
@@ -402,7 +402,7 @@ fn missing_path_color_value_has_owner_context() {
 }
 
 #[test]
-fn boundary_allows_negative_origins_but_requires_positive_dimensions() {
+fn boundary_allows_negative_origins_and_leniently_tolerates_zero_dimensions() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="-1 -2 10 10"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
     )
@@ -413,18 +413,49 @@ fn boundary_allows_negative_origins_but_requires_positive_dimensions() {
     assert_eq!(path.boundary().x, -1.0);
     assert_eq!(path.boundary().y, -2.0);
 
-    for boundary in [
-        "0 0 0 1",
-        "0 0 1 0",
-        "0 0 -1 1",
-        "0 0 1 -1",
-        "NaN 0 1 1",
-        "0 inf 1 1",
-    ] {
+    // Real-world producers emit zero or negative dimension boundaries for
+    // degenerate objects (e.g. ofdrw's keyword.ofd); lenient mode accepts
+    // them and only non-finite values stay invalid.
+    for boundary in ["0 0 0 1", "0 0 1 0", "0 0 -1 1", "0 0 1 -1"] {
+        let content = format!(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="{boundary}"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+        );
+        open_page(&content).unwrap();
+    }
+
+    for boundary in ["NaN 0 1 1", "0 inf 1 1"] {
         let content = format!(
             r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="{boundary}"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
         );
         let error = open_page(&content).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::InvalidValue {
+                    field: "boundary",
+                    ..
+                }
+            ),
+            "expected invalid boundary, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn strict_mode_requires_positive_boundary_dimensions() {
+    for boundary in ["0 0 0 1", "0 0 1 0"] {
+        let content = format!(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="{boundary}"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+        );
+        let document = Document::from_bytes(
+            minimal_ofd(&page_with(&content)),
+            LoadOptions {
+                strictness: rofd_core::Strictness::Strict,
+                ..LoadOptions::default()
+            },
+        )
+        .unwrap();
+        let error = document.page(0).unwrap_err();
         assert!(
             matches!(
                 error,
@@ -687,7 +718,7 @@ fn concurrent_lazy_page_initialization_records_one_fallback_warning() {
 fn failed_concurrent_page_initialization_does_not_publish_fallback_warnings() {
     let page_without_area = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
-  <ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 0 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>
+  <ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="NaN 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>
 </ofd:Page>"#;
     let document =
         Document::from_bytes(minimal_ofd(page_without_area), LoadOptions::default()).unwrap();

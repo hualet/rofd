@@ -441,6 +441,10 @@ impl Document {
         Ok(self.0.resource_catalog.get_or_init(|| Arc::clone(&parsed)))
     }
 
+    pub(crate) fn strictness(&self) -> crate::Strictness {
+        self.0.strictness
+    }
+
     pub(crate) fn resource_kind(&self, id: u64) -> Result<crate::ResourceKind> {
         self.resource_catalog()?.kind(id)
     }
