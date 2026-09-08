@@ -108,6 +108,35 @@ fn resolves_normalized_catalog_base_and_asset_paths() {
 }
 
 #[test]
+fn jbig2_declarations_are_indexed_as_a_recognized_image_format() {
+    // JB2/GBIG2 are valid OFD image encodings (ofdrw decodes them through a
+    // JBIG2 plugin); rofd-core indexes them so pages load, and renderers
+    // report them as undecodable.
+    let document = open(
+        "<ofd:PublicRes>Res/Public.xml</ofd:PublicRes>",
+        &[
+            (
+                "Doc_0/Res/Public.xml",
+                br#"<Res><MultiMedias>
+              <MultiMedia ID="3" Type="Image" Format="GBIG2"><MediaFile>a.jb2</MediaFile></MultiMedia>
+              <MultiMedia ID="4" Type="Image" Format="JB2"><MediaFile>b.jb2</MediaFile></MultiMedia>
+              <MultiMedia ID="5" Type="Image"><MediaFile>c.jbig2</MediaFile></MultiMedia>
+            </MultiMedias></Res>"#,
+            ),
+            ("Doc_0/Res/a.jb2", b"a"),
+            ("Doc_0/Res/b.jb2", b"b"),
+            ("Doc_0/Res/c.jbig2", b"c"),
+        ],
+    );
+    for id in [3, 4, 5] {
+        assert_eq!(
+            document.image_resource(id).unwrap().format(),
+            ImageFormat::Jbig2
+        );
+    }
+}
+
+#[test]
 fn resource_ids_are_one_atomic_document_wide_space() {
     let public = br#"<Res><Fonts><Font ID="9" FontName="one"/></Fonts></Res>"#;
     let document = br#"<Res><MultiMedias><MultiMedia ID="9" Type="Image" Format="PNG"><MediaFile>x</MediaFile></MultiMedia></MultiMedias></Res>"#;

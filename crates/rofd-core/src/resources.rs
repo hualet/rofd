@@ -39,6 +39,8 @@ pub enum ImageFormat {
     Gif,
     /// Tagged Image File Format image data.
     Tiff,
+    /// JBIG2 bi-level image data (`JB2`, `GBIG2`, or `JBIG2` declarations).
+    Jbig2,
 }
 
 /// Opaque process-local identity of one validated resource declaration.
@@ -436,6 +438,10 @@ impl ResourceCatalog {
             "bmp" => ImageFormat::Bmp,
             "gif" => ImageFormat::Gif,
             "tif" | "tiff" => ImageFormat::Tiff,
+            // JBIG2 is a valid OFD image format (ofdrw decodes it through a
+            // JBIG2 ImageIO plugin); rofd-core indexes it so pages load, and
+            // renderers report it as undecodable instead.
+            "jb2" | "gbig2" | "jbig2" => ImageFormat::Jbig2,
             _ => {
                 return Err(invalid_resource(
                     catalog_path,
