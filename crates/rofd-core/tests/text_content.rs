@@ -379,6 +379,8 @@ fn first_run_omitted_origin_coordinate_is_rejected_in_strict_mode() {
 
 #[test]
 fn rejects_invalid_origins_delta_grammar_and_nonfinite_values_with_context() {
+    // Strict mode is used because lenient mode tolerates excess delta
+    // displacements and `g 0` repetitions (ofdrw compatibility).
     let cases = [
         (
             r#"<ofd:TextCode X="0" Y="0" DeltaX="1 2 3">AB</ofd:TextCode>"#,
@@ -405,12 +407,36 @@ fn rejects_invalid_origins_delta_grammar_and_nonfinite_values_with_context() {
         let object = format!(
             r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2">{run}</ofd:TextObject>"#
         );
-        let error = page_result(&object, &font_catalog(""), ResourceLimits::default()).unwrap_err();
+        let document = package_with_options(
+            &object,
+            &font_catalog(""),
+            LoadOptions {
+                strictness: rofd_core::Strictness::Strict,
+                ..LoadOptions::default()
+            },
+        );
+        let error = document.page(0).unwrap_err();
         assert!(
             matches!(error, Error::InvalidPageObject { object_id: 2, field, ref path, .. } if field == expected_field && path.ends_with("Content.xml")),
             "{error:?}"
         );
     }
+}
+
+#[test]
+fn lenient_mode_truncates_excess_deltas_and_accepts_zero_repetition() {
+    // ofdrw ignores displacements past the character count and tolerates
+    // `g 0` repetitions (both occur in its own converter fixtures).
+    let object = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2"><ofd:TextCode X="0" Y="0" DeltaX="3 3 3 3" DeltaY="g 0 0 1.5">AB</ofd:TextCode></ofd:TextObject>"#;
+    let page = package(object, &font_catalog(""), ResourceLimits::default())
+        .page(0)
+        .unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+    let run = &text.runs()[0];
+    assert_eq!(run.delta_x(), &[3.0, 3.0]);
+    assert_eq!(run.delta_y(), &[1.5, 0.0]);
 }
 
 #[test]

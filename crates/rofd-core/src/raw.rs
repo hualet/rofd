@@ -142,7 +142,7 @@ pub(crate) struct TemplatePage {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PageArea {
-    pub(crate) physical_box: String,
+    pub(crate) physical_box: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

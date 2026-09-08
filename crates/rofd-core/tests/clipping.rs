@@ -33,6 +33,17 @@ fn open_page(content: &str) -> rofd_core::Result<rofd_core::Page> {
     open_page_with_limits(content, ResourceLimits::default())
 }
 
+fn open_page_strict(content: &str) -> rofd_core::Result<rofd_core::Page> {
+    let document = Document::from_bytes(
+        minimal_ofd(&page_with(content)),
+        LoadOptions {
+            strictness: rofd_core::Strictness::Strict,
+            ..LoadOptions::default()
+        },
+    )?;
+    document.page(0)
+}
+
 fn path_with_clips(clips: &str, data: &str) -> String {
     format!(
         r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="100 200 30 40">
@@ -139,27 +150,41 @@ fn rejects_missing_or_ambiguous_clip_structure() {
 
 #[test]
 fn rejects_clip_forms_that_cannot_be_rendered_correctly() {
+    let error = open_page(&path_with_clips(
+        "<ofd:Clips><ofd:Clip><ofd:Area><ofd:Text/></ofd:Area></ofd:Clip></ofd:Clips>",
+        "M 0 0",
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::UnsupportedFeature(ref message) if message.contains("text clip areas are not supported")),
+        "{error:?}"
+    );
+
+    // Non-fill-only clip paths are only rejected in strict mode; lenient
+    // mode matches ofdrw and clips on the path geometry alone.
     let cases = [
-        (
-            "<ofd:Clips><ofd:Clip><ofd:Area><ofd:Text/></ofd:Area></ofd:Clip></ofd:Clips>",
-            "text clip areas are not supported in phase 2",
-        ),
-        (
-            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-            "clip paths must be fill-only",
-        ),
-        (
-            r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="true"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
-            "clip paths must be fill-only",
-        ),
+        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="true"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
     ];
 
-    for (clips, expected) in cases {
-        let error = open_page(&path_with_clips(clips, "M 0 0")).unwrap_err();
+    for clips in cases {
+        let error = open_page_strict(&path_with_clips(clips, "M 0 0")).unwrap_err();
         assert!(
-            matches!(error, Error::UnsupportedFeature(ref message) if message.contains(expected)),
-            "expected {expected:?}, got {error:?}"
+            matches!(error, Error::UnsupportedFeature(ref message) if message.contains("clip paths must be fill-only")),
+            "{error:?}"
         );
+    }
+}
+
+#[test]
+fn lenient_mode_clips_on_path_geometry_regardless_of_fill_and_stroke() {
+    let cases = [
+        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0 L 1 0 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="true"><ofd:AbbreviatedData>M 0 0 L 1 0 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>"#,
+    ];
+    for clips in cases {
+        let page = open_page(&path_with_clips(clips, "M 0 0")).unwrap();
+        assert_eq!(path_object(&page).clips().len(), 1);
     }
 }
 

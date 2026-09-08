@@ -353,19 +353,23 @@ impl Document {
         let page: crate::raw::PageRoot =
             parse_page_xml(&self.0.container, &reference.path, &self.0.limits)?;
         let (area, pending_warning) = match page.area {
-            Some(area) => (area, None),
-            None if self.0.strictness == crate::Strictness::Strict => {
-                return Err(Error::InvalidStructure {
-                    path: reference.path.as_str().to_owned(),
-                    message: "Page.Area is missing".to_owned(),
-                });
-            }
-            None => {
+            Some(area) if area.physical_box.is_some() => (area, None),
+            area => {
+                let missing = if area.is_some() {
+                    "Page.Area PhysicalBox is missing"
+                } else {
+                    "Page.Area is missing"
+                };
+                if self.0.strictness == crate::Strictness::Strict {
+                    return Err(Error::InvalidStructure {
+                        path: reference.path.as_str().to_owned(),
+                        message: missing.to_owned(),
+                    });
+                }
                 let Some(default) = self.0.default_page_area.clone() else {
                     return Err(Error::InvalidStructure {
                         path: reference.path.as_str().to_owned(),
-                        message: "Page.Area is missing and the document declares no PageArea"
-                            .to_owned(),
+                        message: format!("{missing} and the document declares no PageArea"),
                     });
                 };
                 (
@@ -373,12 +377,19 @@ impl Document {
                     Some(Warning {
                         code: WarningCode::PageAreaFallback,
                         path: reference.path.as_str().to_owned(),
-                        message: "Page.Area is missing; inherited Document PageArea".to_owned(),
+                        message: format!("{missing}; inherited Document PageArea"),
                     }),
                 )
             }
         };
-        let size = crate::Rect::parse(&area.physical_box)
+        let Some(physical_box) = area.physical_box.as_deref() else {
+            return Err(Error::InvalidStructure {
+                path: reference.path.as_str().to_owned(),
+                message: "Page.Area PhysicalBox is missing and the document PageArea declares no PhysicalBox"
+                    .to_owned(),
+            });
+        };
+        let size = crate::Rect::parse(physical_box)
             .map_err(|error| with_error_path(error, &reference.path))?;
         let (direct_layers, direct_usage) = crate::content::convert_layers(
             page.content,

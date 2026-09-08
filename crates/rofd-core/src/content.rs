@@ -767,6 +767,7 @@ impl ConversionContext<'_> {
                 .delta_y
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty());
+            let strict = self.document.strictness() == crate::Strictness::Strict;
             let delta_x = parse_delta(
                 run.delta_x.as_deref(),
                 delta_count,
@@ -774,6 +775,7 @@ impl ConversionContext<'_> {
                 self.path,
                 object_id,
                 "DeltaX",
+                strict,
             )?;
             let delta_y = parse_delta(
                 run.delta_y.as_deref(),
@@ -782,6 +784,7 @@ impl ConversionContext<'_> {
                 self.path,
                 object_id,
                 "DeltaY",
+                strict,
             )?;
             runs.push(TextCode {
                 text: run.text,
@@ -1081,11 +1084,14 @@ impl ConversionContext<'_> {
             self.path,
             object_id,
         )?;
-        if !fill_enabled || stroke_enabled {
+        let strict = self.document.strictness() == crate::Strictness::Strict;
+        if (!fill_enabled || stroke_enabled) && strict {
             return Err(Error::UnsupportedFeature(
                 "clip paths must be fill-only (Fill=true and Stroke=false) in phase 2".to_owned(),
             ));
         }
+        // Lenient: ofdrw's converter clips on the path geometry and ignores
+        // the Fill/Stroke attributes entirely, so accept any combination.
         let boundary_value = required_object_field(
             path.boundary.as_deref(),
             "Clip.Path.Boundary",
@@ -1100,7 +1106,6 @@ impl ConversionContext<'_> {
                 error.to_string(),
             )
         })?;
-        let strict = self.document.strictness() == crate::Strictness::Strict;
         if strict && (boundary.width <= 0.0 || boundary.height <= 0.0) {
             return Err(object_error(
                 self.path,
@@ -1464,6 +1469,7 @@ fn parse_delta(
     path: &str,
     object_id: u64,
     field: &'static str,
+    strict: bool,
 ) -> Result<Vec<f64>> {
     if target_len > *remaining {
         return Err(Error::LimitExceeded(format!(
@@ -1482,7 +1488,10 @@ fn parse_delta(
                     "g repetition is missing its count".to_owned(),
                 )
             })?;
-            let count = parse_usize(count_text, field, path, object_id, false)?;
+            // Lenient mode tolerates `g 0` (a zero-length repetition), which
+            // ofdrw-generated invoices such as 999.ofd emit; strict mode
+            // still rejects it as non-positive.
+            let count = parse_usize(count_text, field, path, object_id, !strict)?;
             let repetitions = count;
             let repeated_text = tokens.next().ok_or_else(|| {
                 object_error(
@@ -1502,22 +1511,31 @@ fn parse_delta(
                 )
             })?;
             if new_len > target_len {
-                return Err(object_error(
-                    path,
-                    object_id,
-                    field,
-                    format!("contains more than {target_len} displacements"),
-                ));
+                if strict {
+                    return Err(object_error(
+                        path,
+                        object_id,
+                        field,
+                        format!("contains more than {target_len} displacements"),
+                    ));
+                }
+                // Lenient: producers sometimes pad the list past the
+                // character count; ofdrw ignores the extras, so truncate.
+                values.resize(target_len, repeated);
+                break;
             }
             values.resize(new_len, repeated);
         } else {
             if values.len() == target_len {
-                return Err(object_error(
-                    path,
-                    object_id,
-                    field,
-                    format!("contains more than {target_len} displacements"),
-                ));
+                if strict {
+                    return Err(object_error(
+                        path,
+                        object_id,
+                        field,
+                        format!("contains more than {target_len} displacements"),
+                    ));
+                }
+                break;
             }
             values.push(parse_finite_number(token, field, path, object_id)?);
         }

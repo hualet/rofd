@@ -68,16 +68,12 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
         "template Content.xml declares duplicate object ID 15",
     ),
     (
-        "converter/999.ofd",
-        "page 2 object 135: negative DeltaY rejected",
-    ),
-    (
         "converter/ano.ofd",
         "PublicRes.xml with duplicate Fonts elements rejected",
     ),
     (
         "converter/draw_param_ref.ofd",
-        "template object 239: DeltaX with more than 4 displacements rejected",
+        "template Content.xml declares duplicate object ID 217",
     ),
     (
         "converter/intro-数科.ofd",
@@ -86,10 +82,6 @@ pub const KNOWN_LOAD_FAILURES: &[(&str, &str)] = &[
     (
         "converter/n.ofd",
         "space-separated color value `#ee #20 #25` rejected",
-    ),
-    (
-        "converter/zsbk.ofd",
-        "page 1 object 665: DeltaX with more than 14 displacements rejected",
     ),
     (
         "converter/发票示例.ofd",
