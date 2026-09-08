@@ -513,6 +513,14 @@ impl ConversionContext<'_> {
                         path: self.path.to_owned(),
                         message: format!("ImageObject {object_id} payload was not parsed"),
                     })?;
+                    if object.resource_id.is_none()
+                        && self.document.strictness() != crate::Strictness::Strict
+                    {
+                        // Lenient: producers occasionally emit image objects
+                        // without ResourceID (ofdrw's path_unstd.ofd page 2);
+                        // ofdrw draws nothing for them, so skip the object.
+                        continue;
+                    }
                     PageObject::Image(self.convert_image(*object, object_id)?)
                 }
                 raw::GraphicUnit::Composite(object) => {

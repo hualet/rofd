@@ -111,10 +111,6 @@ fn image_required_fields_and_alpha_have_object_context() {
     for (object, expected_field) in [
         (r#"<ofd:ImageObject ID="2" ResourceID="10"/>"#, "Boundary"),
         (
-            r#"<ofd:ImageObject ID="2" Boundary="0 0 1 1"/>"#,
-            "ResourceID",
-        ),
-        (
             r#"<ofd:ImageObject ID="2" Boundary="0 0 1 1" ResourceID="10" Alpha="-1"/>"#,
             "Alpha",
         ),
@@ -157,4 +153,56 @@ fn unknown_image_children_fail_closed_while_border_is_retained() {
     assert!(
         matches!(image_page(nested_border, catalog), Err(Error::InvalidStructure { message, .. }) if message.contains("Border"))
     );
+}
+
+fn image_page_with_options(
+    object: &str,
+    catalog: &str,
+    options: LoadOptions,
+) -> rofd_core::Result<rofd_core::Page> {
+    let document_xml = r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:PageArea><ofd:DocumentRes>Res.xml</ofd:DocumentRes></ofd:CommonData><ofd:Pages><ofd:Page ID="9" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages></ofd:Document>"#;
+    let page_xml = format!(
+        r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 20 20</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="1">{object}</ofd:Layer></ofd:Content></ofd:Page>"#
+    );
+    let bytes = support::ofd_with_document_page_and_entries(
+        document_xml,
+        &page_xml,
+        &[("Doc_0/Res.xml", catalog.as_bytes())],
+    );
+    Document::from_bytes(bytes, options)?.page(0)
+}
+
+#[test]
+fn image_object_without_resource_id_is_skipped_in_lenient_mode() {
+    // ofdrw's reader/path_unstd.ofd page 2 declares an ImageObject without
+    // ResourceID; ofdrw draws nothing for it, so the object is dropped.
+    let page = image_page_with_options(
+        r#"<ofd:ImageObject ID="2" Boundary="1 2 3 4"/><ofd:ImageObject ID="3" Boundary="1 2 3 4" ResourceID="10"/>"#,
+        r#"<Res><MultiMedias><MultiMedia ID="10" Type="Image" Format="PNG"><MediaFile>a</MediaFile></MultiMedia></MultiMedias></Res>"#,
+        LoadOptions::default(),
+    )
+    .unwrap();
+    let objects = page.layers()[0].objects();
+    assert_eq!(objects.len(), 1);
+    assert!(matches!(&objects[0], PageObject::Image(image) if image.object_id() == 3));
+}
+
+#[test]
+fn image_object_without_resource_id_is_rejected_in_strict_mode() {
+    let result = image_page_with_options(
+        r#"<ofd:ImageObject ID="2" Boundary="1 2 3 4"/>"#,
+        r#"<Res/>"#,
+        LoadOptions {
+            strictness: rofd_core::Strictness::Strict,
+            ..LoadOptions::default()
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(Error::InvalidPageObject {
+            object_id: 2,
+            field: "ResourceID",
+            ..
+        })
+    ));
 }
