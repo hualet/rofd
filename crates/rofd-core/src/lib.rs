@@ -31,7 +31,7 @@ pub use paint::{Color, LineCap, LineJoin, StrokeStyle};
 pub use path_data::{PathCommand, PathData};
 pub use resources::{FontResource, ImageFormat, ImageResource, ResourceIdentity, ResourceKind};
 pub use signature::{SealPicture, SealPictureKind, StampAnnotation};
-pub use text::{CharacterGlyphMap, TextCode, TextObject};
+pub use text::{CharacterGlyphMap, GlyphTransform, TextCode, TextObject};
 
 /// The crate API version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

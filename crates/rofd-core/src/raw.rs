@@ -467,7 +467,45 @@ pub(crate) struct CgTransform {
     #[serde(rename = "GlyphCount")]
     pub(crate) glyph_count: Option<String>,
     #[serde(rename = "Glyphs")]
-    pub(crate) glyphs: Option<String>,
+    pub(crate) glyphs: Option<GlyphsContent>,
+}
+
+/// The `Glyphs` element may contain either a whitespace-separated list of
+/// glyph IDs (legacy form) or structured `Glyph` child elements with
+/// per-glyph transforms (GB/T 33190-2016 form).
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct GlyphsContent {
+    #[serde(rename = "$value", default)]
+    pub(crate) children: Vec<GlyphEntry>,
+}
+
+/// One entry inside `Glyphs`: either text content or a structured `Glyph`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum GlyphEntry {
+    /// Legacy text content: `"3 2"`.
+    Text(String),
+    /// Structured `Glyph` element with per-glyph attributes.
+    Glyph(RawGlyph),
+}
+
+/// One structured `Glyph` child of `Glyphs` with optional per-glyph transform.
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct RawGlyph {
+    #[serde(rename = "GlyphID")]
+    pub(crate) glyph_id: Option<String>,
+    #[serde(rename = "X")]
+    pub(crate) x: Option<String>,
+    #[serde(rename = "Y")]
+    pub(crate) y: Option<String>,
+    #[serde(rename = "M00")]
+    pub(crate) m00: Option<String>,
+    #[serde(rename = "M01")]
+    pub(crate) m01: Option<String>,
+    #[serde(rename = "M10")]
+    pub(crate) m10: Option<String>,
+    #[serde(rename = "M11")]
+    pub(crate) m11: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

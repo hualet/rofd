@@ -49,12 +49,43 @@ impl TextCode {
     }
 }
 
+/// Per-glyph offset and transform from a structured `CGTransform/Glyphs/Glyph` entry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphTransform {
+    x: f64,
+    y: f64,
+    matrix: Option<Transform>,
+}
+
+impl GlyphTransform {
+    /// Creates a per-glyph transform from offset and optional matrix.
+    pub(crate) fn new(x: f64, y: f64, matrix: Option<Transform>) -> Self {
+        Self { x, y, matrix }
+    }
+
+    /// Returns the glyph-local x offset in millimetres.
+    pub fn x(&self) -> f64 {
+        self.x
+    }
+
+    /// Returns the glyph-local y offset in millimetres.
+    pub fn y(&self) -> f64 {
+        self.y
+    }
+
+    /// Returns the per-glyph affine matrix, or `None` when the identity was used.
+    pub fn matrix(&self) -> Option<Transform> {
+        self.matrix
+    }
+}
+
 /// A validated mapping from a character range to explicit font glyph identifiers.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CharacterGlyphMap {
     pub(crate) code_position: usize,
     pub(crate) code_count: usize,
     pub(crate) glyphs: Vec<u32>,
+    pub(crate) transforms: Vec<Option<GlyphTransform>>,
 }
 
 impl CharacterGlyphMap {
@@ -71,6 +102,14 @@ impl CharacterGlyphMap {
     /// Returns the explicit glyph identifiers.
     pub fn glyphs(&self) -> &[u32] {
         &self.glyphs
+    }
+
+    /// Returns per-glyph transforms aligned with [`glyphs`](Self::glyphs).
+    ///
+    /// Each entry is `None` when the glyph uses only the legacy whitespace-separated
+    /// ID form without per-glyph offset or matrix data.
+    pub fn transforms(&self) -> &[Option<GlyphTransform>] {
+        &self.transforms
     }
 }
 

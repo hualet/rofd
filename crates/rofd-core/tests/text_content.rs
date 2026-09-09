@@ -821,3 +821,92 @@ fn repeated_nested_template_text_accounting_is_cache_order_independent() {
     let cold = Document::from_bytes(bytes, over_options).unwrap();
     assert!(matches!(cold.page(1), Err(Error::LimitExceeded(_))));
 }
+
+#[test]
+fn structured_glyph_transforms_are_parsed_and_exposed() {
+    let text = r#"<ofd:TextObject ID="2" Boundary="0 0 30 10" Font="10" Size="3.5">
+      <ofd:TextCode X="0" Y="0">ABC</ofd:TextCode>
+      <ofd:CGTransform CodePosition="0" CodeCount="3" GlyphCount="3">
+        <ofd:Glyphs>
+          <ofd:Glyph GlyphID="10" X="0.5" Y="0.1"/>
+          <ofd:Glyph GlyphID="11" X="1.0" Y="0.2" M00="2" M01="0" M10="0" M11="2"/>
+          <ofd:Glyph GlyphID="12"/>
+        </ofd:Glyphs>
+      </ofd:CGTransform>
+    </ofd:TextObject>"#;
+    let page = page_result(text, &font_catalog(""), ResourceLimits::default()).unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+    let maps = text.glyph_maps();
+    assert_eq!(maps.len(), 1);
+    let map = &maps[0];
+    assert_eq!(map.code_position(), 0);
+    assert_eq!(map.code_count(), 3);
+    assert_eq!(map.glyphs(), &[10, 11, 12]);
+    let transforms = map.transforms();
+    assert_eq!(transforms.len(), 3);
+
+    let t0 = transforms[0].unwrap();
+    assert_eq!(t0.x(), 0.5);
+    assert_eq!(t0.y(), 0.1);
+    assert!(t0.matrix().is_none());
+
+    let t1 = transforms[1].unwrap();
+    assert_eq!(t1.x(), 1.0);
+    assert_eq!(t1.y(), 0.2);
+    let m = t1.matrix().unwrap();
+    assert_eq!(m.a(), 2.0);
+    assert_eq!(m.d(), 2.0);
+
+    let t2 = transforms[2].unwrap();
+    assert_eq!(t2.x(), 0.0);
+    assert_eq!(t2.y(), 0.0);
+    assert!(t2.matrix().is_none());
+}
+
+#[test]
+fn structured_glyph_transforms_reject_missing_glyph_id() {
+    let text = r#"<ofd:TextObject ID="2" Boundary="0 0 30 10" Font="10" Size="3.5">
+      <ofd:TextCode X="0" Y="0">A</ofd:TextCode>
+      <ofd:CGTransform CodePosition="0" CodeCount="1" GlyphCount="1">
+        <ofd:Glyphs><ofd:Glyph X="0.5"/></ofd:Glyphs>
+      </ofd:CGTransform>
+    </ofd:TextObject>"#;
+    let error = page_result(text, &font_catalog(""), ResourceLimits::default()).unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidPageObject { field, .. } if field == "GlyphID"),
+        "expected GlyphID error, got {error:?}"
+    );
+}
+
+#[test]
+fn structured_glyph_transforms_count_must_match() {
+    let text = r#"<ofd:TextObject ID="2" Boundary="0 0 30 10" Font="10" Size="3.5">
+      <ofd:TextCode X="0" Y="0">A</ofd:TextCode>
+      <ofd:CGTransform CodePosition="0" CodeCount="1" GlyphCount="2">
+        <ofd:Glyphs><ofd:Glyph GlyphID="10"/></ofd:Glyphs>
+      </ofd:CGTransform>
+    </ofd:TextObject>"#;
+    let error = page_result(text, &font_catalog(""), ResourceLimits::default()).unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidPageObject { ref message, .. } if message.contains("declares 2 glyphs but Glyphs contains 1 Glyph elements")),
+        "expected glyph count mismatch, got {error:?}"
+    );
+}
+
+#[test]
+fn legacy_text_glyphs_and_structured_glyphs_both_work() {
+    // Verify the legacy text form still works after adding structured support.
+    let text = r#"<ofd:TextObject ID="2" Boundary="0 0 30 10" Font="10" Size="3.5">
+      <ofd:TextCode X="0" Y="0">ABC</ofd:TextCode>
+      <ofd:CGTransform CodePosition="0" CodeCount="3" GlyphCount="3"><ofd:Glyphs>10 11 12</ofd:Glyphs></ofd:CGTransform>
+    </ofd:TextObject>"#;
+    let page = page_result(text, &font_catalog(""), ResourceLimits::default()).unwrap();
+    let PageObject::Text(text) = &page.layers()[0].objects()[0] else {
+        panic!("expected text object");
+    };
+    let map = &text.glyph_maps()[0];
+    assert_eq!(map.glyphs(), &[10, 11, 12]);
+    assert!(map.transforms().iter().all(|t| t.is_none()));
+}

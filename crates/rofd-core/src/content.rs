@@ -8,8 +8,8 @@ static GLYPH_RANGE_NEIGHBOR_CHECKS: AtomicUsize = AtomicUsize::new(0);
 use crate::paint::PaintParameters;
 use crate::raw;
 use crate::{
-    CharacterGlyphMap, Color, Error, ImageObject, LineCap, LineJoin, PathData, Rect, ResourceKind,
-    ResourceLimits, Result, StrokeStyle, TextCode, TextObject, Transform,
+    CharacterGlyphMap, Color, Error, GlyphTransform, ImageObject, LineCap, LineJoin, PathData,
+    Rect, ResourceKind, ResourceLimits, Result, StrokeStyle, TextCode, TextObject, Transform,
 };
 
 /// The stacking category assigned to a page layer.
@@ -1172,7 +1172,7 @@ impl ConversionContext<'_> {
                 .map(|value| parse_usize(value, "GlyphCount", self.path, object_id, false))
                 .transpose()?
                 .unwrap_or(1);
-            let glyph_text = raw.glyphs.ok_or_else(|| {
+            let glyphs_content = raw.glyphs.ok_or_else(|| {
                 object_error(
                     self.path,
                     object_id,
@@ -1180,35 +1180,107 @@ impl ConversionContext<'_> {
                     "required child is missing".to_owned(),
                 )
             })?;
-            let actual_glyph_count = glyph_text.split_whitespace().count();
-            if actual_glyph_count != glyph_count {
-                return Err(object_error(
-                    self.path,
-                    object_id,
-                    "GlyphCount",
-                    format!(
-                        "declares {glyph_count} glyphs but Glyphs contains {actual_glyph_count}"
-                    ),
-                ));
-            }
-            consume(
-                &mut self.remaining_text_expansion_entries,
-                actual_glyph_count,
-                "page text expansion",
-            )?;
-            let glyphs = glyph_text
-                .split_whitespace()
-                .map(|value| {
-                    value.parse::<u32>().map_err(|_| {
-                        object_error(
+            let (glyphs, transforms) = {
+                let raw_glyphs = glyphs_content.children;
+                let mut ids = Vec::new();
+                let mut transforms = Vec::new();
+                let mut text_parts: Vec<&str> = Vec::new();
+                for entry in &raw_glyphs {
+                    match entry {
+                        raw::GlyphEntry::Text(text) => {
+                            text_parts.extend(text.split_whitespace());
+                        }
+                        raw::GlyphEntry::Glyph(glyph) => {
+                            let glyph_id = parse_u32(
+                                required_object_field(
+                                    glyph.glyph_id.as_deref(),
+                                    "GlyphID",
+                                    self.path,
+                                    object_id,
+                                )?,
+                                "GlyphID",
+                                self.path,
+                                object_id,
+                            )?;
+                            ids.push(glyph_id);
+                            let x = glyph
+                                .x
+                                .as_deref()
+                                .map(|v| parse_finite_number(v, "Glyph.X", self.path, object_id))
+                                .transpose()?
+                                .unwrap_or(0.0);
+                            let y = glyph
+                                .y
+                                .as_deref()
+                                .map(|v| parse_finite_number(v, "Glyph.Y", self.path, object_id))
+                                .transpose()?
+                                .unwrap_or(0.0);
+                            let matrix = parse_glyph_matrix(
+                                glyph.m00.as_deref(),
+                                glyph.m01.as_deref(),
+                                glyph.m10.as_deref(),
+                                glyph.m11.as_deref(),
+                                self.path,
+                                object_id,
+                            )?;
+                            transforms.push(Some(GlyphTransform::new(x, y, matrix)));
+                        }
+                    }
+                }
+                if ids.is_empty() {
+                    // Legacy text form
+                    let actual_glyph_count = text_parts.len();
+                    if actual_glyph_count != glyph_count {
+                        return Err(object_error(
                             self.path,
                             object_id,
-                            "Glyphs",
-                            format!("invalid glyph ID {value}"),
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+                            "GlyphCount",
+                            format!(
+                                "declares {glyph_count} glyphs but Glyphs contains {actual_glyph_count}"
+                            ),
+                        ));
+                    }
+                    consume(
+                        &mut self.remaining_text_expansion_entries,
+                        actual_glyph_count,
+                        "page text expansion",
+                    )?;
+                    let parsed_ids = text_parts
+                        .iter()
+                        .map(|value| {
+                            value.parse::<u32>().map_err(|_| {
+                                object_error(
+                                    self.path,
+                                    object_id,
+                                    "Glyphs",
+                                    format!("invalid glyph ID {value}"),
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let parsed_transforms = vec![None; parsed_ids.len()];
+                    (parsed_ids, parsed_transforms)
+                } else {
+                    // Structured Glyph form
+                    let actual_glyph_count = ids.len();
+                    if actual_glyph_count != glyph_count {
+                        return Err(object_error(
+                            self.path,
+                            object_id,
+                            "GlyphCount",
+                            format!(
+                                "declares {glyph_count} glyphs but Glyphs contains {actual_glyph_count} Glyph elements"
+                            ),
+                        ));
+                    }
+                    consume(
+                        &mut self.remaining_text_expansion_entries,
+                        actual_glyph_count,
+                        "page text expansion",
+                    )?;
+                    (ids, transforms)
+                }
+            };
             let end = code_position.checked_add(code_count).ok_or_else(|| {
                 object_error(
                     self.path,
@@ -1238,6 +1310,7 @@ impl ConversionContext<'_> {
                 code_position,
                 code_count,
                 glyphs,
+                transforms,
             });
         }
         Ok(maps)
@@ -1931,6 +2004,49 @@ fn parse_usize(
         ));
     }
     Ok(parsed)
+}
+
+fn parse_u32(value: &str, field: &'static str, path: &str, object_id: u64) -> Result<u32> {
+    value
+        .parse::<u32>()
+        .map_err(|_| object_error(path, object_id, field, format!("invalid integer {value}")))
+}
+
+/// Parses the optional M00/M01/M10/M11 glyph matrix attributes.
+///
+/// Returns `None` when all four are absent (identity).  When any are present,
+/// all four must be finite numbers; the result is an affine `Transform` with
+/// the translation components set to zero (the X/Y offsets are handled
+/// separately).
+fn parse_glyph_matrix(
+    m00: Option<&str>,
+    m01: Option<&str>,
+    m10: Option<&str>,
+    m11: Option<&str>,
+    path: &str,
+    object_id: u64,
+) -> Result<Option<Transform>> {
+    let (m00, m01, m10, m11) = match (m00, m01, m10, m11) {
+        (None, None, None, None) => return Ok(None),
+        _ => (
+            m00.map(|v| parse_finite_number(v, "Glyph.M00", path, object_id))
+                .transpose()?,
+            m01.map(|v| parse_finite_number(v, "Glyph.M01", path, object_id))
+                .transpose()?,
+            m10.map(|v| parse_finite_number(v, "Glyph.M10", path, object_id))
+                .transpose()?,
+            m11.map(|v| parse_finite_number(v, "Glyph.M11", path, object_id))
+                .transpose()?,
+        ),
+    };
+    Ok(Some(Transform::new(
+        m00.unwrap_or(1.0),
+        m10.unwrap_or(0.0),
+        m01.unwrap_or(0.0),
+        m11.unwrap_or(1.0),
+        0.0,
+        0.0,
+    )?))
 }
 
 fn parse_delta(

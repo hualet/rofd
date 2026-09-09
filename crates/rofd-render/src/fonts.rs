@@ -467,10 +467,11 @@ impl PositionedGlyph {
     pub fn is_synthetic_box(&self) -> bool {
         matches!(self.font_source, FontSource::Missing)
     }
-    /// Returns an optional per-glyph transform.
+    /// Returns an optional per-glyph transform from a structured `CGTransform`.
     ///
-    /// The current core subset exposes CG glyph substitutions without matrix data,
-    /// so this is currently `None` while keeping the positioned representation ready.
+    /// When the `Glyphs` element used structured `Glyph` children with `M00`/`M01`/`M10`/`M11`
+    /// attributes, this carries the per-glyph affine matrix.  The legacy whitespace-separated
+    /// ID form produces `None`.
     pub fn transform(&self) -> Option<Transform> {
         self.transform
     }
@@ -1086,6 +1087,7 @@ pub fn position_glyph_runs(
                     }
                     let mut inferred_x = 0.0;
                     let mut inferred_y = 0.0;
+                    let transforms = map.transforms();
                     for (glyph_offset, glyph_id) in map.glyphs().iter().copied().enumerate() {
                         if substitute.is_some() {
                             // The substitute face has an unrelated glyph
@@ -1105,17 +1107,21 @@ pub fn position_glyph_runs(
                         }
                         let character =
                             (glyph_offset < consumed).then(|| characters[local + glyph_offset].1);
+                        let glyph_transform = transforms.get(glyph_offset).copied().flatten();
+                        let (offset_x, offset_y) = glyph_transform
+                            .map(|t| (t.x(), t.y()))
+                            .unwrap_or((0.0, 0.0));
                         glyphs.push(PositionedGlyph {
                             glyph_id,
-                            x: finite_coordinate(text, "glyph x", x + inferred_x)?,
-                            y: finite_coordinate(text, "glyph y", y + inferred_y)?,
+                            x: finite_coordinate(text, "glyph x", x + inferred_x + offset_x)?,
+                            y: finite_coordinate(text, "glyph y", y + inferred_y + offset_y)?,
                             character,
                             source_range: start_byte..end_byte,
                             scalar_index,
                             source_scalar_range: scalar_index..covered_until,
                             font: Some(selected.clone()),
                             font_source: selected.source().clone(),
-                            transform: None,
+                            transform: glyph_transform.and_then(|t| t.matrix()),
                         });
                         let advance = selected.advance_mm(glyph_id, text.font_size())?;
                         inferred_x = finite_coordinate(text, "advance x", inferred_x + advance.0)?;
