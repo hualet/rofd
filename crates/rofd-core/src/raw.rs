@@ -3,7 +3,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct OfdRoot {
-    #[serde(rename = "DocBody")]
+    #[serde(rename = "DocBody", default)]
     pub(crate) doc_bodies: Vec<DocBody>,
 }
 

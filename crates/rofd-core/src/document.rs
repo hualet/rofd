@@ -51,6 +51,9 @@ pub enum WarningCode {
     /// A page annotation or one of its files could not be parsed and was
     /// skipped.
     AnnotationSkipped,
+    /// The OFD.xml contains multiple DocBody elements; only the first
+    /// (current version) was loaded and historical versions were skipped.
+    HistoricalDocBodySkipped,
 }
 
 /// A recoverable OFD conformance diagnostic.
@@ -243,20 +246,32 @@ impl Document {
         let container = Container::from_bytes(bytes, limits.clone())?;
         let entry_path = PackagePath::new("OFD.xml")?;
         let ofd: OfdRoot = parse_xml(&container, &entry_path, limits.max_xml_depth)?;
-        if ofd.doc_bodies.len() != 1 {
-            return Err(Error::UnsupportedFeature(format!(
-                "v0.2 requires exactly one DocBody, found {}",
-                ofd.doc_bodies.len()
-            )));
+        let mut initial_warnings = Vec::new();
+        if ofd.doc_bodies.is_empty() {
+            return Err(Error::InvalidStructure {
+                path: entry_path.as_str().to_owned(),
+                message: "OFD.xml must contain at least one DocBody".to_owned(),
+            });
+        }
+        // The first DocBody is the current document version; subsequent
+        // DocBody elements are historical versions (GB/T 33190-2016 7.3).
+        // Only the first body is loaded; the rest are acknowledged but not
+        // rendered, matching ofdrw behaviour.
+        if ofd.doc_bodies.len() > 1 {
+            initial_warnings.push(Warning {
+                code: WarningCode::HistoricalDocBodySkipped,
+                path: entry_path.as_str().to_owned(),
+                message: format!(
+                    "{} DocBody elements found; only the first (current version) is loaded",
+                    ofd.doc_bodies.len()
+                ),
+            });
         }
         let body = ofd
             .doc_bodies
             .into_iter()
             .next()
-            .ok_or_else(|| Error::InvalidStructure {
-                path: entry_path.as_str().to_owned(),
-                message: "DocBody is missing".to_owned(),
-            })?;
+            .expect("non-empty checked above");
         let document_path = entry_path.resolve(&body.doc_root)?;
         let root: DocumentRoot = parse_xml(&container, &document_path, limits.max_xml_depth)?;
         let CommonData {
@@ -265,7 +280,6 @@ impl Document {
             document_res,
             template_pages,
         } = root.common_data;
-        let mut initial_warnings = Vec::new();
         if page_area.is_none() {
             if strictness == crate::Strictness::Strict {
                 return Err(Error::InvalidStructure {
