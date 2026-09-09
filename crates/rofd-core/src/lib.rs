@@ -14,6 +14,7 @@ mod path;
 mod path_data;
 mod raw;
 mod resources;
+mod semantic;
 mod ses;
 mod signature;
 mod text;
@@ -30,6 +31,7 @@ pub use options::{LoadOptions, ResourceLimits, Strictness};
 pub use paint::{Color, LineCap, LineJoin, StrokeStyle};
 pub use path_data::{PathCommand, PathData};
 pub use resources::{FontResource, ImageFormat, ImageResource, ResourceIdentity, ResourceKind};
+pub use semantic::{PageText, TextChar, TextCharFlags, TextGeometryPrecision};
 pub use signature::{SealPicture, SealPictureKind, StampAnnotation};
 pub use text::{CharacterGlyphMap, GlyphTransform, TextCode, TextObject};
 
