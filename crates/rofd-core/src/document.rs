@@ -114,6 +114,9 @@ pub struct Document(Arc<DocumentInner>);
 #[derive(Debug)]
 struct PageData {
     size: crate::Rect,
+    application_box: Option<crate::Rect>,
+    content_box: Option<crate::Rect>,
+    bleed_box: Option<crate::Rect>,
     layers: Vec<crate::Layer>,
 }
 
@@ -147,6 +150,29 @@ impl Page {
     /// Returns the effective physical page box in millimetres.
     pub fn size(&self) -> crate::Rect {
         self.data.size
+    }
+
+    /// Returns the application box, if declared.
+    ///
+    /// The application box defines the visible area in the reader application.
+    /// When absent, the physical box should be used.
+    pub fn application_box(&self) -> Option<crate::Rect> {
+        self.data.application_box
+    }
+
+    /// Returns the content box, if declared.
+    ///
+    /// The content box defines the area that contains page content.
+    pub fn content_box(&self) -> Option<crate::Rect> {
+        self.data.content_box
+    }
+
+    /// Returns the bleed box, if declared.
+    ///
+    /// The bleed box defines the area that extends beyond the physical box
+    /// for printing purposes.
+    pub fn bleed_box(&self) -> Option<crate::Rect> {
+        self.data.bleed_box
     }
 
     /// Returns immutable layers in effective template/page paint order.
@@ -541,6 +567,24 @@ impl Document {
         };
         let size = crate::Rect::parse(physical_box)
             .map_err(|error| with_error_path(error, &reference.path))?;
+        let application_box = area
+            .application_box
+            .as_deref()
+            .map(crate::Rect::parse)
+            .transpose()
+            .map_err(|error| with_error_path(error, &reference.path))?;
+        let content_box = area
+            .content_box
+            .as_deref()
+            .map(crate::Rect::parse)
+            .transpose()
+            .map_err(|error| with_error_path(error, &reference.path))?;
+        let bleed_box = area
+            .bleed_box
+            .as_deref()
+            .map(crate::Rect::parse)
+            .transpose()
+            .map_err(|error| with_error_path(error, &reference.path))?;
         let (direct_layers, direct_usage) = crate::content::convert_layers(
             page.content,
             self,
@@ -558,7 +602,13 @@ impl Document {
                 &mut Vec::new(),
             )?
             .layers;
-        let parsed = Arc::new(PageData { size, layers });
+        let parsed = Arc::new(PageData {
+            size,
+            application_box,
+            content_box,
+            bleed_box,
+            layers,
+        });
         if let Some(warning) = pending_warning {
             self.push_warning(warning)?;
         }

@@ -100,3 +100,64 @@ fn page_without_any_area_cannot_be_sized() {
         Err(Error::InvalidStructure { .. })
     ));
 }
+
+#[test]
+fn page_area_exposes_application_content_and_bleed_boxes() {
+    let page_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Area>
+    <ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox>
+    <ofd:ApplicationBox>5 5 200 287</ofd:ApplicationBox>
+    <ofd:ContentBox>10 10 190 277</ofd:ContentBox>
+    <ofd:BleedBox>-3 -3 216 303</ofd:BleedBox>
+  </ofd:Area>
+  <ofd:Content><ofd:Layer ID="1"/></ofd:Content>
+</ofd:Page>"#;
+    let document = Document::from_bytes(minimal_ofd(page_xml), LoadOptions::default()).unwrap();
+    let page = document.page(0).unwrap();
+    assert_eq!(
+        page.size(),
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 210.0,
+            height: 297.0
+        }
+    );
+    assert_eq!(
+        page.application_box(),
+        Some(Rect {
+            x: 5.0,
+            y: 5.0,
+            width: 200.0,
+            height: 287.0
+        })
+    );
+    assert_eq!(
+        page.content_box(),
+        Some(Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 190.0,
+            height: 277.0
+        })
+    );
+    assert_eq!(
+        page.bleed_box(),
+        Some(Rect {
+            x: -3.0,
+            y: -3.0,
+            width: 216.0,
+            height: 303.0
+        })
+    );
+}
+
+#[test]
+fn page_area_without_optional_boxes_returns_none() {
+    let document = Document::from_bytes(minimal_ofd(PAGE_XML), LoadOptions::default()).unwrap();
+    let page = document.page(0).unwrap();
+    assert!(page.application_box().is_none());
+    assert!(page.content_box().is_none());
+    assert!(page.bleed_box().is_none());
+}

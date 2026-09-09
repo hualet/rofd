@@ -245,6 +245,9 @@ pub(crate) struct TemplatePage {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PageArea {
     pub(crate) physical_box: Option<String>,
+    pub(crate) application_box: Option<String>,
+    pub(crate) content_box: Option<String>,
+    pub(crate) bleed_box: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
