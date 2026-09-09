@@ -54,7 +54,7 @@ cargo test -p ofdrw-compat
 | ofdrw 测试 | 原因 |
 |---|---|
 | OFDReaderTest.testChineseDirName / getAttachment | rofd-core 暂无附件（Attachments）API |
-| OFDReaderTest.getStampAnnots | rofd-core 暂无批注（Annotations）API |
+| OFDReaderTest.getStampAnnots | 已由 `Document::stamp_annotations`/`Page::stamp_annotations`（签章）与 `Page::annotations`（Annotations.xml 页注释，含 Appearance 外观渲染）覆盖 |
 | OFDReaderTest.lowLevelOp | 写操作，rofd 是只读库 |
 | OFDReaderTest.close / getWorkDir | ofdrw 解压到工作目录的实现细节，rofd 不解压 |
 | OFDReaderStreamTest | 流式打开；`Document::from_bytes` 已覆盖等价路径 |

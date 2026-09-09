@@ -217,6 +217,10 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     /// Resolves and lowers one validated page without publishing partial output on failure.
+    ///
+    /// Visible page annotations lower after the page layers, so they paint
+    /// over the content but below signature stamps, which the Cairo renderer
+    /// draws after the display list.
     pub fn build(&self, page: &Page) -> Result<DisplayList> {
         let mut display_list = DisplayList::default();
         let mut image_budget = DecodedImageBudget {
@@ -237,7 +241,38 @@ impl<'a> DisplayListBuilder<'a> {
                 )?;
             }
         }
+        for annotation in page.annotations() {
+            if !annotation.visible() {
+                continue;
+            }
+            self.lower_annotation(&mut display_list, page, &annotation, &mut image_budget)?;
+        }
         Ok(display_list)
+    }
+
+    /// Lowers one annotation appearance at its boundary, like a composite.
+    fn lower_annotation(
+        &self,
+        display_list: &mut DisplayList,
+        page: &Page,
+        annotation: &rofd_core::PageAnnotation,
+        image_budget: &mut DecodedImageBudget,
+    ) -> Result<()> {
+        let (_, appearance_to_page) = object_transforms(
+            annotation.object_id(),
+            annotation.boundary(),
+            Transform::IDENTITY,
+        )?;
+        display_list.push_command(Command::Save);
+        display_list.push_command(Command::ConcatTransform(appearance_to_page));
+        let result = (|| {
+            for object in annotation.objects() {
+                self.lower_object(display_list, page, object, LayerSource::Page, image_budget)?;
+            }
+            Ok(())
+        })();
+        display_list.push_command(Command::Restore);
+        result
     }
 
     fn lower_object(

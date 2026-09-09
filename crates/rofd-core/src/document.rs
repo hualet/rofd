@@ -48,6 +48,9 @@ pub enum WarningCode {
     /// An element that is not a known page graphic unit was skipped in
     /// lenient mode so the rest of the page could load.
     UnknownGraphicUnitSkipped,
+    /// A page annotation or one of its files could not be parsed and was
+    /// skipped.
+    AnnotationSkipped,
 }
 
 /// A recoverable OFD conformance diagnostic.
@@ -99,6 +102,9 @@ struct DocumentInner {
     signatures_path: Option<PackagePath>,
     stamp_annotations: OnceLock<Vec<crate::StampAnnotation>>,
     stamp_initialization: Mutex<()>,
+    annotations_path: Option<PackagePath>,
+    page_annotations: OnceLock<Vec<crate::PageAnnotation>>,
+    page_annotation_initialization: Mutex<()>,
 }
 
 /// A read-only OFD document.
@@ -171,6 +177,21 @@ impl Page {
     pub fn stamp_annotations(&self) -> Vec<crate::StampAnnotation> {
         Document(Arc::clone(&self._document))
             .stamp_annotations()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|annotation| annotation.page_ref == self.object_id)
+            .collect()
+    }
+
+    /// Returns the page annotations targeting this page, in declaration
+    /// order.
+    ///
+    /// Like signature stamps, an annotation that fails to parse is skipped
+    /// and reported through [`Document::warnings`] with
+    /// [`WarningCode::AnnotationSkipped`].
+    pub fn annotations(&self) -> Vec<crate::PageAnnotation> {
+        Document(Arc::clone(&self._document))
+            .page_annotations()
             .unwrap_or_default()
             .into_iter()
             .filter(|annotation| annotation.page_ref == self.object_id)
@@ -289,6 +310,21 @@ impl Document {
             );
         }
         let info = body.doc_info;
+        let annotations_path = root
+            .annotations
+            .as_deref()
+            .map(str::trim)
+            .and_then(|declaration| match document_path.resolve(declaration) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    initial_warnings.push(Warning {
+                        code: WarningCode::AnnotationSkipped,
+                        path: declaration.to_owned(),
+                        message: format!("Annotations location is invalid: {error}"),
+                    });
+                    None
+                }
+            });
         let signatures_path = match body.signatures.as_deref().map(str::trim) {
             None => None,
             Some(declaration) => match entry_path.resolve(declaration) {
@@ -328,6 +364,9 @@ impl Document {
             signatures_path,
             stamp_annotations: OnceLock::new(),
             stamp_initialization: Mutex::new(()),
+            annotations_path,
+            page_annotations: OnceLock::new(),
+            page_annotation_initialization: Mutex::new(()),
         })))
     }
 
@@ -567,6 +606,125 @@ impl Document {
         }
         let parsed = self.load_stamp_annotations();
         Ok(self.0.stamp_annotations.get_or_init(|| parsed).clone())
+    }
+
+    /// Returns every page annotation declared by this document.
+    ///
+    /// Annotations are parsed lazily on first access from the location in
+    /// `Document.xml`. Like signature stamps, files or annotations that fail
+    /// to parse are skipped and reported through [`Document::warnings`] with
+    /// [`WarningCode::AnnotationSkipped`]; only lock-poisoning internal
+    /// errors surface as `Err`.
+    pub fn page_annotations(&self) -> Result<Vec<crate::PageAnnotation>> {
+        if let Some(annotations) = self.0.page_annotations.get() {
+            return Ok(annotations.clone());
+        }
+        let _initialization = self.0.page_annotation_initialization.lock().map_err(|_| {
+            Error::Internal("page annotation initialization lock is poisoned".to_owned())
+        })?;
+        if let Some(annotations) = self.0.page_annotations.get() {
+            return Ok(annotations.clone());
+        }
+        let parsed = self.load_page_annotations();
+        Ok(self.0.page_annotations.get_or_init(|| parsed).clone())
+    }
+
+    fn load_page_annotations(&self) -> Vec<crate::PageAnnotation> {
+        let Some(entry_path) = self.0.annotations_path.clone() else {
+            return Vec::new();
+        };
+        let entry: raw::AnnotationsRoot =
+            match parse_xml(&self.0.container, &entry_path, self.0.limits.max_xml_depth) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.push_annotation_warning(
+                        entry_path.as_str(),
+                        format!("annotations entry file could not be parsed: {error}"),
+                    );
+                    return Vec::new();
+                }
+            };
+        let mut annotations = Vec::new();
+        for page in entry.pages {
+            self.load_annotation_page(&entry_path, page, &mut annotations);
+        }
+        annotations
+    }
+
+    fn load_annotation_page(
+        &self,
+        entry_path: &PackagePath,
+        page: raw::AnnotationPageEntry,
+        annotations: &mut Vec<crate::PageAnnotation>,
+    ) {
+        let page_ref = match page.page_id.parse::<u64>() {
+            Ok(page_ref) => page_ref,
+            Err(_) => {
+                self.push_annotation_warning(
+                    entry_path.as_str(),
+                    format!("annotation page reference {} is invalid", page.page_id),
+                );
+                return;
+            }
+        };
+        // Inline annotations keep the annotation id space of the entry file.
+        for annot in page.inline_annots {
+            self.push_annotation(entry_path, page_ref, annot, annotations);
+        }
+        let Some(file_loc) = page.file_loc.as_deref().map(str::trim) else {
+            return;
+        };
+        let annot_path = match entry_path.resolve(file_loc) {
+            Ok(path) => path,
+            Err(error) => {
+                self.push_annotation_warning(
+                    entry_path.as_str(),
+                    format!("annotation file location {file_loc} is invalid: {error}"),
+                );
+                return;
+            }
+        };
+        let root = match parse_page_annot_xml(&self.0.container, &annot_path, &self.0.limits) {
+            Ok(root) => root,
+            Err(error) => {
+                self.push_annotation_warning(
+                    annot_path.as_str(),
+                    format!("page annotation file could not be parsed: {error}"),
+                );
+                return;
+            }
+        };
+        for annot in root.annots {
+            self.push_annotation(&annot_path, page_ref, annot, annotations);
+        }
+    }
+
+    fn push_annotation(
+        &self,
+        path: &PackagePath,
+        page_ref: u64,
+        annot: raw::AnnotEntry,
+        annotations: &mut Vec<crate::PageAnnotation>,
+    ) {
+        match crate::content::convert_annotation(annot, self, &self.0.limits, path.as_str()) {
+            Ok(mut annotation) => {
+                annotation.page_ref = page_ref;
+                annotations.push(annotation);
+            }
+            Err(error) => {
+                self.push_annotation_warning(path.as_str(), format!("annotation skipped: {error}"))
+            }
+        }
+    }
+
+    fn push_annotation_warning(&self, path: &str, message: String) {
+        if let Ok(mut warnings) = self.0.warnings.lock() {
+            warnings.push(Warning {
+                code: WarningCode::AnnotationSkipped,
+                path: path.to_owned(),
+                message,
+            });
+        }
     }
 
     fn load_stamp_annotations(&self) -> Vec<crate::StampAnnotation> {
@@ -1044,6 +1202,47 @@ fn parse_page_xml(
     Ok((page, extracted.skipped))
 }
 
+/// Parses one `PageAnnot` file, whose annotation appearances carry the same
+/// standalone-extracted graphic units as page XML.
+fn parse_page_annot_xml(
+    container: &Container,
+    path: &PackagePath,
+    limits: &crate::ResourceLimits,
+) -> Result<raw::PageAnnotRoot> {
+    let bytes = container.read(path)?;
+    preflight_xml_depth(&bytes, path, limits.max_xml_depth)?;
+    let extracted = extract_rich_objects(&bytes, path, true)?;
+    let mut deserializer =
+        serde_xml_rs::Deserializer::new_from_reader(extracted.sanitized.as_slice())
+            .non_contiguous_seq_elements(true);
+    let mut root =
+        raw::PageAnnotRoot::deserialize(&mut deserializer).map_err(|error| Error::Xml {
+            path: path.as_str().to_owned(),
+            message: error.to_string(),
+        })?;
+    let RichObjects {
+        paths,
+        texts,
+        images,
+    } = extracted.rich;
+    let mut paths = paths.into_iter();
+    let mut texts = texts.into_iter();
+    let mut images = images.into_iter();
+    for annot in &mut root.annots {
+        if let Some(appearance) = &mut annot.appearance {
+            inject_rich_units(
+                &mut appearance.objects,
+                &mut paths,
+                &mut texts,
+                &mut images,
+                path,
+            )?;
+        }
+    }
+    finish_rich_injection(paths, texts, images, path)?;
+    Ok(root)
+}
+
 /// An element below `Layer` or `PageBlock` that this version does not know.
 ///
 /// Lenient parsing drops such elements (like ofdrw, which ignores every
@@ -1148,8 +1347,9 @@ pub(crate) fn extract_rich_objects(
                 // `Content` is a graphic-unit container only inside resource
                 // catalogs (a `CompositeGraphicUnit` payload); a page's
                 // `Content` element holds `Layer` children instead.
+                // `Appearance` holds the inline page block of an annotation.
                 let is_graphic_unit_container = match elements.last().map(String::as_str) {
-                    Some("Layer" | "PageBlock") => true,
+                    Some("Layer" | "PageBlock" | "Appearance") => true,
                     Some("Content") => elements
                         .get(elements.len().saturating_sub(2))
                         .is_some_and(|grandparent| grandparent == "CompositeGraphicUnit"),

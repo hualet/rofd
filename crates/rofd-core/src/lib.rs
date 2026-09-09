@@ -19,8 +19,8 @@ mod signature;
 mod text;
 
 pub use content::{
-    Clip, ClipPath, CompositeObject, FillRule, Layer, LayerSource, LayerType, PageGroup,
-    PageObject, PathObject, UnsupportedObject, UnsupportedObjectKind,
+    AnnotationType, Clip, ClipPath, CompositeObject, FillRule, Layer, LayerSource, LayerType,
+    PageAnnotation, PageGroup, PageObject, PathObject, UnsupportedObject, UnsupportedObjectKind,
 };
 pub use document::{Document, Metadata, Page, Warning, WarningCode};
 pub use error::{Error, Result};

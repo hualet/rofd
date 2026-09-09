@@ -85,10 +85,15 @@ fn repository_invoice_fixture_lowers_and_renders_text_images_and_paths() {
             .iter()
             .filter(|command| matches!(command, Command::DrawImage { .. }))
             .count(),
-        1
+        2
     );
     assert!(display_list.commands().iter().any(|command| {
         matches!(command, Command::DrawImage { image, .. } if image.resource_id() == 36)
+    }));
+    // The invoice's 监制章 arrives as a Stamp page annotation whose
+    // appearance embeds image resource 174.
+    assert!(display_list.commands().iter().any(|command| {
+        matches!(command, Command::DrawImage { image, .. } if image.resource_id() == 174)
     }));
     assert!(display_list
         .diagnostics()

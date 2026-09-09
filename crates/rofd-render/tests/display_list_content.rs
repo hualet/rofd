@@ -562,3 +562,49 @@ fn repeated_template_text_respects_exact_document_budgets_even_with_warm_caches(
     });
     assert!(one_over.page(0).is_err());
 }
+
+#[test]
+fn visible_annotations_lower_after_layers_and_invisible_ones_do_not() {
+    let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:PathObject ID="3" Boundary="0 0 10 10" Fill="true"><ofd:FillColor Value="0 0 0"/><ofd:AbbreviatedData>M 0 0 L 10 0 L 10 10 L 0 10 C</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content></ofd:Page>"#;
+    let document_xml = r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:PageArea></ofd:CommonData><ofd:Pages><ofd:Page ID="1" BaseLoc="Page.xml"/></ofd:Pages><ofd:Annotations>Annotations.xml</ofd:Annotations></ofd:Document>"#;
+    let entry = r#"<ofd:Annotations xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Page PageID="1"><ofd:FileLoc>Annot.xml</ofd:FileLoc></ofd:Page></ofd:Annotations>"#;
+    let annot = r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Annot Type="Watermark" ID="30"><ofd:Appearance Boundary="20 30 40 10"><ofd:PathObject ID="31" Boundary="0 0 40 10" Fill="true"><ofd:FillColor Value="128 128 128"/><ofd:AbbreviatedData>M 0 0 L 40 0 L 40 10 L 0 10 C</ofd:AbbreviatedData></ofd:PathObject></ofd:Appearance></ofd:Annot><ofd:Annot Type="Highlight" ID="40" Visible="false"><ofd:Appearance Boundary="0 0 5 5"><ofd:PathObject ID="41" Boundary="0 0 5 5" Fill="true"><ofd:FillColor Value="255 0 0"/><ofd:AbbreviatedData>M 0 0 L 5 0 L 5 5 L 0 5 C</ofd:AbbreviatedData></ofd:PathObject></ofd:Appearance></ofd:Annot></ofd:PageAnnot>"#;
+    use std::io::{Cursor, Write};
+    use zip::{write::SimpleFileOptions, ZipWriter};
+    let ofd_xml = br#"<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016"><ofd:DocBody><ofd:DocInfo><ofd:DocID>annot</ofd:DocID></ofd:DocInfo><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>"#;
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, bytes) in [
+        ("OFD.xml", ofd_xml.as_slice()),
+        ("Doc_0/Document.xml", document_xml.as_bytes()),
+        ("Doc_0/Page.xml", page.as_bytes()),
+        ("Doc_0/Annotations.xml", entry.as_bytes()),
+        ("Doc_0/Annot.xml", annot.as_bytes()),
+    ] {
+        writer
+            .start_file(path, SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    let bytes = writer.finish().unwrap().into_inner();
+    let document = Document::from_bytes(bytes, LoadOptions::default()).unwrap();
+    let page = document.page(0).unwrap();
+    let resolver = SystemFontResolver::empty(Vec::new(), 1 << 20);
+    let decoder = ImageDecoder::default();
+
+    let display = builder(&resolver, &decoder).build(&page).unwrap();
+
+    // Two paths draw: the page path plus the visible watermark appearance;
+    // the invisible highlight lowers nothing.
+    let draws = display
+        .commands()
+        .iter()
+        .filter(|command| matches!(command, Command::DrawPath(_)))
+        .count();
+    assert_eq!(draws, 2);
+    // The appearance is translated to its page boundary.
+    assert!(display.commands().iter().any(|command| matches!(
+        command,
+        Command::ConcatTransform(transform) if transform.e() == 20.0 && transform.f() == 30.0
+    )));
+    assert!(display.diagnostics().is_empty());
+}

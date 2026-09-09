@@ -77,6 +77,8 @@ pub(crate) struct DocInfo {
 pub(crate) struct DocumentRoot {
     pub(crate) common_data: CommonData,
     pub(crate) pages: PageList,
+    #[serde(rename = "Annotations")]
+    pub(crate) annotations: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,6 +542,51 @@ pub(crate) struct ClipPath {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ClipText {}
+
+/// Entry file `Annotations.xml`: one `Page` element per annotated page.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AnnotationsRoot {
+    #[serde(rename = "Page", default)]
+    pub(crate) pages: Vec<AnnotationPageEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AnnotationPageEntry {
+    #[serde(rename = "PageID")]
+    pub(crate) page_id: String,
+    #[serde(rename = "FileLoc")]
+    pub(crate) file_loc: Option<String>,
+    #[serde(rename = "Annot", default)]
+    pub(crate) inline_annots: Vec<AnnotEntry>,
+}
+
+/// One `PageAnnot` file holding the annotations of a single page.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PageAnnotRoot {
+    #[serde(rename = "Annot", default)]
+    pub(crate) annots: Vec<AnnotEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct AnnotEntry {
+    #[serde(rename = "ID")]
+    pub(crate) id: Option<String>,
+    #[serde(rename = "Type")]
+    pub(crate) kind: Option<String>,
+    #[serde(rename = "Visible")]
+    pub(crate) visible: Option<String>,
+    #[serde(rename = "Appearance")]
+    pub(crate) appearance: Option<AppearanceRaw>,
+}
+
+/// The inline `Appearance` page block of an annotation.
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct AppearanceRaw {
+    #[serde(rename = "Boundary")]
+    pub(crate) boundary: Option<String>,
+    #[serde(rename = "$value", default)]
+    pub(crate) objects: Vec<GraphicUnit>,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PaintColor {

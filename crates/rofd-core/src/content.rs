@@ -184,6 +184,154 @@ pub enum UnsupportedObjectKind {
     Image,
 }
 
+/// The category of a page annotation (GB/T 33190-2016 table 62).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum AnnotationType {
+    /// A hyperlink annotation.
+    Link,
+    /// A graphics annotation such as a rectangle or polygon.
+    Path,
+    /// A text highlight annotation.
+    Highlight,
+    /// A seal or watermark stamp annotation.
+    Stamp,
+    /// A watermark annotation.
+    Watermark,
+}
+
+impl AnnotationType {
+    pub(crate) fn from_type_name(value: &str) -> Option<Self> {
+        match value {
+            "Link" => Some(Self::Link),
+            "Path" => Some(Self::Path),
+            "Highlight" => Some(Self::Highlight),
+            "Stamp" => Some(Self::Stamp),
+            "Watermark" => Some(Self::Watermark),
+            _ => None,
+        }
+    }
+}
+
+/// One page annotation with its inline appearance page block.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageAnnotation {
+    pub(crate) page_ref: u64,
+    object_id: u64,
+    kind: AnnotationType,
+    visible: bool,
+    boundary: Rect,
+    objects: Vec<PageObject>,
+}
+
+impl PageAnnotation {
+    /// Returns the OFD object identifier of the annotation.
+    pub fn object_id(&self) -> u64 {
+        self.object_id
+    }
+
+    /// Returns the annotation category.
+    pub fn kind(&self) -> AnnotationType {
+        self.kind
+    }
+
+    /// Returns whether the annotation should be displayed.
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Returns the appearance boundary in page coordinates.
+    pub fn boundary(&self) -> Rect {
+        self.boundary
+    }
+
+    /// Returns the converted appearance graphic units.
+    pub fn objects(&self) -> &[PageObject] {
+        &self.objects
+    }
+}
+
+/// Converts one raw annotation into the public model.
+pub(crate) fn convert_annotation(
+    annot: raw::AnnotEntry,
+    document: &crate::Document,
+    limits: &ResourceLimits,
+    path: &str,
+) -> Result<PageAnnotation> {
+    let kind = match annot.kind.as_deref() {
+        Some(value) => {
+            AnnotationType::from_type_name(value).ok_or_else(|| Error::InvalidValue {
+                field: "annotation type",
+                value: value.to_owned(),
+                path: None,
+            })?
+        }
+        // The standard requires Type, but lenient parsing keeps untyped
+        // annotations as stamps, matching how seal annotations are used.
+        None => AnnotationType::Stamp,
+    };
+    let visible = match annot.visible.as_deref() {
+        None | Some("true" | "1") => true,
+        Some("false" | "0") => false,
+        Some(value) => {
+            return Err(invalid_value("annotation Visible", value));
+        }
+    };
+    let mut context = ConversionContext {
+        limits,
+        document,
+        path,
+        object_ids: HashSet::new(),
+        next_synthetic_id: u64::MAX,
+        vector_graphics: Vec::new(),
+        remaining_path_commands: limits.max_path_commands,
+        remaining_text_characters: limits.max_text_characters_per_page,
+        remaining_glyphs: limits.max_glyphs_per_page,
+        remaining_text_expansion_entries: limits.max_text_expansion_entries,
+    };
+    let object_id = context.resolve_object_id(annot.id.as_deref())?;
+    context.register_id(object_id)?;
+    let (boundary, objects) = match annot.appearance {
+        Some(appearance) => {
+            let boundary = appearance
+                .boundary
+                .as_deref()
+                .ok_or_else(|| {
+                    object_error(
+                        path,
+                        object_id,
+                        "Appearance.Boundary",
+                        "required attribute is missing".to_owned(),
+                    )
+                })
+                .and_then(|value| {
+                    Rect::parse(value).map_err(|error| {
+                        object_error(path, object_id, "Appearance.Boundary", error.to_string())
+                    })
+                })?;
+            let objects = context.convert_objects(appearance.objects)?;
+            (boundary, objects)
+        }
+        None => (
+            crate::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            Vec::new(),
+        ),
+    };
+    Ok(PageAnnotation {
+        page_ref: 0,
+        object_id,
+        kind,
+        visible,
+        boundary,
+        objects,
+    })
+}
+
 /// The algorithm used to determine the interior of a path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FillRule {
