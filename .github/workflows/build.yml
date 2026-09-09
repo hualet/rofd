@@ -26,6 +26,8 @@ jobs:
             pkg-config \
             libcairo2-dev \
             libfreetype-dev \
+            fonts-noto-cjk \
+            fonts-noto-mono \
             qt6-base-dev \
             qt6-declarative-dev \
             qt6-declarative-dev-tools \
