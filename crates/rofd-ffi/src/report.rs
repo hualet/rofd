@@ -41,13 +41,13 @@ fn diagnostic_kind(kind: &RenderDiagnosticKind) -> Result<u32, FfiError> {
         RenderDiagnosticKind::UnsupportedObject { .. } => Ok(ROFD_DIAGNOSTIC_UNSUPPORTED_OBJECT),
         RenderDiagnosticKind::FontFallback { .. } => Ok(ROFD_DIAGNOSTIC_FONT_FALLBACK),
         RenderDiagnosticKind::MissingGlyph { .. } => Ok(ROFD_DIAGNOSTIC_MISSING_GLYPH),
-        RenderDiagnosticKind::ImageSubstitutionUnsupported { .. } => {
+        RenderDiagnosticKind::ImageResourceMissing { .. } => {
             Ok(ROFD_DIAGNOSTIC_IMAGE_SUBSTITUTION_UNSUPPORTED)
         }
-        RenderDiagnosticKind::ImageMaskUnsupported { .. } => {
+        RenderDiagnosticKind::ImageMaskIncompatible { .. } => {
             Ok(ROFD_DIAGNOSTIC_IMAGE_MASK_UNSUPPORTED)
         }
-        RenderDiagnosticKind::ImageBorderUnsupported => {
+        RenderDiagnosticKind::ImageFormatUnsupported { .. } => {
             Ok(ROFD_DIAGNOSTIC_IMAGE_BORDER_UNSUPPORTED)
         }
         _ => Err(FfiError::new(
@@ -236,15 +236,15 @@ mod tests {
                 ROFD_DIAGNOSTIC_MISSING_GLYPH,
             ),
             (
-                RenderDiagnosticKind::ImageSubstitutionUnsupported { resource_id: 1 },
+                RenderDiagnosticKind::ImageResourceMissing { resource_id: 1 },
                 ROFD_DIAGNOSTIC_IMAGE_SUBSTITUTION_UNSUPPORTED,
             ),
             (
-                RenderDiagnosticKind::ImageMaskUnsupported { resource_id: 1 },
+                RenderDiagnosticKind::ImageMaskIncompatible { resource_id: 1 },
                 ROFD_DIAGNOSTIC_IMAGE_MASK_UNSUPPORTED,
             ),
             (
-                RenderDiagnosticKind::ImageBorderUnsupported,
+                RenderDiagnosticKind::ImageFormatUnsupported { resource_id: 1 },
                 ROFD_DIAGNOSTIC_IMAGE_BORDER_UNSUPPORTED,
             ),
         ];
