@@ -229,6 +229,11 @@ pub fn max_mismatch_fraction(relative_fixture: &str) -> f64 {
         // face while ofdrw uses its own default font, and the unrelated glyph
         // tables produce different body text (observed ~16%).
         ("converter/y.ofd", 0.18),
+        // Declares 宋体 without embedding it, so the body glyphs come from
+        // whatever the system's fallback resolves to; mismatch is ~0.6% on a
+        // desktop with a close SimSun substitute but ~12% on CI runners that
+        // only ship Noto CJK.
+        ("layout/拿来主义_page6.ofd", 0.15),
     ];
     OVERRIDES
         .iter()
