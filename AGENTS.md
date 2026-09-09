@@ -31,6 +31,22 @@ Keep these places in sync when bumping the version; the tag `v<X.Y.Z>` must matc
 
 Use standard `rustfmt` output (four-space indentation). Name modules, functions, and test cases in `snake_case`; types and traits use `UpperCamelCase`; constants use `SCREAMING_SNAKE_CASE`. Keep public `rofd-core` APIs documented: the crate denies missing documentation and forbids unsafe code. Prefer small modules, explicit errors, and resource-bounded parsing for untrusted OFD archives.
 
+## Public C API Compatibility
+
+Design the public `rofd.h` reader API so a C consumer familiar with Poppler's
+GLib API can transfer its document/page usage model: acquire a document, acquire
+an independently owned page, then perform page-level text, selection, search,
+layout, link, annotation, and image-mapping queries with explicit matching free
+functions. Treat Poppler as a usability reference, not an ABI dependency: rofd
+must not expose GLib types, copy Poppler-specific PDF concepts, or weaken its
+existing status/error reporting, opaque handles, `struct_size` versioning,
+transactional outputs, pointer-overlap checks, panic containment, and bounded
+untrusted-input handling. Preserve every published v1 symbol and structure;
+prefer additive APIs and compatibility aliases only when they materially improve
+migration. Rust-internal and Rust-public APIs should remain idiomatic and may
+use whatever ownership, caching, indexing, and type structure best fits OFD;
+they are not required to mirror Poppler naming or object layout.
+
 ## Testing Guidelines
 
 Add unit tests beside private implementation details and integration tests in `crates/rofd-core/tests/` for public behavior. Use behavior-focused names such as `multiple_doc_bodies_are_explicitly_unsupported_in_v02`. Reuse helpers from `tests/support/` and repository fixtures when realistic packages matter. There is no stated coverage threshold; every bug fix should include a regression test.
