@@ -1429,7 +1429,10 @@ impl ConversionContext<'_> {
         clips
             .clips
             .into_iter()
-            .map(|clip| self.convert_clip(clip, affected_by_object_transform, object_id))
+            .filter_map(|clip| {
+                self.convert_clip(clip, affected_by_object_transform, object_id)
+                    .transpose()
+            })
             .collect()
     }
 
@@ -1438,13 +1441,14 @@ impl ConversionContext<'_> {
         clip: raw::Clip,
         affected_by_object_transform: bool,
         object_id: u64,
-    ) -> Result<Clip> {
+    ) -> Result<Option<Clip>> {
         if clip.areas.is_empty() {
             return Err(Error::InvalidStructure {
                 path: self.path.to_owned(),
                 message: "Clip must contain at least one Area".to_owned(),
             });
         }
+        let strict = self.document.strictness() == crate::Strictness::Strict;
         let mut paths = Vec::with_capacity(clip.areas.len());
         for area in clip.areas {
             if area.children.len() != 1 {
@@ -1466,11 +1470,16 @@ impl ConversionContext<'_> {
                     paths.push(self.convert_clip_path(path, area_transform, object_id)?);
                 }
                 raw::ClipAreaChild::Text(_) => {
-                    return Err(Error::UnsupportedFeature(
-                        "text clip areas are not supported in phase 2".to_owned(),
-                    ));
+                    if strict {
+                        return Err(Error::UnsupportedFeature(
+                            "text clip areas are not supported".to_owned(),
+                        ));
+                    }
                 }
             }
+        }
+        if paths.is_empty() {
+            return Ok(None);
         }
         let fill_rule = paths[0].fill_rule;
         if paths.iter().any(|path| path.fill_rule != fill_rule) {
@@ -1478,10 +1487,10 @@ impl ConversionContext<'_> {
                 "mixed fill rules within one Clip are not supported in phase 2".to_owned(),
             ));
         }
-        Ok(Clip {
+        Ok(Some(Clip {
             paths,
             affected_by_object_transform,
-        })
+        }))
     }
 
     fn convert_clip_path(

@@ -149,8 +149,19 @@ fn rejects_missing_or_ambiguous_clip_structure() {
 }
 
 #[test]
-fn rejects_clip_forms_that_cannot_be_rendered_correctly() {
-    let error = open_page(&path_with_clips(
+fn text_clip_areas_are_skipped_in_lenient_mode() {
+    // Lenient mode silently drops text clip areas rather than failing.
+    let page = open_page(&path_with_clips(
+        "<ofd:Clips><ofd:Clip><ofd:Area><ofd:Text/></ofd:Area></ofd:Clip></ofd:Clips>",
+        "M 0 0",
+    ))
+    .unwrap();
+    assert_eq!(path_object(&page).clips().len(), 0);
+}
+
+#[test]
+fn text_clip_areas_are_rejected_in_strict_mode() {
+    let error = open_page_strict(&path_with_clips(
         "<ofd:Clips><ofd:Clip><ofd:Area><ofd:Text/></ofd:Area></ofd:Clip></ofd:Clips>",
         "M 0 0",
     ))
@@ -159,7 +170,23 @@ fn rejects_clip_forms_that_cannot_be_rendered_correctly() {
         matches!(error, Error::UnsupportedFeature(ref message) if message.contains("text clip areas are not supported")),
         "{error:?}"
     );
+}
 
+#[test]
+fn mixed_path_and_text_clip_areas_drop_only_text_in_lenient_mode() {
+    // A Clip with two Areas—one Path, one Text—should keep the Path and drop
+    // only the Text in lenient mode.
+    let clips = r#"<ofd:Clips><ofd:Clip>
+        <ofd:Area><ofd:Path Boundary="0 0 1 1" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:Path></ofd:Area>
+        <ofd:Area><ofd:Text/></ofd:Area>
+    </ofd:Clip></ofd:Clips>"#;
+    let page = open_page(&path_with_clips(clips, "M 0 0")).unwrap();
+    assert_eq!(path_object(&page).clips().len(), 1);
+    assert_eq!(path_object(&page).clips()[0].paths().len(), 1);
+}
+
+#[test]
+fn rejects_clip_forms_that_cannot_be_rendered_correctly() {
     // Non-fill-only clip paths are only rejected in strict mode; lenient
     // mode matches ofdrw and clips on the path geometry alone.
     let cases = [
