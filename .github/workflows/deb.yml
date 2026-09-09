@@ -1,0 +1,73 @@
+name: Build Debian Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/hualet/deepin:25.1-builder
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            build-essential \
+            curl \
+            debhelper \
+            dpkg-dev \
+            cargo \
+            rustc \
+            pkg-config \
+            libcairo2-dev \
+            libfreetype-dev \
+            qt6-base-dev \
+            qt6-declarative-dev
+
+      # The distro cargo/rustc (1.81) only satisfies Build-Depends; the
+      # locked dependencies (image 0.25 needs Rust 1.88) require rustup.
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build Debian package
+        run: |
+          dpkg-buildpackage -us -uc -b
+          mkdir -p output
+          find .. -maxdepth 1 -type f -name '*.deb' -exec cp {} output/ \;
+
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-packages
+          path: output/*.deb
+
+      - name: Publish release assets
+        if: github.event_name == 'push' || github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: output/*.deb
+          generate_release_notes: ${{ github.event_name == 'push' }}
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

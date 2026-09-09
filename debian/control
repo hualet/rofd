@@ -8,7 +8,6 @@ Build-Depends: debhelper-compat (= 13),
                pkg-config,
                libcairo2-dev,
                libfreetype-dev,
-               libjbig2dec0-dev,
                qt6-base-dev,
                qt6-declarative-dev
 Standards-Version: 4.6.2
