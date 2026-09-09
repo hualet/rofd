@@ -28,3 +28,4 @@ target/
 /debian/rofd/
 /debian/librofd-ffi0/
 /debian/librofd-ffi-dev/
+.zcode/

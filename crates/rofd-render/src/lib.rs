@@ -1,4 +1,6 @@
-#![forbid(unsafe_code)]
+// `deny` rather than `forbid` because the jbig2dec FFI module below is the
+// one audited place that needs `unsafe`; every other module stays clean.
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
@@ -6,6 +8,9 @@ mod cairo_renderer;
 mod display_list;
 mod fonts;
 mod images;
+#[cfg(feature = "jbig2")]
+#[allow(unsafe_code)]
+mod jbig2;
 
 pub use cairo_renderer::{CairoRenderer, ImageInterpolation, RenderOptions, RenderReport};
 pub use display_list::{

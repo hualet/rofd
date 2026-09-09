@@ -41,6 +41,7 @@ repository = "https://github.com/hualet/rofd"
 
 [workspace.dependencies]
 cairo-rs = { version = "0.20.7", features = ["freetype", "png"] }
+pkg-config = "0.3"
 fontdb = "0.23.0"
 freetype-rs = "0.37.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }

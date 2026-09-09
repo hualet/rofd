@@ -37,7 +37,6 @@ fn assert_package_loads(relative: &str) {
 }
 
 #[test]
-#[ignore = "known parser gap: JB2 image format unsupported (see KNOWN_LOAD_FAILURES)"]
 fn no_page_container_loads() {
     assert_package_loads("layout/no_page_container.ofd");
 }

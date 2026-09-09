@@ -366,10 +366,9 @@ impl<'a> DisplayListBuilder<'a> {
                 };
                 let decoded = match self.image_decoder.decode(&resource, page.resource_limits()) {
                     Ok(decoded) => decoded,
-                    // ofdrw ships a JBIG2 decoder; rofd-render does not, so a
-                    // JB2/GBIG2 image is skipped and the rest of the page
-                    // still renders (converter/1.ofd, layout/no_page_container.ofd).
-                    // Unrecognized encodings keep failing loudly.
+                    // Without the `jbig2` feature a JB2/GBIG2 image is skipped
+                    // and the rest of the page still renders; every other
+                    // encoding failure stays a hard error.
                     Err(Error::UnsupportedImageFormat { .. })
                         if resource.format() == rofd_core::ImageFormat::Jbig2 =>
                     {

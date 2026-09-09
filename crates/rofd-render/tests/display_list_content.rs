@@ -341,11 +341,11 @@ fn missing_image_asset_skips_the_object_with_a_diagnostic() {
     );
 }
 
+#[cfg(not(feature = "jbig2"))]
 #[test]
 fn undecodable_jbig2_image_is_skipped_with_a_diagnostic() {
-    // ofdrw decodes JB2/GBIG2 through a JBIG2 plugin; rofd-render has no JBIG2
-    // decoder, so the image is skipped like other non-fatal image problems
-    // (ofdrw-compat converter/1.ofd and layout/no_page_container.ofd QR codes).
+    // Without the `jbig2` feature a JB2/GBIG2 image is skipped like other
+    // non-fatal image problems and the rest of the page still renders.
     let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="6" Boundary="0 0 6 4" ResourceID="22"/></ofd:Layer></ofd:Content></ofd:Page>"#;
     let resources = r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"><ofd:MultiMedias><ofd:MultiMedia ID="22" Type="Image" Format="GBIG2"><ofd:MediaFile>qr.jb2</ofd:MediaFile></ofd:MultiMedia></ofd:MultiMedias></ofd:Res>"#;
     let jbig2 = b"\x97JB2\r\n\x1a\n\x01\x00\x00\x00\x01";
@@ -363,6 +363,26 @@ fn undecodable_jbig2_image_is_skipped_with_a_diagnostic() {
         diagnostic.kind(),
         &RenderDiagnosticKind::ImageFormatUnsupported { resource_id: 22 }
     );
+}
+
+#[cfg(feature = "jbig2")]
+#[test]
+fn corrupted_jbig2_streams_fail_loudly_like_other_decoders() {
+    // With the `jbig2` feature a corrupt stream is a decode error like a
+    // corrupt PNG, not a silent skip.
+    let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject><ofd:ImageObject ID="6" Boundary="0 0 6 4" ResourceID="22"/></ofd:Layer></ofd:Content></ofd:Page>"#;
+    let resources = r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"><ofd:MultiMedias><ofd:MultiMedia ID="22" Type="Image" Format="GBIG2"><ofd:MediaFile>qr.jb2</ofd:MediaFile></ofd:MultiMedia></ofd:MultiMedias></ofd:Res>"#;
+    let jbig2 = b"\x97JB2\r\n\x1a\n\x01\x00\x00\x00\x01";
+    let document = document(page, resources, &[("Doc_0/qr.jb2", jbig2)]);
+    let page = document.page(0).unwrap();
+    let resolver = SystemFontResolver::empty(Vec::new(), 1 << 20);
+    let decoder = ImageDecoder::default();
+
+    let result = builder(&resolver, &decoder).build(&page);
+    assert!(matches!(
+        result,
+        Err(rofd_render::Error::ObjectResourceProcessing { object_id: 6, .. })
+    ));
 }
 
 #[test]

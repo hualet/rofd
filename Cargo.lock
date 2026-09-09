@@ -1187,6 +1187,7 @@ dependencies = [
  "fontdb",
  "freetype-rs",
  "image",
+ "pkg-config",
  "rofd-core",
  "thiserror 2.0.20",
  "zip",

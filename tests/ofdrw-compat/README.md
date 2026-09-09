@@ -84,9 +84,9 @@ JB2/GBIG2 图像格式等）已逐项修复；ofdrw 宽容而 rofd 严格的写�
 `KNOWN_RENDER_FAILURES` / `UNUSABLE_REFERENCES` / 阈值表中：
 
 - converter/1.ofd、layout/no_page_container.ofd：左上角的二维码是
-  JB2/GBIG2（JBIG2）编码图像，ofdrw 通过 JBIG2 插件解码而 rofd-render
-  没有 JBIG2 解码器，图像被跳过并记录 `ImageFormatUnsupported` 诊断；
-  二维码面积占页面不足 1%，在默认阈值内通过对比
+  JB2/GBIG2（JBIG2）编码图像，通过系统 jbig2dec 库解码（默认 `jbig2`
+  feature），与 ofdrw 的参考渲染一致；未启用该 feature 时图像被跳过并
+  记录 `ImageFormatUnsupported` 诊断
 - converter/y.ofd 第 2-3 页：正文使用未内嵌字体的显式 glyph ID，rofd 把
   glyph ID 应用到回退字体而 ofdrw 用它自己的默认字体，字形表不同导致
   正文文字形状不同（不匹配约 16%，阈值放宽至 18% 并注明原因）

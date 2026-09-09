@@ -369,8 +369,9 @@ impl ImageDecoder {
     /// pixels.
     ///
     /// PNG, JPEG, BMP, GIF, and TIFF resources decode through the `image`
-    /// crate. JBIG2 resources are recognized but have no decoder yet, so they
-    /// fail with [`Error::UnsupportedImageFormat`].
+    /// crate. With the default `jbig2` feature, JBIG2 resources decode
+    /// through the system jbig2dec library; without it they are recognized
+    /// but fail with [`Error::UnsupportedImageFormat`].
     ///
     /// Magic, dimensions, and the caller's per-image limits are validated before
     /// pixel allocation. Work for one resource is single-flight; unrelated resources
@@ -477,7 +478,16 @@ impl ImageDecoder {
     }
 }
 
-fn preflight(resource: &ImageResource, limits: &ResourceLimits) -> Result<DecoderFormat> {
+/// The decoding backend one resource resolves to.
+enum SourceFormat {
+    /// An `image`-crate decoder format.
+    Image(DecoderFormat),
+    /// A standalone JBIG2 stream; decodable only with the `jbig2` feature.
+    #[allow(dead_code)]
+    Jbig2,
+}
+
+fn preflight(resource: &ImageResource, limits: &ResourceLimits) -> Result<SourceFormat> {
     let bytes = resource.encoded_bytes();
     let encoded_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     check_limit(
@@ -495,12 +505,24 @@ fn preflight(resource: &ImageResource, limits: &ResourceLimits) -> Result<Decode
             detected,
         });
     }
+    if detected == ImageFormat::Jbig2 {
+        if cfg!(feature = "jbig2") {
+            // Page dimensions only exist after decoding, so validation
+            // happens in the JBIG2 decode path.
+            return Ok(SourceFormat::Jbig2);
+        }
+        return Err(Error::UnsupportedImageFormat {
+            resource_id: resource.id(),
+            path: resource.asset_path().to_owned(),
+        });
+    }
     let decoder_format = match detected {
         ImageFormat::Png => DecoderFormat::Png,
         ImageFormat::Jpeg => DecoderFormat::Jpeg,
         ImageFormat::Bmp => DecoderFormat::Bmp,
         ImageFormat::Gif => DecoderFormat::Gif,
         ImageFormat::Tiff => DecoderFormat::Tiff,
+        // Jbig2 is handled above; other future formats stay unsupported.
         _ => {
             return Err(Error::UnsupportedImageFormat {
                 resource_id: resource.id(),
@@ -510,7 +532,7 @@ fn preflight(resource: &ImageResource, limits: &ResourceLimits) -> Result<Decode
     };
     let (width, height) = dimensions(resource, decoder_format)?;
     validate_dimensions(resource, width, height, limits)?;
-    Ok(decoder_format)
+    Ok(SourceFormat::Image(decoder_format))
 }
 
 fn detect_format(resource: &ImageResource) -> Result<ImageFormat> {
@@ -601,8 +623,17 @@ fn validate_dimensions(
 fn decode_pixels(
     resource: &ImageResource,
     limits: &ResourceLimits,
-    format: DecoderFormat,
+    format: SourceFormat,
 ) -> Result<DecodedImage> {
+    if let SourceFormat::Jbig2 = format {
+        return decode_jbig2_pixels(resource, limits);
+    }
+    let SourceFormat::Image(format) = format else {
+        return Err(Error::UnsupportedImageFormat {
+            resource_id: resource.id(),
+            path: resource.asset_path().to_owned(),
+        });
+    };
     let (width, height) = dimensions(resource, format)?;
     let (_, expected_bytes) = validate_dimensions(resource, width, height, limits)?;
     let mut reader = ImageReader::with_format(Cursor::new(resource.encoded_bytes()), format);
@@ -636,6 +667,32 @@ fn decode_pixels(
         height,
         stride,
         rgba: Arc::from(rgba),
+    })
+}
+
+/// Decodes one standalone JBIG2 stream and applies the same dimension and
+/// budget validation as the `image`-crate path, after decoding because page
+/// dimensions only become known then.
+fn decode_jbig2_pixels(resource: &ImageResource, limits: &ResourceLimits) -> Result<DecodedImage> {
+    let decoded = crate::jbig2::decode_standalone(resource.encoded_bytes())
+        .map_err(|message| decode_error(resource, message))?;
+    let (width, height) = (decoded.width, decoded.height);
+    let (_, expected_bytes) = validate_dimensions(resource, width, height, limits)?;
+    if u64::try_from(decoded.rgba.len()).unwrap_or(u64::MAX) != expected_bytes {
+        return Err(decode_error(
+            resource,
+            "decoded RGBA length does not match dimensions",
+        ));
+    }
+    let stride = usize::try_from(u64::from(width) * 4)
+        .map_err(|_| overflow_error(resource, width, height))?;
+    Ok(DecodedImage {
+        identity: Some(resource.identity()),
+        resource_id: resource.id(),
+        width,
+        height,
+        stride,
+        rgba: Arc::from(decoded.rgba),
     })
 }
 

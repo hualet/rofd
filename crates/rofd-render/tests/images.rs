@@ -434,3 +434,35 @@ fn errors_include_safe_package_local_asset_provenance() {
         .unwrap_err();
     assert!(error.to_string().contains("Doc_0/image.bin"));
 }
+
+#[cfg(feature = "jbig2")]
+#[test]
+fn standalone_jbig2_images_decode_through_the_system_jbig2dec() {
+    // image_78.jb2 is the GBIG2-encoded image embedded in ofdrw's
+    // converter/1.ofd fixture.
+    let bytes = std::fs::read(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/image_78.jb2"),
+    )
+    .unwrap();
+    assert!(bytes.starts_with(b"\x97JB2\r\n\x1a\n"));
+    let decoded = decode(&bytes, "GBIG2").unwrap();
+    assert!(decoded.width() > 0 && decoded.height() > 0);
+    assert_eq!(
+        decoded.rgba().len(),
+        decoded.width() as usize * decoded.height() as usize * 4
+    );
+    // A bi-level scan must expand to black or white pixels only.
+    assert!(decoded
+        .rgba()
+        .chunks_exact(4)
+        .all(|pixel| { alpha_is_opaque_and_channels_are_bi_level(pixel) }));
+    // The scan contains ink.
+    let black = decoded.rgba().chunks_exact(4).filter(|p| p[0] == 0).count();
+    assert!(black > 0, "expected black pixels in the decoded scan");
+}
+
+fn alpha_is_opaque_and_channels_are_bi_level(pixel: &[u8]) -> bool {
+    let [red, green, blue, alpha] = [pixel[0], pixel[1], pixel[2], pixel[3]];
+    alpha == 255
+        && ((red == 0 && green == 0 && blue == 0) || (red == 255 && green == 255 && blue == 255))
+}
