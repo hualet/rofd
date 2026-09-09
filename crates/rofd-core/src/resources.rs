@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Deserialize;
 
 use crate::container::Container;
+use crate::paint::ColorSpaceKind;
 use crate::paint::PaintParameters;
 use crate::path::PackagePath;
-use crate::raw::{DrawParamEntry, FontEntry, MultiMediaEntry, ResourceRoot};
+use crate::raw::{ColorSpaceEntry, DrawParamEntry, FontEntry, MultiMediaEntry, ResourceRoot};
 use crate::{Color, Error, LineCap, LineJoin, ResourceLimits, Result};
 
 /// A document resource category.
@@ -23,6 +24,8 @@ pub enum ResourceKind {
     Image,
     /// A reusable set of drawing parameters.
     DrawParam,
+    /// A colour space resource with an optional indexed palette.
+    ColorSpace,
 }
 
 /// An encoded image format supported by the resource index.
@@ -176,6 +179,7 @@ impl ImageResource {
 #[derive(Debug)]
 pub(crate) struct ResourceCatalog {
     entries: HashMap<u64, ResourceEntry>,
+    strictness: crate::Strictness,
     draw_param_initialization: Mutex<()>,
     #[cfg(test)]
     draw_param_visits: AtomicUsize,
@@ -186,6 +190,18 @@ enum ResourceEntry {
     Font(FontRecord),
     Image(ImageRecord),
     DrawParam(DrawParamRecord),
+    ColorSpace(ColorSpaceRecord),
+}
+
+/// A colour space declaration with its optional palette entries.
+///
+/// Palette entries are retained as raw channel-array text and validated when
+/// a colour actually references them.
+#[derive(Debug)]
+struct ColorSpaceRecord {
+    kind: ColorSpaceKind,
+    palette: Option<Vec<String>>,
+    declaration_path: String,
 }
 
 #[derive(Debug)]
@@ -212,7 +228,11 @@ struct ImageRecord {
 struct DrawParamRecord {
     id: u64,
     relative: Option<u64>,
+    /// Line geometry only; colours are retained raw because resolving them
+    /// may reference colour spaces declared elsewhere in the catalog.
     values: PaintParameters,
+    fill_color: Option<Box<crate::raw::PaintColor>>,
+    stroke_color: Option<Box<crate::raw::PaintColor>>,
     declaration_path: String,
     resolved: OnceLock<PaintParameters>,
 }
@@ -260,6 +280,7 @@ impl ResourceCatalog {
     pub(crate) fn empty() -> Self {
         Self {
             entries: HashMap::new(),
+            strictness: crate::Strictness::Lenient,
             draw_param_initialization: Mutex::new(()),
             #[cfg(test)]
             draw_param_visits: AtomicUsize::new(0),
@@ -281,6 +302,7 @@ impl ResourceCatalog {
         }
 
         let mut catalog = Self::empty();
+        catalog.strictness = strictness;
         for (path, bytes) in documents {
             let mut deserializer = serde_xml_rs::Deserializer::new_from_reader(bytes.as_slice())
                 .non_contiguous_seq_elements(true);
@@ -312,6 +334,13 @@ impl ResourceCatalog {
             {
                 catalog.insert_draw_param(draw_param, path)?;
             }
+            for color_space in root
+                .color_spaces
+                .into_iter()
+                .flat_map(|spaces| spaces.entries)
+            {
+                catalog.insert_color_space(color_space, path)?;
+            }
         }
         Ok(catalog)
     }
@@ -339,6 +368,11 @@ impl ResourceCatalog {
                 ResourceKind::Font,
                 ResourceKind::DrawParam,
             )),
+            Some(ResourceEntry::ColorSpace(_)) => Err(kind_mismatch(
+                id,
+                ResourceKind::Font,
+                ResourceKind::ColorSpace,
+            )),
             None => Err(Error::UnknownResource { object_id: id }),
         }
     }
@@ -364,6 +398,11 @@ impl ResourceCatalog {
                 id,
                 ResourceKind::Image,
                 ResourceKind::DrawParam,
+            )),
+            Some(ResourceEntry::ColorSpace(_)) => Err(kind_mismatch(
+                id,
+                ResourceKind::Image,
+                ResourceKind::ColorSpace,
             )),
             None => Err(Error::UnknownResource { object_id: id }),
         }
@@ -473,24 +512,14 @@ impl ResourceCatalog {
             .map(|value| parse_id(value, path))
             .transpose()?;
         let values = PaintParameters {
+            fill_color: None,
+            stroke_color: None,
             line_width: parse_positive(entry.line_width.as_deref(), "LineWidth", id, path)?,
             line_join: parse_join(entry.line_join.as_deref(), id, path)?,
             line_cap: parse_cap(entry.line_cap.as_deref(), id, path)?,
             dash_offset: parse_nonnegative(entry.dash_offset.as_deref(), "DashOffset", id, path)?,
             dash_pattern: parse_dash_pattern(entry.dash_pattern.as_deref(), id, path)?,
             miter_limit: parse_positive(entry.miter_limit.as_deref(), "MiterLimit", id, path)?,
-            fill_color: entry
-                .fill_color
-                .as_ref()
-                .map(parse_color)
-                .transpose()
-                .map_err(|message| invalid_resource(path, Some(id), "FillColor", message))?,
-            stroke_color: entry
-                .stroke_color
-                .as_ref()
-                .map(parse_color)
-                .transpose()
-                .map_err(|message| invalid_resource(path, Some(id), "StrokeColor", message))?,
         };
         self.insert(
             id,
@@ -498,8 +527,59 @@ impl ResourceCatalog {
                 id,
                 relative,
                 values,
+                fill_color: entry.fill_color.map(Box::new),
+                stroke_color: entry.stroke_color.map(Box::new),
                 declaration_path: path.as_str().to_owned(),
                 resolved: OnceLock::new(),
+            }),
+            path,
+        )
+    }
+
+    fn insert_color_space(&mut self, entry: ColorSpaceEntry, path: &PackagePath) -> Result<()> {
+        let id = parse_id(&entry.id, path)?;
+        let kind = match entry
+            .kind
+            .as_deref()
+            .map(str::to_ascii_uppercase)
+            .as_deref()
+        {
+            Some("GRAY") => ColorSpaceKind::Gray,
+            Some("RGB") => ColorSpaceKind::Rgb,
+            Some("CMYK") => ColorSpaceKind::Cmyk,
+            Some(other) => {
+                return Err(invalid_resource(
+                    path,
+                    Some(id),
+                    "Type",
+                    format!("unknown colour space type {other}"),
+                ))
+            }
+            None => {
+                return Err(invalid_resource(
+                    path,
+                    Some(id),
+                    "Type",
+                    "required value is missing".to_owned(),
+                ))
+            }
+        };
+        if let Some(bits) = entry.bits_per_component.as_deref() {
+            if !matches!(bits, "1" | "2" | "4" | "8" | "16") {
+                return Err(invalid_resource(
+                    path,
+                    Some(id),
+                    "BitsPerComponent",
+                    format!("invalid value {bits}"),
+                ));
+            }
+        }
+        self.insert(
+            id,
+            ResourceEntry::ColorSpace(ColorSpaceRecord {
+                kind,
+                palette: entry.palette.map(|palette| palette.colors),
+                declaration_path: path.as_str().to_owned(),
             }),
             path,
         )
@@ -583,12 +663,121 @@ impl ResourceCatalog {
             }
         }
 
+        let strict = self.strictness == crate::Strictness::Strict;
         let mut resolved = resolved.unwrap_or_default();
         for record in chain.into_iter().rev() {
             resolved.inherit(&record.values);
+            if let Some(color) = &record.fill_color {
+                resolved.fill_color = self
+                    .resolve_paint_color(color, strict)
+                    .map_err(|error| Error::InvalidResource {
+                        path: record.declaration_path.clone(),
+                        object_id: Some(record.id),
+                        field: "FillColor",
+                        message: error.to_string(),
+                    })?
+                    .or(resolved.fill_color);
+            }
+            if let Some(color) = &record.stroke_color {
+                resolved.stroke_color = self
+                    .resolve_paint_color(color, strict)
+                    .map_err(|error| Error::InvalidResource {
+                        path: record.declaration_path.clone(),
+                        object_id: Some(record.id),
+                        field: "StrokeColor",
+                        message: error.to_string(),
+                    })?
+                    .or(resolved.stroke_color);
+            }
             record.resolved.get_or_init(|| resolved.clone());
         }
         Ok(resolved)
+    }
+
+    /// Resolves one raw colour element to an RGB colour.
+    ///
+    /// `Value` channel counts select the colour space (one channel is GRAY,
+    /// three RGB, four CMYK) unless a `ColorSpace` reference names another
+    /// space. An `Index` selects a palette entry from the referenced space.
+    /// Both strictness modes follow ofdrw's defaults for missing references
+    /// (RGB space, default colour) except that strict mode rejects them.
+    pub(crate) fn resolve_paint_color(
+        &self,
+        color: &crate::raw::PaintColor,
+        strict: bool,
+    ) -> Result<Option<Color>> {
+        let declared = match &color.color_space {
+            Some(reference) => self
+                .color_space(reference, strict)?
+                .map(|record| (record.kind, record.palette.as_deref())),
+            None => None,
+        };
+        if let Some(value) = color.value.as_deref() {
+            let declared_space = declared.map(|(kind, _)| kind);
+            return Color::parse_in_space(value, color.alpha.as_deref(), declared_space, strict)
+                .map(Some);
+        }
+        let Some(index) = color.index.as_deref() else {
+            return missing_value_or_index(strict);
+        };
+        let index = index.parse::<usize>().map_err(|_| Error::InvalidValue {
+            field: "color index",
+            value: index.to_owned(),
+            path: None,
+        })?;
+        let invalid_index = |message: String| Error::InvalidValue {
+            field: "color index",
+            value: message,
+            path: None,
+        };
+        let Some((_, Some(palette))) = declared else {
+            return if strict {
+                Err(invalid_index(
+                    "Index requires a ColorSpace with a palette".to_owned(),
+                ))
+            } else {
+                Ok(Some(default_color(color.alpha.as_deref())))
+            };
+        };
+        match palette.get(index) {
+            Some(entry) => {
+                let space = declared.map(|(kind, _)| kind);
+                Color::parse_in_space(entry, color.alpha.as_deref(), space, strict).map(Some)
+            }
+            None if strict => Err(invalid_index(format!(
+                "palette has {} colours, Index {index} is out of range",
+                palette.len()
+            ))),
+            None => Ok(Some(default_color(color.alpha.as_deref()))),
+        }
+    }
+
+    fn color_space(&self, reference: &str, strict: bool) -> Result<Option<&ColorSpaceRecord>> {
+        let lookup = |id: u64| match self.entries.get(&id) {
+            Some(ResourceEntry::ColorSpace(record)) => Ok(Some(record)),
+            Some(other) => {
+                if strict {
+                    Err(kind_mismatch(id, ResourceKind::ColorSpace, other.kind()))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => {
+                if strict {
+                    Err(Error::UnknownResource { object_id: id })
+                } else {
+                    Ok(None)
+                }
+            }
+        };
+        reference
+            .parse::<u64>()
+            .map_err(|_| Error::InvalidValue {
+                field: "color space reference",
+                value: reference.to_owned(),
+                path: None,
+            })
+            .and_then(lookup)
     }
 
     fn insert(&mut self, id: u64, entry: ResourceEntry, path: &PackagePath) -> Result<()> {
@@ -616,6 +805,7 @@ impl ResourceEntry {
             Self::Font(_) => ResourceKind::Font,
             Self::Image(_) => ResourceKind::Image,
             Self::DrawParam(_) => ResourceKind::DrawParam,
+            Self::ColorSpace(_) => ResourceKind::ColorSpace,
         }
     }
 
@@ -624,6 +814,7 @@ impl ResourceEntry {
             Self::Font(font) => &font.declaration_path,
             Self::Image(image) => &image.declaration_path,
             Self::DrawParam(draw_param) => &draw_param.declaration_path,
+            Self::ColorSpace(color_space) => &color_space.declaration_path,
         }
     }
 }
@@ -642,6 +833,7 @@ fn preflight(
         Fonts,
         MultiMedias,
         DrawParams,
+        ColorSpaces,
         Other,
     }
 
@@ -677,12 +869,16 @@ fn preflight(
                     matches!(parent, Some(Marker::Res)) && name.local_name == "MultiMedias";
                 let is_draw_params =
                     matches!(parent, Some(Marker::Res)) && name.local_name == "DrawParams";
+                let is_color_spaces =
+                    matches!(parent, Some(Marker::Res)) && name.local_name == "ColorSpaces";
                 let is_resource = (matches!(parent, Some(Marker::Fonts))
                     && name.local_name == "Font")
                     || (matches!(parent, Some(Marker::MultiMedias))
                         && name.local_name == "MultiMedia")
                     || (matches!(parent, Some(Marker::DrawParams))
-                        && name.local_name == "DrawParam");
+                        && name.local_name == "DrawParam")
+                    || (matches!(parent, Some(Marker::ColorSpaces))
+                        && name.local_name == "ColorSpace");
                 if is_resource {
                     *total = total.checked_add(1).ok_or_else(|| {
                         Error::LimitExceeded("resource count overflow".to_owned())
@@ -702,6 +898,8 @@ fn preflight(
                     Marker::MultiMedias
                 } else if is_draw_params {
                     Marker::DrawParams
+                } else if is_color_spaces {
+                    Marker::ColorSpaces
                 } else {
                     Marker::Other
                 });
@@ -837,12 +1035,45 @@ fn parse_dash_pattern(
         .transpose()
 }
 
-fn parse_color(color: &crate::raw::PaintColor) -> std::result::Result<Color, String> {
-    let value = color
-        .value
-        .as_deref()
-        .ok_or_else(|| "required Value attribute is missing".to_owned())?;
-    Color::parse_rgb(value, color.alpha.as_deref()).map_err(|error| error.to_string())
+/// Resolves a colour that references no colour-space resource.
+///
+/// Kept separate from [`ResourceCatalog::resolve_paint_color`] so pages whose
+/// declared resource files are missing still resolve plain channel values,
+/// like they did before colour spaces existed (ofdrw's V4RideRight.ofd and
+/// h.ofd declare a PublicRes.xml their packages omit).
+pub(crate) fn resolve_plain_color(
+    color: &crate::raw::PaintColor,
+    strict: bool,
+) -> Result<Option<Color>> {
+    let Some(value) = color.value.as_deref() else {
+        return missing_value_or_index(strict);
+    };
+    Color::parse_in_space(value, color.alpha.as_deref(), None, strict).map(Some)
+}
+
+fn missing_value_or_index(strict: bool) -> Result<Option<Color>> {
+    // Neither Value nor Index: standard-defined default is all channels
+    // zero, but ofdrw's converters paint nothing for such elements, so
+    // lenient mode reports "no colour".
+    if strict {
+        Err(Error::InvalidValue {
+            field: "color",
+            value: "Value or Index is required".to_owned(),
+            path: None,
+        })
+    } else {
+        Ok(None)
+    }
+}
+
+fn default_color(alpha: Option<&str>) -> Color {
+    let alpha = alpha
+        .and_then(|alpha| alpha.parse::<u8>().ok())
+        .unwrap_or(255);
+    Color {
+        alpha,
+        ..Color::BLACK
+    }
 }
 
 fn parse_id(value: &str, path: &PackagePath) -> Result<u64> {
@@ -952,6 +1183,8 @@ mod tests {
                         line_width: Some(id as f64),
                         ..PaintParameters::default()
                     },
+                    fill_color: None,
+                    stroke_color: None,
                     declaration_path: "Doc_0/Res.xml".to_owned(),
                     resolved: OnceLock::new(),
                 }),

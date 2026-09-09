@@ -103,6 +103,8 @@ pub(crate) struct ResourceRoot {
     pub(crate) multi_medias: Option<MultiMedias>,
     #[serde(rename = "DrawParams")]
     pub(crate) draw_params: Option<DrawParams>,
+    #[serde(rename = "ColorSpaces")]
+    pub(crate) color_spaces: Option<ColorSpaces>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +173,30 @@ pub(crate) struct DrawParamEntry {
     pub(crate) fill_color: Option<PaintColor>,
     #[serde(rename = "StrokeColor")]
     pub(crate) stroke_color: Option<PaintColor>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ColorSpaces {
+    #[serde(rename = "ColorSpace", default)]
+    pub(crate) entries: Vec<ColorSpaceEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ColorSpaceEntry {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "Type")]
+    pub(crate) kind: Option<String>,
+    #[serde(rename = "BitsPerComponent")]
+    pub(crate) bits_per_component: Option<String>,
+    #[serde(rename = "Palette")]
+    pub(crate) palette: Option<Palette>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Palette {
+    #[serde(rename = "CV", default)]
+    pub(crate) colors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -484,4 +510,8 @@ pub(crate) struct PaintColor {
     pub(crate) value: Option<String>,
     #[serde(rename = "Alpha")]
     pub(crate) alpha: Option<String>,
+    #[serde(rename = "Index")]
+    pub(crate) index: Option<String>,
+    #[serde(rename = "ColorSpace")]
+    pub(crate) color_space: Option<String>,
 }

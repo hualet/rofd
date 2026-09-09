@@ -711,7 +711,7 @@ fn drawparam_unknown_relative_cycles_and_style_values_fail_lazily() {
 }
 
 #[test]
-fn drawparam_missing_color_value_stays_a_resource_error() {
+fn drawparam_color_without_value_tolerated_in_lenient_and_rejected_in_strict() {
     let object = r#"<ofd:TextObject ID="2" Boundary="0 0 9 9" Font="10" Size="2" DrawParam="20"><ofd:TextCode X="0" Y="0">A</ofd:TextCode></ofd:TextObject>"#;
     for (color, expected_field) in [
         ("<FillColor/>", "FillColor"),
@@ -720,7 +720,20 @@ fn drawparam_missing_color_value_stays_a_resource_error() {
         let catalog = font_catalog(&format!(
             "<DrawParams><DrawParam ID=\"20\">{color}</DrawParam></DrawParams>"
         ));
-        let error = page_result(object, &catalog, ResourceLimits::default()).unwrap_err();
+        // Lenient: the empty colour element paints nothing, like an object
+        // FillColor without Value, and the text keeps its default fill.
+        let document = package(object, &catalog, ResourceLimits::default());
+        assert!(document.page(0).is_ok());
+        // Strict: the reference stays a hard resource error.
+        let strict = package_with_options(
+            object,
+            &catalog,
+            LoadOptions {
+                strictness: rofd_core::Strictness::Strict,
+                ..LoadOptions::default()
+            },
+        );
+        let error = strict.page(0).unwrap_err();
         assert!(
             matches!(error, Error::InvalidResource { object_id: Some(20), field, ref path, .. } if field == expected_field && path.ends_with("Res.xml")),
             "expected {expected_field}, got {error:?}"

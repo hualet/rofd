@@ -595,6 +595,7 @@ impl ConversionContext<'_> {
         )?;
         let stroke = if stroke_enabled {
             effective_paint_color(
+                self.document,
                 path.stroke_color.as_ref(),
                 parameters.stroke_color,
                 Color::BLACK,
@@ -609,6 +610,7 @@ impl ConversionContext<'_> {
         };
         let fill = if fill_enabled {
             effective_paint_color(
+                self.document,
                 path.fill_color.as_ref(),
                 parameters.fill_color,
                 Color {
@@ -720,6 +722,7 @@ impl ConversionContext<'_> {
         let strict = self.document.strictness() == crate::Strictness::Strict;
         let stroke = if stroke_enabled {
             effective_paint_color(
+                self.document,
                 text.stroke_color.as_ref(),
                 parameters.stroke_color,
                 Color::BLACK,
@@ -734,6 +737,7 @@ impl ConversionContext<'_> {
         };
         let fill = if fill_enabled {
             effective_paint_color(
+                self.document,
                 text.fill_color.as_ref(),
                 parameters.fill_color,
                 Color::BLACK,
@@ -1325,6 +1329,7 @@ fn parse_object_alpha(
 
 #[allow(clippy::too_many_arguments)]
 fn effective_paint_color(
+    document: &crate::Document,
     local: Option<&raw::PaintColor>,
     inherited: Option<Color>,
     default: Color,
@@ -1336,24 +1341,25 @@ fn effective_paint_color(
 ) -> Result<Option<Color>> {
     let mut color = match local {
         Some(color) => {
-            let value = match color.value.as_deref() {
-                Some(value) => value,
-                None if strict => {
+            if color.value.is_none() && color.index.is_none() {
+                if strict {
                     required_object_field(None, field, path, object_id)?;
                     unreachable!("required_object_field rejects None");
                 }
                 // Lenient: ofdrw paints nothing for a color element without a
                 // Value attribute (gradient-only FillColor in ofdrw's
                 // converter/intro-数科.ofd takes this path in OFD2IMG too).
-                None => return Ok(None),
-            };
-            let parse = if strict {
-                Color::parse_rgb
-            } else {
-                Color::parse_rgb_compat
-            };
-            parse(value, color.alpha.as_deref())
+                return Ok(None);
+            }
+            // A colour element that resolves to "no colour" paints nothing,
+            // like the missing-Value case above.
+            match document
+                .resolve_paint_color(color, strict)
                 .map_err(|error| object_error(path, object_id, field, error.to_string()))?
+            {
+                Some(color) => color,
+                None => return Ok(None),
+            }
         }
         None => inherited.unwrap_or(default),
     };

@@ -706,6 +706,20 @@ impl Document {
         self.resource_catalog()?.draw_param(id)
     }
 
+    pub(crate) fn resolve_paint_color(
+        &self,
+        color: &raw::PaintColor,
+        strict: bool,
+    ) -> Result<Option<crate::Color>> {
+        // Colours that reference no colour-space resource never touch the
+        // catalog; loading it could fail for pages whose declared resource
+        // files are absent from the package.
+        if color.color_space.is_none() && color.index.is_none() {
+            return crate::resources::resolve_plain_color(color, strict);
+        }
+        self.resource_catalog()?.resolve_paint_color(color, strict)
+    }
+
     fn resolve_template(
         &self,
         id: u64,
