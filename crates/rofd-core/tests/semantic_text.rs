@@ -1,6 +1,8 @@
 mod support;
 
-use rofd_core::{Document, Error, LoadOptions, Rect, TextCharFlags, TextGeometryPrecision};
+use rofd_core::{
+    Document, Error, LoadOptions, Rect, ResourceLimits, TextCharFlags, TextGeometryPrecision,
+};
 
 const FONT_CATALOG: &str = r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Fonts><ofd:Font ID="10" FontName="Fixture"/></ofd:Fonts></ofd:Res>"#;
 
@@ -9,6 +11,16 @@ fn document_with_page(
     common: &str,
     tail: &str,
     entries: &[(&str, &[u8])],
+) -> Document {
+    document_with_page_options(page_xml, common, tail, entries, LoadOptions::default())
+}
+
+fn document_with_page_options(
+    page_xml: &str,
+    common: &str,
+    tail: &str,
+    entries: &[(&str, &[u8])],
+    options: LoadOptions,
 ) -> Document {
     let document_xml = format!(
         r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData>
@@ -22,7 +34,7 @@ fn document_with_page(
         .collect::<Vec<_>>();
     Document::from_bytes(
         support::ofd_with_document_page_and_entries(&document_xml, page_xml, &entries),
-        LoadOptions::default(),
+        options,
     )
     .unwrap()
 }
@@ -386,5 +398,102 @@ fn collapsed_character_geometry_fails_repeatedly_without_cache_publication() {
             ),
             "{error:?}"
         );
+    }
+}
+
+fn page_with_aggregate_semantic_text(limits: ResourceLimits) -> rofd_core::Page {
+    let page_xml = format!(
+        r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Content><ofd:Layer ID="1">{}</ofd:Layer></ofd:Content></ofd:Page>"#,
+        text_object(2, "A")
+    );
+    let annotations = r#"<ofd:Annotations xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Page PageID="900"><ofd:FileLoc>Annots/Page_0/Annotation.xml</ofd:FileLoc></ofd:Page></ofd:Annotations>"#;
+    let page_annotations = format!(
+        r#"<ofd:PageAnnot xmlns:ofd="http://www.ofdspec.org/2016">
+<ofd:Annot ID="10" Type="Stamp"><ofd:Appearance Boundary="0 10 20 8">{}</ofd:Appearance></ofd:Annot>
+<ofd:Annot ID="20" Type="Stamp"><ofd:Appearance Boundary="0 20 20 8">{}</ofd:Appearance></ofd:Annot>
+<ofd:Annot ID="30" Type="Stamp" Visible="false"><ofd:Appearance Boundary="0 30 20 8">{}</ofd:Appearance></ofd:Annot>
+</ofd:PageAnnot>"#,
+        text_object(11, "B"),
+        text_object(21, "C"),
+        text_object(31, "D")
+    );
+    document_with_page_options(
+        &page_xml,
+        "",
+        "<ofd:Annotations>Annotations.xml</ofd:Annotations>",
+        &[
+            ("Doc_0/Annotations.xml", annotations.as_bytes()),
+            (
+                "Doc_0/Annots/Page_0/Annotation.xml",
+                page_annotations.as_bytes(),
+            ),
+        ],
+        LoadOptions {
+            limits,
+            ..LoadOptions::default()
+        },
+    )
+    .page(0)
+    .unwrap()
+}
+
+#[test]
+fn semantic_source_scalar_budget_is_aggregate_across_visible_page_content() {
+    let exact_limits = ResourceLimits {
+        max_text_characters_per_page: 3,
+        ..ResourceLimits::default()
+    };
+    assert_eq!(
+        page_with_aggregate_semantic_text(exact_limits)
+            .text()
+            .unwrap()
+            .as_str(),
+        "A\nB\nC"
+    );
+
+    let exceeded_limits = ResourceLimits {
+        max_text_characters_per_page: 2,
+        ..ResourceLimits::default()
+    };
+    let page = page_with_aggregate_semantic_text(exceeded_limits);
+    let clone = page.clone();
+    for handle in [&page, &clone, &page] {
+        assert!(matches!(
+            handle.text(),
+            Err(Error::LimitExceeded(message))
+                if message == "semantic page source character limit exceeded: 3 > 2"
+        ));
+    }
+}
+
+#[test]
+fn semantic_metadata_budget_counts_synthesized_separators_at_exact_boundary() {
+    let exact_limits = ResourceLimits {
+        max_text_characters_per_page: 3,
+        max_text_expansion_entries: 5,
+        ..ResourceLimits::default()
+    };
+    assert_eq!(
+        page_with_aggregate_semantic_text(exact_limits)
+            .text()
+            .unwrap()
+            .characters()
+            .len(),
+        5
+    );
+
+    let exceeded_limits = ResourceLimits {
+        max_text_characters_per_page: 3,
+        max_text_expansion_entries: 4,
+        ..ResourceLimits::default()
+    };
+    let page = page_with_aggregate_semantic_text(exceeded_limits);
+    let clone = page.clone();
+    for handle in [&page, &clone, &page] {
+        assert!(matches!(
+            handle.text(),
+            Err(Error::LimitExceeded(message))
+                if message == "semantic text metadata entry limit exceeded: 5 > 4"
+        ));
     }
 }

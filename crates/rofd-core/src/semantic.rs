@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{Error, PageObject, Point, Rect, Result, TextObject, Transform};
+use crate::{Error, PageObject, Point, Rect, ResourceLimits, Result, TextObject, Transform};
 
 /// Describes the fidelity of a character's reported geometry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,7 +92,7 @@ impl PageText {
 }
 
 pub(crate) fn build_page_text(page: &crate::Page) -> Result<PageText> {
-    let mut builder = TextBuilder::default();
+    let mut builder = TextBuilder::new(page.resource_limits());
     for layer in page.layers() {
         builder.objects(layer.objects(), Transform::IDENTITY)?;
     }
@@ -104,12 +104,25 @@ pub(crate) fn build_page_text(page: &crate::Page) -> Result<PageText> {
     Ok(builder.text)
 }
 
-#[derive(Default)]
 struct TextBuilder {
     text: PageText,
+    source_characters: usize,
+    metadata_entries: usize,
+    max_source_characters: usize,
+    max_metadata_entries: usize,
 }
 
 impl TextBuilder {
+    fn new(limits: &ResourceLimits) -> Self {
+        Self {
+            text: PageText::default(),
+            source_characters: 0,
+            metadata_entries: 0,
+            max_source_characters: limits.max_text_characters_per_page,
+            max_metadata_entries: limits.max_text_expansion_entries,
+        }
+    }
+
     fn objects(&mut self, objects: &[PageObject], parent: Transform) -> Result<()> {
         for object in objects {
             match object {
@@ -139,7 +152,7 @@ impl TextBuilder {
             return Ok(());
         }
         if !self.text.text.is_empty() {
-            self.push('\n', None, TextCharFlags::SYNTHESIZED_SEPARATOR, None);
+            self.push_separator()?;
         }
         let size = object.font_size();
         for run in object.runs() {
@@ -170,14 +183,48 @@ impl TextBuilder {
                 } else {
                     TextCharFlags::default()
                 };
-                self.push(character, Some(rect), flags, Some(object.object_id()));
+                self.push_source(character, rect, flags, object.object_id())?;
                 (x, y) = (next_x, next_y);
             }
         }
         Ok(())
     }
 
-    fn push(
+    fn push_separator(&mut self) -> Result<()> {
+        let metadata_entries = checked_increment(
+            self.metadata_entries,
+            self.max_metadata_entries,
+            "semantic text metadata entry",
+        )?;
+        self.metadata_entries = metadata_entries;
+        self.push_unchecked('\n', None, TextCharFlags::SYNTHESIZED_SEPARATOR, None);
+        Ok(())
+    }
+
+    fn push_source(
+        &mut self,
+        character: char,
+        rect_mm: Rect,
+        flags: TextCharFlags,
+        object_id: u64,
+    ) -> Result<()> {
+        let source_characters = checked_increment(
+            self.source_characters,
+            self.max_source_characters,
+            "semantic page source character",
+        )?;
+        let metadata_entries = checked_increment(
+            self.metadata_entries,
+            self.max_metadata_entries,
+            "semantic text metadata entry",
+        )?;
+        self.source_characters = source_characters;
+        self.metadata_entries = metadata_entries;
+        self.push_unchecked(character, Some(rect_mm), flags, Some(object_id));
+        Ok(())
+    }
+
+    fn push_unchecked(
         &mut self,
         character: char,
         rect_mm: Option<Rect>,
@@ -194,6 +241,18 @@ impl TextBuilder {
             object_id,
         });
     }
+}
+
+fn checked_increment(current: usize, limit: usize, label: &'static str) -> Result<usize> {
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| Error::LimitExceeded(format!("{label} count overflow")))?;
+    if next > limit {
+        return Err(Error::LimitExceeded(format!(
+            "{label} limit exceeded: {next} > {limit}"
+        )));
+    }
+    Ok(next)
 }
 
 fn translation(boundary: Rect) -> Result<Transform> {
