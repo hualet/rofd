@@ -48,7 +48,12 @@ fn exposes_validated_image_references_transform_alpha_clips_and_border_presence(
         Transform::new(1.0, 0.0, 0.0, 1.0, 5.0, 6.0).unwrap()
     );
     assert_eq!(image.clips().len(), 1);
-    assert!(image.has_border());
+    assert!(image.border().is_some());
+    // A bare <Border/> keeps the standard defaults: 0.353 mm black frame.
+    let border = image.border().unwrap();
+    assert_eq!(border.line_width(), 0.353);
+    assert_eq!(border.color(), rofd_core::Color::BLACK);
+    assert_eq!(border.horizontal_corner_radius(), 0.0);
 }
 
 #[test]
@@ -83,7 +88,7 @@ fn image_defaults_do_not_read_encoded_assets_during_page_validation() {
     assert!(image.clips().is_empty());
     assert_eq!(image.substitution_id(), None);
     assert_eq!(image.image_mask_id(), None);
-    assert!(!image.has_border());
+    assert!(image.border().is_none());
 }
 
 #[test]

@@ -491,7 +491,24 @@ pub(crate) struct ImageObject {
     #[serde(rename = "Clips")]
     pub(crate) clips: Option<Clips>,
     #[serde(rename = "Border")]
-    pub(crate) border: Option<String>,
+    pub(crate) border: Option<Border>,
+}
+
+/// Image border settings (GB/T 33190-2016 table 43).
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct Border {
+    #[serde(rename = "LineWidth")]
+    pub(crate) line_width: Option<String>,
+    #[serde(rename = "HorizonalCornerRadius")]
+    pub(crate) horizontal_corner_radius: Option<String>,
+    #[serde(rename = "VerticalCornerRadius")]
+    pub(crate) vertical_corner_radius: Option<String>,
+    #[serde(rename = "DashOffset")]
+    pub(crate) dash_offset: Option<String>,
+    #[serde(rename = "DashPattern")]
+    pub(crate) dash_pattern: Option<String>,
+    #[serde(rename = "BorderColor")]
+    pub(crate) border_color: Option<PaintColor>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

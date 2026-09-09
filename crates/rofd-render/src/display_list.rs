@@ -130,9 +130,17 @@ impl DisplayList {
     /// recursively flattened in source order; their depth is bounded by
     /// `rofd-core`'s page object validation limit.
     pub fn from_page(page: &Page) -> Result<Self> {
+        Self::from_page_with_options(page, false)
+    }
+
+    /// Lowers a page with the renderer's image preferences; see
+    /// [`DisplayListBuilder::prefer_image_substitution`].
+    pub fn from_page_with_options(page: &Page, prefer_image_substitution: bool) -> Result<Self> {
         let resolver = SystemFontResolver::empty(Vec::new(), page.resource_limits().max_font_bytes);
         let decoder = ImageDecoder::default();
-        DisplayListBuilder::new(&resolver, &decoder).build(page)
+        DisplayListBuilder::new(&resolver, &decoder)
+            .prefer_image_substitution(prefer_image_substitution)
+            .build(page)
     }
 
     /// Returns display commands in execution order.
@@ -161,6 +169,7 @@ pub struct DisplayListBuilder<'a> {
     font_resolver: &'a dyn FontResolver,
     image_decoder: &'a ImageDecoder,
     max_decoded_image_bytes: Option<u64>,
+    prefer_image_substitution: bool,
 }
 
 struct DecodedImageBudget {
@@ -198,7 +207,17 @@ impl<'a> DisplayListBuilder<'a> {
             font_resolver,
             image_decoder,
             max_decoded_image_bytes: None,
+            prefer_image_substitution: false,
         }
+    }
+
+    /// Prefers an image object's substitution image over its primary image.
+    ///
+    /// GB/T 33190-2016 declares substitution images for high-resolution
+    /// output without a selection rule; this switch lets a caller opt in.
+    pub fn prefer_image_substitution(mut self, prefer: bool) -> Self {
+        self.prefer_image_substitution = prefer;
+        self
     }
 
     /// Sets the aggregate decoded-image bytes one display list may retain.
@@ -248,6 +267,67 @@ impl<'a> DisplayListBuilder<'a> {
             self.lower_annotation(&mut display_list, page, &annotation, &mut image_budget)?;
         }
         Ok(display_list)
+    }
+
+    /// Composites an image mask onto the decoded image.
+    ///
+    /// The mask must have the same dimensions as the image; mask pixels
+    /// darker than mid-grey hide the underlying image pixel, matching the
+    /// bi-level mask intent of GB/T 33190-2016 table 43. A mask that cannot
+    /// be decoded or does not match is reported and skipped, and the image
+    /// draws unmasked.
+    fn apply_image_mask(
+        &self,
+        display_list: &mut DisplayList,
+        page: &Page,
+        image: &ImageObject,
+        decoded: DecodedImage,
+        source: LayerSource,
+        image_budget: &mut DecodedImageBudget,
+    ) -> Result<DecodedImage> {
+        let Some(mask_id) = image.image_mask_id() else {
+            return Ok(decoded);
+        };
+        let incompatible = |display_list: &mut DisplayList| {
+            display_list.push_diagnostic(
+                image.object_id(),
+                source,
+                RenderDiagnosticKind::ImageMaskIncompatible {
+                    resource_id: mask_id,
+                },
+            );
+        };
+        let mask = match page.image_resource(mask_id) {
+            Ok(mask) => mask,
+            Err(_) => {
+                incompatible(display_list);
+                return Ok(decoded);
+            }
+        };
+        let mask = match self.image_decoder.decode(&mask, page.resource_limits()) {
+            Ok(mask) => mask,
+            Err(_) => {
+                incompatible(display_list);
+                return Ok(decoded);
+            }
+        };
+        image_budget.account(&mask)?;
+        if mask.dimensions() != decoded.dimensions() {
+            incompatible(display_list);
+            return Ok(decoded);
+        }
+        let mut rgba = decoded.rgba().to_vec();
+        for (pixel, mask_pixel) in rgba.chunks_exact_mut(4).zip(mask.rgba().chunks_exact(4)) {
+            let luma =
+                (u16::from(mask_pixel[0]) + u16::from(mask_pixel[1]) + u16::from(mask_pixel[2]))
+                    / 3;
+            if luma < 128 {
+                pixel[3] = 0;
+            }
+        }
+        let masked = DecodedImage::from_parts(&decoded, rgba)?;
+        image_budget.account(&masked)?;
+        Ok(masked)
     }
 
     /// Lowers one annotation appearance at its boundary, like a composite.
@@ -339,7 +419,14 @@ impl<'a> DisplayListBuilder<'a> {
                     );
                     return Ok(());
                 }
-                let resource = match page.image_resource(image.resource_id()) {
+                let selected_resource_id = if self.prefer_image_substitution {
+                    image
+                        .substitution_id()
+                        .unwrap_or_else(|| image.resource_id())
+                } else {
+                    image.resource_id()
+                };
+                let resource = match page.image_resource(selected_resource_id) {
                     Ok(resource) => resource,
                     // ofdrw logs the lookup failure and draws the rest of the
                     // page (its containsJPEG.ofd reference renders the images
@@ -350,7 +437,7 @@ impl<'a> DisplayListBuilder<'a> {
                             image.object_id(),
                             source,
                             RenderDiagnosticKind::ImageResourceMissing {
-                                resource_id: image.resource_id(),
+                                resource_id: selected_resource_id,
                             },
                         );
                         return Ok(());
@@ -358,7 +445,7 @@ impl<'a> DisplayListBuilder<'a> {
                     Err(source) => {
                         return Err(Error::ObjectResource {
                             object_id: image.object_id(),
-                            resource_id: image.resource_id(),
+                            resource_id: selected_resource_id,
                             kind: ResourceKind::Image,
                             source,
                         });
@@ -376,7 +463,7 @@ impl<'a> DisplayListBuilder<'a> {
                             image.object_id(),
                             source,
                             RenderDiagnosticKind::ImageFormatUnsupported {
-                                resource_id: image.resource_id(),
+                                resource_id: selected_resource_id,
                             },
                         );
                         return Ok(());
@@ -384,7 +471,7 @@ impl<'a> DisplayListBuilder<'a> {
                     Err(source_error) => {
                         return Err(Error::ObjectResourceProcessing {
                             object_id: image.object_id(),
-                            resource_id: image.resource_id(),
+                            resource_id: selected_resource_id,
                             kind: ResourceKind::Image,
                             asset_path: resource.asset_path().to_owned(),
                             source: Box::new(source_error),
@@ -392,6 +479,14 @@ impl<'a> DisplayListBuilder<'a> {
                     }
                 };
                 image_budget.account(&decoded)?;
+                let decoded = self.apply_image_mask(
+                    display_list,
+                    page,
+                    image,
+                    decoded,
+                    source,
+                    image_budget,
+                )?;
                 display_list.lower_image(image, decoded, source)
             }
             PageObject::Group(group) => {
@@ -519,27 +614,7 @@ impl DisplayList {
         let boundary = image.boundary();
         let (translation, object_to_page) =
             object_transforms(image.object_id(), boundary, image.transform())?;
-        if let Some(resource_id) = image.substitution_id() {
-            self.push_diagnostic(
-                image.object_id(),
-                source,
-                RenderDiagnosticKind::ImageSubstitutionUnsupported { resource_id },
-            );
-        }
-        if let Some(resource_id) = image.image_mask_id() {
-            self.push_diagnostic(
-                image.object_id(),
-                source,
-                RenderDiagnosticKind::ImageMaskUnsupported { resource_id },
-            );
-        }
-        if image.has_border() {
-            self.push_diagnostic(
-                image.object_id(),
-                source,
-                RenderDiagnosticKind::ImageBorderUnsupported,
-            );
-        }
+        let _ = source;
         self.push_command(Command::Save);
         self.lower_clips(
             image.object_id(),
@@ -554,8 +629,45 @@ impl DisplayList {
             width: 1.0,
             height: 1.0,
         });
+        self.lower_image_border(image, boundary);
         self.push_command(Command::Restore);
         Ok(())
+    }
+
+    /// Strokes the declared image border around the local unit square.
+    ///
+    /// Corner radii are normalized into the 1x1 image-local space; a zero
+    /// line width suppresses the border, as the standard specifies.
+    fn lower_image_border(&mut self, image: &ImageObject, boundary: rofd_core::Rect) {
+        let Some(border) = image.border() else {
+            return;
+        };
+        if border.line_width() <= 0.0 || boundary.width <= 0.0 || boundary.height <= 0.0 {
+            return;
+        }
+        let rx = (border.horizontal_corner_radius() / boundary.width).min(0.5);
+        let ry = (border.vertical_corner_radius() / boundary.height).min(0.5);
+        let path = if rx <= 0.0 || ry <= 0.0 {
+            PathData::parse("M 0 0 L 1 0 L 1 1 L 0 1 C")
+        } else {
+            PathData::parse(&format!(
+                "M {rx} 0 L {one_minus_rx} 0 A {rx} {ry} 0 0 1 1 {ry} L 1 {one_minus_ry} A {rx} {ry} 0 0 1 {one_minus_rx} 1 L {rx} 1 A {rx} {ry} 0 0 1 0 {one_minus_ry} L 0 {ry} A {rx} {ry} 0 0 1 {rx} 0 C",
+                one_minus_rx = 1.0 - rx,
+                one_minus_ry = 1.0 - ry,
+            ))
+        }
+        .expect("generated border path is valid");
+        self.push_command(Command::SetStroke(Some(border.color())));
+        self.push_command(Command::SetFill(None));
+        self.push_command(Command::SetLineWidth(border.line_width()));
+        self.push_command(Command::SetLineJoin(border.stroke_style().line_join()));
+        self.push_command(Command::SetLineCap(border.stroke_style().line_cap()));
+        self.push_command(Command::SetMiterLimit(border.stroke_style().miter_limit()));
+        self.push_command(Command::SetDash {
+            offset: border.stroke_style().dash_offset(),
+            pattern: border.stroke_style().dash_pattern().to_vec(),
+        });
+        self.push_command(Command::DrawPath(path));
     }
 
     fn push_stroke_style(&mut self, style: &StrokeStyle) {
@@ -725,18 +837,12 @@ pub enum RenderDiagnosticKind {
         /// Whether a visible font replacement glyph was used.
         used_visible_replacement: bool,
     },
-    /// An image substitution reference is retained but not composited yet.
-    ImageSubstitutionUnsupported {
-        /// Referenced substitution image resource.
-        resource_id: u64,
-    },
-    /// An image-mask reference is retained but not composited yet.
-    ImageMaskUnsupported {
+    /// An image mask could not be decoded or does not match the masked
+    /// image's dimensions; the image draws unmasked.
+    ImageMaskIncompatible {
         /// Referenced mask image resource.
         resource_id: u64,
     },
-    /// An explicitly declared image border is retained but not drawn yet.
-    ImageBorderUnsupported,
     /// The object transform is singular; the object is invisible and skipped.
     SingularTransform,
     /// The referenced image resource is missing from the package; the object
@@ -811,13 +917,9 @@ fn diagnostic_message(kind: &RenderDiagnosticKind) -> String {
         } => format!(
             "missing glyph for {character:?}; visible replacement: {used_visible_replacement}"
         ),
-        RenderDiagnosticKind::ImageSubstitutionUnsupported { resource_id } => {
-            format!("image substitution resource {resource_id} is not composited")
+        RenderDiagnosticKind::ImageMaskIncompatible { resource_id } => {
+            format!("image mask resource {resource_id} is not applicable; image draws unmasked")
         }
-        RenderDiagnosticKind::ImageMaskUnsupported { resource_id } => {
-            format!("image mask resource {resource_id} is not composited")
-        }
-        RenderDiagnosticKind::ImageBorderUnsupported => "image border is not drawn".to_owned(),
         RenderDiagnosticKind::SingularTransform => {
             "object transform is singular; object skipped".to_owned()
         }

@@ -1273,6 +1273,10 @@ impl ConversionContext<'_> {
         let alpha = parse_object_alpha(image.alpha.as_deref(), self.path, object_id, "Alpha")?;
         let _ = self.resolve_draw_param(image.draw_param.as_deref(), object_id)?;
         let clips = self.convert_clips(image.clips, object_id)?;
+        let border = image
+            .border
+            .map(|border| self.convert_image_border(border, object_id))
+            .transpose()?;
         Ok(ImageObject {
             object_id,
             boundary,
@@ -1283,8 +1287,89 @@ impl ConversionContext<'_> {
             clips,
             substitution_id,
             image_mask_id,
-            has_border: image.border.is_some(),
+            border,
         })
+    }
+
+    fn convert_image_border(
+        &self,
+        border: raw::Border,
+        object_id: u64,
+    ) -> Result<crate::ImageBorder> {
+        let strict = self.document.strictness() == crate::Strictness::Strict;
+        let line_width = match border.line_width.as_deref() {
+            None => 0.353,
+            Some(value) => parse_finite_number(value, "Border.LineWidth", self.path, object_id)?,
+        };
+        if line_width < 0.0 {
+            return Err(object_error(
+                self.path,
+                object_id,
+                "Border.LineWidth",
+                "must not be negative".to_owned(),
+            ));
+        }
+        let corner = |value: Option<&str>, field: &'static str| -> Result<f64> {
+            match value {
+                None => Ok(0.0),
+                Some(value) => {
+                    let parsed = parse_finite_number(value, field, self.path, object_id)?;
+                    if parsed < 0.0 {
+                        return Err(object_error(
+                            self.path,
+                            object_id,
+                            field,
+                            "must not be negative".to_owned(),
+                        ));
+                    }
+                    Ok(parsed)
+                }
+            }
+        };
+        let horizontal_corner_radius = corner(
+            border.horizontal_corner_radius.as_deref(),
+            "Border.HorizonalCornerRadius",
+        )?;
+        let vertical_corner_radius = corner(
+            border.vertical_corner_radius.as_deref(),
+            "Border.VerticalCornerRadius",
+        )?;
+        let mut parameters = crate::paint::PaintParameters::default();
+        apply_local_stroke_style(
+            &mut parameters,
+            None,
+            None,
+            None,
+            border.dash_offset.as_deref(),
+            border.dash_pattern.as_deref(),
+            None,
+            self.path,
+            object_id,
+        )?;
+        let color = match border.border_color.as_ref() {
+            Some(color) => {
+                match crate::content::effective_border_color(
+                    self.document,
+                    color,
+                    strict,
+                    self.path,
+                    object_id,
+                )? {
+                    Some(color) => color,
+                    // A BorderColor without Value paints nothing, but the
+                    // border rectangle keeps its default black like ofdrw.
+                    None => Color::BLACK,
+                }
+            }
+            None => Color::BLACK,
+        };
+        Ok(crate::ImageBorder::new(
+            line_width,
+            horizontal_corner_radius,
+            vertical_corner_radius,
+            parameters.stroke_style(),
+            color,
+        ))
     }
 
     fn optional_image_id(
@@ -1498,6 +1583,29 @@ impl ConversionContext<'_> {
             fill_rule,
         })
     }
+}
+
+fn effective_border_color(
+    document: &crate::Document,
+    local: &raw::PaintColor,
+    strict: bool,
+    path: &str,
+    object_id: u64,
+) -> Result<Option<Color>> {
+    if local.value.is_none() && local.index.is_none() {
+        if strict {
+            return Err(object_error(
+                path,
+                object_id,
+                "BorderColor",
+                "required attribute is missing".to_owned(),
+            ));
+        }
+        return Ok(None);
+    }
+    document
+        .resolve_paint_color(local, strict)
+        .map_err(|error| object_error(path, object_id, "BorderColor", error.to_string()))
 }
 
 fn glyph_range_overlaps(ranges: &BTreeMap<usize, usize>, start: usize, end: usize) -> bool {

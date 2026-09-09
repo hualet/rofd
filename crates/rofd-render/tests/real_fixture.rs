@@ -98,12 +98,7 @@ fn repository_invoice_fixture_lowers_and_renders_text_images_and_paths() {
     assert!(display_list
         .diagnostics()
         .iter()
-        .all(|diagnostic| !matches!(
-            diagnostic.kind(),
-            RenderDiagnosticKind::MissingGlyph { .. }
-                | RenderDiagnosticKind::ImageSubstitutionUnsupported { .. }
-                | RenderDiagnosticKind::ImageMaskUnsupported { .. }
-        )));
+        .all(|diagnostic| !matches!(diagnostic.kind(), RenderDiagnosticKind::MissingGlyph { .. })));
 
     let options = RenderOptions {
         dpi: 254.0,

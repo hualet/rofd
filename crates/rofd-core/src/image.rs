@@ -1,4 +1,61 @@
-use crate::{Clip, ImageFormat, Rect, Transform};
+use crate::paint::StrokeStyle;
+use crate::{Clip, Color, ImageFormat, Rect, Transform};
+
+/// A validated image border (GB/T 33190-2016 table 43).
+///
+/// The border runs along the image boundary in the object's local
+/// coordinate system, so a non-uniform CTM scales it with the image.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageBorder {
+    line_width: f64,
+    horizontal_corner_radius: f64,
+    vertical_corner_radius: f64,
+    stroke: StrokeStyle,
+    color: Color,
+}
+
+impl ImageBorder {
+    pub(crate) fn new(
+        line_width: f64,
+        horizontal_corner_radius: f64,
+        vertical_corner_radius: f64,
+        stroke: StrokeStyle,
+        color: Color,
+    ) -> Self {
+        Self {
+            line_width,
+            horizontal_corner_radius,
+            vertical_corner_radius,
+            stroke,
+            color,
+        }
+    }
+
+    /// Returns the border line width in millimetres; zero suppresses drawing.
+    pub fn line_width(&self) -> f64 {
+        self.line_width
+    }
+
+    /// Returns the horizontal corner radius in millimetres.
+    pub fn horizontal_corner_radius(&self) -> f64 {
+        self.horizontal_corner_radius
+    }
+
+    /// Returns the vertical corner radius in millimetres.
+    pub fn vertical_corner_radius(&self) -> f64 {
+        self.vertical_corner_radius
+    }
+
+    /// Returns the effective stroke geometry, including dash style.
+    pub fn stroke_style(&self) -> &StrokeStyle {
+        &self.stroke
+    }
+
+    /// Returns the border colour; the standard default is black.
+    pub fn color(&self) -> Color {
+        self.color
+    }
+}
 
 /// An immutable validated OFD raster-image object.
 #[derive(Clone, Debug, PartialEq)]
@@ -12,7 +69,7 @@ pub struct ImageObject {
     pub(crate) clips: Vec<Clip>,
     pub(crate) substitution_id: Option<u64>,
     pub(crate) image_mask_id: Option<u64>,
-    pub(crate) has_border: bool,
+    pub(crate) border: Option<ImageBorder>,
 }
 
 impl ImageObject {
@@ -52,8 +109,8 @@ impl ImageObject {
     pub fn image_mask_id(&self) -> Option<u64> {
         self.image_mask_id
     }
-    /// Returns whether an OFD Border child was explicitly present.
-    pub fn has_border(&self) -> bool {
-        self.has_border
+    /// Returns the validated image border, when one was declared.
+    pub fn border(&self) -> Option<&ImageBorder> {
+        self.border.as_ref()
     }
 }

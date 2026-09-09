@@ -88,6 +88,31 @@ impl DecodedImage {
         u64::try_from(self.rgba.len()).unwrap_or(u64::MAX)
     }
 
+    /// Builds an image from already-composed RGBA pixels, keeping the
+    /// identity and resource attribution of the source it derives from.
+    pub(crate) fn from_parts(source: &DecodedImage, rgba: Vec<u8>) -> Result<Self> {
+        let stride = usize::try_from(u64::from(source.width) * 4)
+            .ok()
+            .filter(|stride| {
+                stride
+                    .checked_mul(source.height as usize)
+                    .is_some_and(|total| total == rgba.len())
+            })
+            .ok_or_else(|| Error::ImageDecode {
+                resource_id: source.resource_id(),
+                path: String::new(),
+                message: "composed image size overflow".to_owned(),
+            })?;
+        Ok(Self {
+            identity: source.identity.clone(),
+            resource_id: source.resource_id,
+            width: source.width,
+            height: source.height,
+            stride,
+            rgba: Arc::from(rgba),
+        })
+    }
+
     pub(crate) fn allocation_id(&self) -> usize {
         self.rgba.as_ptr() as usize
     }
@@ -625,6 +650,7 @@ fn decode_pixels(
     limits: &ResourceLimits,
     format: SourceFormat,
 ) -> Result<DecodedImage> {
+    #[cfg(feature = "jbig2")]
     if let SourceFormat::Jbig2 = format {
         return decode_jbig2_pixels(resource, limits);
     }
@@ -673,6 +699,7 @@ fn decode_pixels(
 /// Decodes one standalone JBIG2 stream and applies the same dimension and
 /// budget validation as the `image`-crate path, after decoding because page
 /// dimensions only become known then.
+#[cfg(feature = "jbig2")]
 fn decode_jbig2_pixels(resource: &ImageResource, limits: &ResourceLimits) -> Result<DecodedImage> {
     let decoded = crate::jbig2::decode_standalone(resource.encoded_bytes())
         .map_err(|message| decode_error(resource, message))?;

@@ -25,7 +25,7 @@ pub use content::{
 pub use document::{Document, Metadata, Page, Warning, WarningCode};
 pub use error::{Error, Result};
 pub use geometry::{Point, Rect, Transform};
-pub use image::ImageObject;
+pub use image::{ImageBorder, ImageObject};
 pub use options::{LoadOptions, ResourceLimits, Strictness};
 pub use paint::{Color, LineCap, LineJoin, StrokeStyle};
 pub use path_data::{PathCommand, PathData};

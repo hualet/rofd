@@ -12,6 +12,7 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 
 const FONT: &[u8] = include_bytes!("fixtures/fonts/phase3-subset.ttf");
 const PNG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgba.png");
+const MASK_PNG: &[u8] = include_bytes!("fixtures/images/checker-mask.png");
 
 fn document(page: &str, resources: &str, assets: &[(&str, &[u8])]) -> Document {
     let files = [
@@ -263,18 +264,23 @@ fn configured_font_fallback_is_promoted_to_a_source_aware_render_diagnostic() {
 
 #[test]
 fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics() {
-    let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:TextObject ID="5" Boundary="0 0 20 10" Font="10" Size="4"><ofd:TextCode X="0" Y="0">🦄</ofd:TextCode></ofd:TextObject><ofd:ImageObject ID="6" Boundary="0 10 6 4" ResourceID="20" Substitution="21" ImageMask="21"><ofd:Border LineWidth="1"/></ofd:ImageObject></ofd:Layer></ofd:Content></ofd:Page>"#;
+    let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:TextObject ID="5" Boundary="0 0 20 10" Font="10" Size="4"><ofd:TextCode X="0" Y="0">🦄</ofd:TextCode></ofd:TextObject><ofd:ImageObject ID="6" Boundary="0 10 6 4" ResourceID="20" Substitution="21" ImageMask="22"><ofd:Border LineWidth="1"/></ofd:ImageObject></ofd:Layer></ofd:Content></ofd:Page>"#;
+    let mask_resources = r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Fonts><ofd:Font ID="10" FontName="Fixture"><ofd:FontFile>font.ttf</ofd:FontFile></ofd:Font></ofd:Fonts><ofd:MultiMedias><ofd:MultiMedia ID="20" Type="Image" Format="PNG"><ofd:MediaFile>image.png</ofd:MediaFile></ofd:MultiMedia><ofd:MultiMedia ID="21" Type="Image" Format="PNG"><ofd:MediaFile>image.png</ofd:MediaFile></ofd:MultiMedia><ofd:MultiMedia ID="22" Type="Image" Format="PNG"><ofd:MediaFile>mask.png</ofd:MediaFile></ofd:MultiMedia></ofd:MultiMedias></ofd:Res>"#;
     let image_document = document(
         page,
-        &resources("image.png"),
-        &[("Doc_0/font.ttf", FONT), ("Doc_0/image.png", PNG)],
+        mask_resources,
+        &[
+            ("Doc_0/font.ttf", FONT),
+            ("Doc_0/image.png", PNG),
+            ("Doc_0/mask.png", MASK_PNG),
+        ],
     );
     let page = image_document.page(0).unwrap();
     let resolver = SystemFontResolver::empty(Vec::new(), 1 << 20);
     let decoder = ImageDecoder::default();
 
     let display = builder(&resolver, &decoder).build(&page).unwrap();
-    assert_eq!(display.diagnostics().len(), 4);
+    assert_eq!(display.diagnostics().len(), 2);
     assert!(matches!(
         display.diagnostics()[0].kind(),
         RenderDiagnosticKind::MissingGlyph {
@@ -282,17 +288,11 @@ fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics()
             ..
         }
     ));
+    // The image draws with the declared border, and the mismatched mask is
+    // reported as inapplicable.
     assert!(matches!(
         display.diagnostics()[1].kind(),
-        RenderDiagnosticKind::ImageSubstitutionUnsupported { resource_id: 21 }
-    ));
-    assert!(matches!(
-        display.diagnostics()[2].kind(),
-        RenderDiagnosticKind::ImageMaskUnsupported { resource_id: 21 }
-    ));
-    assert!(matches!(
-        display.diagnostics()[3].kind(),
-        RenderDiagnosticKind::ImageBorderUnsupported
+        RenderDiagnosticKind::ImageMaskIncompatible { resource_id: 22 }
     ));
     assert!(display.diagnostics().iter().any(|diagnostic| {
         diagnostic.object_id() == 5
@@ -306,17 +306,22 @@ fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics()
                 }
             )
     }));
-    for expected in [
-        RenderDiagnosticKind::ImageSubstitutionUnsupported { resource_id: 21 },
-        RenderDiagnosticKind::ImageMaskUnsupported { resource_id: 21 },
-        RenderDiagnosticKind::ImageBorderUnsupported,
-    ] {
-        assert!(display.diagnostics().iter().any(|diagnostic| {
-            diagnostic.object_id() == 6
-                && diagnostic.source() == LayerSource::Page
-                && diagnostic.kind() == &expected
-        }));
-    }
+    // The substitution resource is not preferred by default. The mask
+    // fixture has different dimensions from the image, so the mask is
+    // reported as incompatible (attributed to the image object) and the
+    // image draws with its declared border regardless.
+    assert!(display.diagnostics().iter().any(|diagnostic| {
+        diagnostic.object_id() == 6
+            && diagnostic.source() == LayerSource::Page
+            && matches!(
+                diagnostic.kind(),
+                RenderDiagnosticKind::ImageMaskIncompatible { resource_id: 22 }
+            )
+    }));
+    assert!(display
+        .commands()
+        .iter()
+        .any(|command| matches!(command, Command::DrawImage { .. })));
 }
 
 #[test]

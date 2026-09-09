@@ -6,7 +6,7 @@ use cairo::{
 };
 use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
 use rofd_core::{Document, LoadOptions, Rect};
-use rofd_render::{CairoRenderer, Error, ImageInterpolation, RenderDiagnosticKind, RenderOptions};
+use rofd_render::{CairoRenderer, Error, ImageInterpolation, RenderOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 const PNG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgba.png");
@@ -171,7 +171,10 @@ fn bilinear_blends_interior_samples_and_pads_image_edges() {
 }
 
 #[test]
-fn image_extensions_remain_explicit_render_diagnostics() {
+fn image_extensions_render_silently_when_mask_matches() {
+    // Both ResourceID 10 and the ImageMask/Substitution resource 11 point to
+    // the same PNG, so the mask dimensions match and the image renders without
+    // diagnostics.
     let page = page(
         r#"<ofd:ImageObject ID="2" Boundary="4 5 6 4" ResourceID="10" Substitution="11" ImageMask="11"/>"#,
     );
@@ -180,14 +183,11 @@ fn image_extensions_remain_explicit_render_diagnostics() {
     let report = CairoRenderer
         .render_page(&page, &context, &options(ImageInterpolation::Nearest, 0))
         .unwrap();
-    assert!(matches!(
-        report.diagnostics()[0].kind(),
-        RenderDiagnosticKind::ImageSubstitutionUnsupported { resource_id: 11 }
-    ));
-    assert!(matches!(
-        report.diagnostics()[1].kind(),
-        RenderDiagnosticKind::ImageMaskUnsupported { resource_id: 11 }
-    ));
+    assert!(
+        report.diagnostics().is_empty(),
+        "expected no diagnostics, got {:?}",
+        report.diagnostics()
+    );
 }
 
 #[test]

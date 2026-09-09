@@ -461,6 +461,7 @@ fn standalone_jbig2_images_decode_through_the_system_jbig2dec() {
     assert!(black > 0, "expected black pixels in the decoded scan");
 }
 
+#[cfg(feature = "jbig2")]
 fn alpha_is_opaque_and_channels_are_bi_level(pixel: &[u8]) -> bool {
     let [red, green, blue, alpha] = [pixel[0], pixel[1], pixel[2], pixel[3]];
     alpha == 255

@@ -1735,7 +1735,9 @@ fn preflight_page_xml(
                         message: format!("unknown ImageObject child {}", name.local_name),
                     });
                 }
-                if matches!(parent, Some(ElementMarker::ImageBorder)) {
+                if matches!(parent, Some(ElementMarker::ImageBorder))
+                    && name.local_name != "BorderColor"
+                {
                     return Err(Error::InvalidStructure {
                         path: path.as_str().to_owned(),
                         message: format!("unknown Border child {}", name.local_name),
