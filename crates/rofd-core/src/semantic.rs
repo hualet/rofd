@@ -23,12 +23,12 @@ impl TextCharFlags {
     pub const WHITESPACE: Self = Self(1 << 1);
 
     /// Returns whether all flags in `other` are set.
-    pub fn contains(self, other: Self) -> bool {
+    pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 
     /// Returns the raw bit representation.
-    pub fn bits(self) -> u32 {
+    pub const fn bits(self) -> u32 {
         self.0
     }
 }
@@ -60,7 +60,7 @@ impl TextChar {
     }
 
     /// Returns the fidelity of this character's geometry.
-    pub fn precision(&self) -> TextGeometryPrecision {
+    pub fn geometry_precision(&self) -> TextGeometryPrecision {
         self.precision
     }
 

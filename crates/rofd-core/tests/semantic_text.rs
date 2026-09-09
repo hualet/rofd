@@ -17,6 +17,13 @@ fn page_with_text(content: &str) -> rofd_core::Page {
 
 #[test]
 fn page_text_exposes_utf8_ranges_source_ids_and_conservative_geometry() {
+    const SYNTHESIZED_SEPARATOR_BITS: u32 = TextCharFlags::SYNTHESIZED_SEPARATOR.bits();
+    const HAS_SYNTHESIZED_SEPARATOR: bool =
+        TextCharFlags::SYNTHESIZED_SEPARATOR.contains(TextCharFlags::SYNTHESIZED_SEPARATOR);
+
+    assert_eq!(SYNTHESIZED_SEPARATOR_BITS, 1);
+    assert!(HAS_SYNTHESIZED_SEPARATOR);
+
     let page = page_with_text(
         r#"<ofd:TextObject ID="2" Boundary="10 20 30 8" Font="10" Size="4">
   <ofd:TextCode X="1" Y="5" DeltaX="3 4">A中B</ofd:TextCode>
@@ -26,7 +33,7 @@ fn page_text_exposes_utf8_ranges_source_ids_and_conservative_geometry() {
 </ofd:TextObject>"#,
     );
 
-    let text = page.text();
+    let text = page.text().unwrap();
     assert_eq!(text.as_str(), "A中B\n尾");
 
     let characters = text.characters();
@@ -39,7 +46,7 @@ fn page_text_exposes_utf8_ranges_source_ids_and_conservative_geometry() {
 
     assert_eq!(characters[1].object_id(), Some(2));
     assert_eq!(
-        characters[1].precision(),
+        characters[1].geometry_precision(),
         TextGeometryPrecision::Conservative
     );
     let middle_rect = characters[1].rect_mm().expect("middle character geometry");
