@@ -49,7 +49,9 @@ impl TextChar {
         self.utf8_range.clone()
     }
 
-    /// Returns the character's bounding rectangle in millimetres, when known.
+    /// Returns the character's bounding rectangle in physical-page millimetre
+    /// coordinates after transforms, when known. Synthesized separators have no
+    /// rectangle.
     pub fn rect_mm(&self) -> Option<Rect> {
         self.rect_mm
     }

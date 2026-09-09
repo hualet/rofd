@@ -22,7 +22,7 @@ fn page_text_exposes_utf8_ranges_source_ids_and_conservative_geometry() {
         TextCharFlags::SYNTHESIZED_SEPARATOR.contains(TextCharFlags::SYNTHESIZED_SEPARATOR);
 
     assert_eq!(SYNTHESIZED_SEPARATOR_BITS, 1);
-    assert!(HAS_SYNTHESIZED_SEPARATOR);
+    const { assert!(HAS_SYNTHESIZED_SEPARATOR) };
 
     let page = page_with_text(
         r#"<ofd:TextObject ID="2" Boundary="10 20 30 8" Font="10" Size="4">
