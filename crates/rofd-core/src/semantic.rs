@@ -223,11 +223,20 @@ fn transformed_box(
         max_x = max_x.max(point.x());
         max_y = max_y.max(point.y());
     }
+    let width = finite_add(max_x, -min_x)?;
+    let height = finite_add(max_y, -min_y)?;
+    if width <= 0.0 || height <= 0.0 {
+        return Err(Error::InvalidValue {
+            field: "semantic text geometry",
+            value: format!("{min_x} {min_y} {max_x} {max_y}"),
+            path: None,
+        });
+    }
     Ok(Rect {
         x: min_x,
         y: min_y,
-        width: finite_add(max_x, -min_x)?,
-        height: finite_add(max_y, -min_y)?,
+        width,
+        height,
     })
 }
 

@@ -364,3 +364,27 @@ fn overflowing_coordinates_fail_repeatedly_without_partial_cache_or_poisoning() 
         }
     }
 }
+
+#[test]
+fn collapsed_character_geometry_fails_repeatedly_without_cache_publication() {
+    let page = page_with_text(
+        r#"<ofd:TextObject ID="2" Boundary="0 0 20 8" Font="10" Size="1">
+<ofd:TextCode X="10000000000000000" Y="10000000000000000" DeltaX="0">X</ofd:TextCode>
+</ofd:TextObject>"#,
+    );
+    let clone = page.clone();
+
+    for handle in [&page, &clone, &page] {
+        let error = handle.text().expect_err("collapsed geometry must fail");
+        assert!(
+            matches!(
+                error,
+                Error::InvalidValue {
+                    field: "semantic text geometry",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+}
