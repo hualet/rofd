@@ -121,6 +121,8 @@ struct PageData {
     content_box: Option<crate::Rect>,
     bleed_box: Option<crate::Rect>,
     layers: Vec<crate::Layer>,
+    semantic_text: OnceLock<crate::PageText>,
+    semantic_text_initialization: Mutex<()>,
 }
 
 #[derive(Debug)]
@@ -181,6 +183,28 @@ impl Page {
     /// Returns immutable layers in effective template/page paint order.
     pub fn layers(&self) -> &[crate::Layer] {
         &self.data.layers
+    }
+
+    /// Returns flattened source text and conservative character geometry in
+    /// physical-page millimetres, in effective paint order.
+    ///
+    /// Visible annotation appearances follow the page layers. Distinct nonempty
+    /// text objects are separated by synthesized newlines. Geometry uses only
+    /// validated OFD positioning and font size, without font lookup or shaping.
+    /// The complete result is cached and shared by cloned page handles. Failed
+    /// builds are not cached and may be retried on a later call.
+    pub fn text(&self) -> crate::Result<&crate::PageText> {
+        if let Some(text) = self.data.semantic_text.get() {
+            return Ok(text);
+        }
+        let _initialization = self.data.semantic_text_initialization.lock().map_err(|_| {
+            Error::Internal("semantic text initialization lock is poisoned".to_owned())
+        })?;
+        if let Some(text) = self.data.semantic_text.get() {
+            return Ok(text);
+        }
+        let text = crate::semantic::build_page_text(self)?;
+        Ok(self.data.semantic_text.get_or_init(|| text))
     }
 
     /// Returns the immutable resource limits used to validate this page and its document.
@@ -622,6 +646,8 @@ impl Document {
             content_box,
             bleed_box,
             layers,
+            semantic_text: OnceLock::new(),
+            semantic_text_initialization: Mutex::new(()),
         });
         if let Some(warning) = pending_warning {
             self.push_warning(warning)?;
