@@ -45,6 +45,9 @@ pub enum WarningCode {
     /// A signature or one of its stamp annotations could not be parsed and
     /// was skipped.
     SignatureSkipped,
+    /// An element that is not a known page graphic unit was skipped in
+    /// lenient mode so the rest of the page could load.
+    UnknownGraphicUnitSkipped,
 }
 
 /// A recoverable OFD conformance diagnostic.
@@ -454,8 +457,12 @@ impl Document {
             });
         }
 
-        let page: crate::raw::PageRoot =
-            parse_page_xml(&self.0.container, &reference.path, &self.0.limits)?;
+        let (page, skipped_units) = parse_page_xml(
+            &self.0.container,
+            &reference.path,
+            &self.0.limits,
+            self.0.strictness,
+        )?;
         let (area, pending_warning) = match page.area {
             Some(area) if area.physical_box.is_some() => (area, None),
             area => {
@@ -514,11 +521,14 @@ impl Document {
             .layers;
         let parsed = Arc::new(PageData { size, layers });
         if let Some(warning) = pending_warning {
-            self.0
-                .warnings
-                .lock()
-                .map_err(|_| Error::Internal("warning store lock is poisoned".to_owned()))?
-                .push(warning);
+            self.push_warning(warning)?;
+        }
+        for unit in skipped_units {
+            self.push_warning(Warning {
+                code: WarningCode::UnknownGraphicUnitSkipped,
+                path: reference.path.as_str().to_owned(),
+                message: format!("skipped unknown graphic unit {}", unit.describe()),
+            })?;
         }
         let data = reference.cache.get_or_init(|| Arc::clone(&parsed));
         Ok(Page {
@@ -642,6 +652,15 @@ impl Document {
         }
     }
 
+    fn push_warning(&self, warning: Warning) -> Result<()> {
+        self.0
+            .warnings
+            .lock()
+            .map_err(|_| Error::Internal("warning store lock is poisoned".to_owned()))?
+            .push(warning);
+        Ok(())
+    }
+
     fn push_signature_warning(&self, path: &str, message: String) {
         if let Ok(mut warnings) = self.0.warnings.lock() {
             warnings.push(Warning {
@@ -729,8 +748,19 @@ impl Document {
                 }
                 return Ok(Arc::clone(data));
             }
-            let root: crate::raw::PageRoot =
-                parse_page_xml(&self.0.container, &reference.path, &self.0.limits)?;
+            let (root, skipped_units) = parse_page_xml(
+                &self.0.container,
+                &reference.path,
+                &self.0.limits,
+                self.0.strictness,
+            )?;
+            for unit in skipped_units {
+                self.push_warning(Warning {
+                    code: WarningCode::UnknownGraphicUnitSkipped,
+                    path: reference.path.as_str().to_owned(),
+                    message: format!("skipped unknown graphic unit {}", unit.describe()),
+                })?;
+            }
             let (direct_layers, direct_usage) = crate::content::convert_layers(
                 root.content,
                 self,
@@ -970,32 +1000,62 @@ fn parse_page_xml(
     container: &Container,
     path: &PackagePath,
     limits: &crate::ResourceLimits,
-) -> Result<raw::PageRoot> {
+    strictness: crate::Strictness,
+) -> Result<(raw::PageRoot, Vec<SkippedGraphicUnit>)> {
     let bytes = container.read(path)?;
-    preflight_page_xml(&bytes, path, limits)?;
-    let rich = extract_rich_objects(&bytes, path)?;
-    let mut deserializer = serde_xml_rs::Deserializer::new_from_reader(bytes.as_slice())
-        .non_contiguous_seq_elements(true);
+    preflight_page_xml(&bytes, path, limits, strictness)?;
+    let lenient = strictness == crate::Strictness::Lenient;
+    let extracted = extract_rich_objects(&bytes, path, lenient)?;
+    let mut deserializer =
+        serde_xml_rs::Deserializer::new_from_reader(extracted.sanitized.as_slice())
+            .non_contiguous_seq_elements(true);
     let mut page = raw::PageRoot::deserialize(&mut deserializer).map_err(|error| Error::Xml {
         path: path.as_str().to_owned(),
         message: error.to_string(),
     })?;
-    inject_rich_objects(&mut page, rich, path)?;
-    Ok(page)
+    inject_rich_objects(&mut page, extracted.rich, path)?;
+    Ok((page, extracted.skipped))
 }
 
-/// Graphic-unit payloads parsed standalone from their captured XML.
+/// An element below `Layer` or `PageBlock` that this version does not know.
+///
+/// Lenient parsing drops such elements (like ofdrw, which ignores every
+/// unrecognized page-block child) and reports each one as a warning instead
+/// of failing the whole page.
+struct SkippedGraphicUnit {
+    name: String,
+    id: Option<String>,
+}
+
+impl SkippedGraphicUnit {
+    fn describe(&self) -> String {
+        match &self.id {
+            Some(id) => format!("{} (ID {id})", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+/// Graphic-unit payloads parsed standalone from a sanitized XML copy.
 ///
 /// serde-xml-rs 0.6 corrupts its reader state when a graphic unit containing
 /// a nested `Vec` field (the Clips chain of PathObject) is followed by
 /// another sibling unit, so these payloads never go through the main pass.
+/// The sanitized copy additionally omits skipped unknown graphic units so
+/// the main pass only ever sees deserializable elements.
 struct RichObjects {
     paths: Vec<raw::PathObject>,
     texts: Vec<raw::TextObject>,
     images: Vec<raw::ImageObject>,
 }
 
-fn extract_rich_objects(bytes: &[u8], path: &PackagePath) -> Result<RichObjects> {
+struct ExtractedPage {
+    rich: RichObjects,
+    sanitized: Vec<u8>,
+    skipped: Vec<SkippedGraphicUnit>,
+}
+
+fn extract_rich_objects(bytes: &[u8], path: &PackagePath, lenient: bool) -> Result<ExtractedPage> {
     use xml::reader::{EventReader, XmlEvent};
 
     #[derive(Clone, Copy)]
@@ -1018,15 +1078,47 @@ fn extract_rich_objects(bytes: &[u8], path: &PackagePath) -> Result<RichObjects>
     let mut texts = Vec::new();
     let mut images = Vec::new();
     let mut elements = Vec::<String>::new();
+    let mut sanitized = xml::EventWriter::new(Vec::new());
+    let mut skipped = Vec::new();
+    // Depth of open elements belonging to a skipped unknown graphic unit;
+    // `None` while events pass through to the sanitized writer.
+    let mut skip_depth: Option<usize> = None;
     for event in EventReader::new(bytes) {
         let event = event.map_err(|error| xml_error(path, error))?;
+        if skip_depth.is_some() {
+            let mut exited = false;
+            match &event {
+                XmlEvent::StartElement { name, .. } => {
+                    elements.push(name.local_name.clone());
+                    if let Some(depth) = skip_depth.as_mut() {
+                        *depth += 1;
+                    }
+                }
+                XmlEvent::EndElement { .. } => {
+                    elements.pop();
+                    if let Some(depth) = skip_depth.as_mut() {
+                        *depth -= 1;
+                        exited = *depth == 0;
+                    }
+                }
+                _ => {}
+            }
+            if exited {
+                skip_depth = None;
+            }
+            continue;
+        }
+        let mut started_skip = false;
         if capture.is_none() {
-            if let XmlEvent::StartElement { name, .. } = &event {
-                let is_graphic_unit = matches!(
+            if let XmlEvent::StartElement {
+                name, attributes, ..
+            } = &event
+            {
+                let is_graphic_unit_container = matches!(
                     elements.last().map(String::as_str),
                     Some("Layer" | "PageBlock")
                 );
-                let kind = is_graphic_unit
+                let kind = is_graphic_unit_container
                     .then_some(match name.local_name.as_str() {
                         "PathObject" => Some(Kind::Path),
                         "TextObject" => Some(Kind::Text),
@@ -1034,6 +1126,8 @@ fn extract_rich_objects(bytes: &[u8], path: &PackagePath) -> Result<RichObjects>
                         _ => None,
                     })
                     .flatten();
+                let main_pass_unit =
+                    matches!(name.local_name.as_str(), "PageBlock" | "CompositeObject");
                 if let Some(kind) = kind {
                     capture = Some(Capture {
                         kind,
@@ -1042,8 +1136,28 @@ fn extract_rich_objects(bytes: &[u8], path: &PackagePath) -> Result<RichObjects>
                         text_codes: Vec::new(),
                         current_text_code: None,
                     });
+                } else if lenient && is_graphic_unit_container && !main_pass_unit {
+                    skipped.push(SkippedGraphicUnit {
+                        name: name.local_name.clone(),
+                        id: attributes
+                            .iter()
+                            .find(|attribute| attribute.name.local_name == "ID")
+                            .map(|attribute| attribute.value.clone()),
+                    });
+                    elements.push(name.local_name.clone());
+                    skip_depth = Some(1);
+                    started_skip = true;
                 }
             }
+        }
+        if started_skip {
+            continue;
+        }
+        if let Some(writer_event) = event.as_writer_event() {
+            sanitized.write(writer_event).map_err(|error| Error::Xml {
+                path: path.as_str().to_owned(),
+                message: error.to_string(),
+            })?;
         }
         if let XmlEvent::StartElement { name, .. } = &event {
             elements.push(name.local_name.clone());
@@ -1125,10 +1239,14 @@ fn extract_rich_objects(bytes: &[u8], path: &PackagePath) -> Result<RichObjects>
             elements.pop();
         }
     }
-    Ok(RichObjects {
-        paths,
-        texts,
-        images,
+    Ok(ExtractedPage {
+        rich: RichObjects {
+            paths,
+            texts,
+            images,
+        },
+        sanitized: sanitized.into_inner(),
+        skipped,
     })
 }
 
@@ -1245,6 +1363,7 @@ fn preflight_page_xml(
     bytes: &[u8],
     path: &PackagePath,
     limits: &crate::ResourceLimits,
+    strictness: crate::Strictness,
 ) -> Result<()> {
     use xml::reader::{EventReader, XmlEvent};
 
@@ -1288,15 +1407,15 @@ fn preflight_page_xml(
                     parent,
                     Some(ElementMarker::Layer | ElementMarker::PageBlock)
                 );
+                let known_graphic_unit = matches!(
+                    name.local_name.as_str(),
+                    "PathObject" | "PageBlock" | "TextObject" | "ImageObject" | "CompositeObject"
+                );
+                // Lenient mode accepts any page-block child like ofdrw, which
+                // ignores elements it does not recognize; they are dropped by
+                // the extraction pass and reported as warnings.
                 let is_graphic_unit = parent_is_object_container
-                    && matches!(
-                        name.local_name.as_str(),
-                        "PathObject"
-                            | "PageBlock"
-                            | "TextObject"
-                            | "ImageObject"
-                            | "CompositeObject"
-                    );
+                    && (known_graphic_unit || strictness == crate::Strictness::Lenient);
                 let is_clips = matches!(
                     parent,
                     Some(

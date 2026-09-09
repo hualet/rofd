@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 
 use rofd_core::{
     Color, Document, Error, FillRule, LayerType, LoadOptions, PageObject, Rect, ResourceLimits,
-    Transform, UnsupportedObjectKind,
+    Transform, UnsupportedObjectKind, WarningCode,
 };
 use support::minimal_ofd;
 
@@ -795,13 +795,25 @@ fn failed_concurrent_page_initialization_does_not_publish_fallback_warnings() {
 }
 
 #[test]
-fn rejects_unknown_graphic_units_instead_of_discarding_them() {
-    let error = open_page(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:VideoObject ID="2"/></ofd:Layer></ofd:Content>"#,
+fn lenient_mode_skips_unknown_graphic_units_with_a_warning() {
+    // ofdrw ignores page-block children it does not recognize; lenient mode
+    // mirrors that and reports the dropped element instead of failing.
+    let document = Document::from_bytes(
+        minimal_ofd(&page_with(
+            r#"<ofd:Content><ofd:Layer ID="1"><ofd:VideoObject ID="2"/></ofd:Layer></ofd:Content>"#,
+        )),
+        LoadOptions::default(),
     )
-    .unwrap_err();
+    .unwrap();
+    let page = document.page(0).unwrap();
+    assert!(page.layers()[0].objects().is_empty());
+    let warnings = document.warnings();
     assert!(
-        matches!(error, Error::InvalidStructure { message, .. } if message.contains("VideoObject"))
+        warnings.iter().any(
+            |warning| warning.code == WarningCode::UnknownGraphicUnitSkipped
+                && warning.message.contains("VideoObject")
+        ),
+        "{warnings:?}"
     );
 }
 
