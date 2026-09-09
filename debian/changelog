@@ -1,3 +1,14 @@
+rofd (0.2.3-1) unstable; urgency=medium
+
+  * New OFD rendering features: text clip areas (Clip/Text), structured
+    CGTransform glyph matrices, ApplicationBox/ContentBox/BleedBox page
+    areas, multiple DocBody historical version support, image borders/
+    masks/substitution, page annotations, composite vector graphics,
+    Gray/CMYK colour spaces, JBIG2 decoding, and unknown graphic unit
+    lenient skipping.  Bumps rofd-core to 0.2.1 and rofd-render to 0.1.1.
+
+ -- HualetWang <hualet@hualet.org>  Thu, 10 Sep 2026 00:00:00 +0800
+
 rofd (0.2.2-1) unstable; urgency=medium
 
   * Stabilize CI rendering comparisons: install the controlled Noto
