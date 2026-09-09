@@ -214,7 +214,7 @@ mod tests {
         let kinds = [
             (
                 RenderDiagnosticKind::UnsupportedObject {
-                    kind: UnsupportedObjectKind::Composite,
+                    kind: UnsupportedObjectKind::Text,
                 },
                 ROFD_DIAGNOSTIC_UNSUPPORTED_OBJECT,
             ),

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cairo::{
     Antialias, Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern,
 };
-use rofd_core::{Color, Document, FontResource, LoadOptions, Rect, UnsupportedObjectKind};
+use rofd_core::{Color, Document, FontResource, LoadOptions, Rect};
 use rofd_render::{CairoRenderer, Error, FontResolver, ImageDecoder, RenderOptions, ResolvedFont};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
@@ -497,7 +497,7 @@ fn rejects_arc_geometry_that_overflows_during_endpoint_conversion() {
 fn rotation_background_and_report_diagnostics_are_applied() {
     let page = open_page(
         "10 20 20 10",
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1" Stroke="false" Fill="false"><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
     );
     let options = RenderOptions {
         dpi: 25.4,
@@ -517,11 +517,7 @@ fn rotation_background_and_report_diagnostics_are_applied() {
     let report = CairoRenderer
         .render_page(&page, &context, &options)
         .unwrap();
-    assert_eq!(report.diagnostics().len(), 1);
-    assert_eq!(
-        report.diagnostics()[0].unsupported_kind(),
-        Some(UnsupportedObjectKind::Composite)
-    );
+    assert_eq!(report.diagnostics().len(), 0);
     drop(context);
     let mut surface = surface;
     assert_eq!(pixel(&mut surface, 5, 10)[0..3], [10, 20, 30]);

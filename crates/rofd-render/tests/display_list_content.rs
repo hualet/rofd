@@ -263,7 +263,7 @@ fn configured_font_fallback_is_promoted_to_a_source_aware_render_diagnostic() {
 
 #[test]
 fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics() {
-    let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:TextObject ID="5" Boundary="0 0 20 10" Font="10" Size="4"><ofd:TextCode X="0" Y="0">🦄</ofd:TextCode></ofd:TextObject><ofd:ImageObject ID="6" Boundary="0 10 6 4" ResourceID="20" Substitution="21" ImageMask="21"><ofd:Border LineWidth="1"/></ofd:ImageObject><ofd:CompositeObject ID="7"/></ofd:Layer></ofd:Content></ofd:Page>"#;
+    let page = r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 100 100</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:TextObject ID="5" Boundary="0 0 20 10" Font="10" Size="4"><ofd:TextCode X="0" Y="0">🦄</ofd:TextCode></ofd:TextObject><ofd:ImageObject ID="6" Boundary="0 10 6 4" ResourceID="20" Substitution="21" ImageMask="21"><ofd:Border LineWidth="1"/></ofd:ImageObject></ofd:Layer></ofd:Content></ofd:Page>"#;
     let image_document = document(
         page,
         &resources("image.png"),
@@ -274,7 +274,7 @@ fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics()
     let decoder = ImageDecoder::default();
 
     let display = builder(&resolver, &decoder).build(&page).unwrap();
-    assert_eq!(display.diagnostics().len(), 5);
+    assert_eq!(display.diagnostics().len(), 4);
     assert!(matches!(
         display.diagnostics()[0].kind(),
         RenderDiagnosticKind::MissingGlyph {
@@ -293,10 +293,6 @@ fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics()
     assert!(matches!(
         display.diagnostics()[3].kind(),
         RenderDiagnosticKind::ImageBorderUnsupported
-    ));
-    assert!(matches!(
-        display.diagnostics()[4].kind(),
-        RenderDiagnosticKind::UnsupportedObject { .. }
     ));
     assert!(display.diagnostics().iter().any(|diagnostic| {
         diagnostic.object_id() == 5
@@ -321,15 +317,6 @@ fn image_extensions_and_missing_glyphs_are_structured_source_aware_diagnostics()
                 && diagnostic.kind() == &expected
         }));
     }
-    let composite = display
-        .diagnostics()
-        .iter()
-        .find(|diagnostic| diagnostic.object_id() == 7)
-        .unwrap();
-    assert_eq!(
-        composite.unsupported_kind(),
-        Some(rofd_core::UnsupportedObjectKind::Composite)
-    );
 }
 
 #[test]

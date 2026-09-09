@@ -105,6 +105,36 @@ pub(crate) struct ResourceRoot {
     pub(crate) draw_params: Option<DrawParams>,
     #[serde(rename = "ColorSpaces")]
     pub(crate) color_spaces: Option<ColorSpaces>,
+    #[serde(rename = "CompositeGraphicUnits")]
+    pub(crate) composite_graphic_units: Option<CompositeGraphicUnits>,
+}
+
+/// A reusable vector graphic (`CompositeGraphicUnit`) resource.
+#[derive(Debug, Deserialize)]
+pub(crate) struct CompositeGraphicUnits {
+    #[serde(rename = "CompositeGraphicUnit", default)]
+    pub(crate) entries: Vec<CompositeGraphicUnit>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct CompositeGraphicUnit {
+    #[serde(rename = "ID")]
+    pub(crate) id: String,
+    #[serde(rename = "Width")]
+    pub(crate) width: Option<String>,
+    #[serde(rename = "Height")]
+    pub(crate) height: Option<String>,
+    #[serde(rename = "Content")]
+    pub(crate) content: Option<CompositeGraphicContent>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct CompositeGraphicContent {
+    #[serde(rename = "ID")]
+    #[allow(dead_code)]
+    pub(crate) id: Option<String>,
+    #[serde(rename = "$value", default)]
+    pub(crate) objects: Vec<GraphicUnit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,7 +293,7 @@ pub(crate) struct Layer {
     pub(crate) objects: Vec<GraphicUnit>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) enum GraphicUnit {
     #[serde(rename = "PathObject")]
     Path(PathObjectEnvelope),
@@ -274,10 +304,10 @@ pub(crate) enum GraphicUnit {
     #[serde(rename = "ImageObject")]
     Image(ImageObjectEnvelope),
     #[serde(rename = "CompositeObject")]
-    Composite(ObjectReference),
+    Composite(CompositeObject),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PageBlock {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
@@ -285,13 +315,20 @@ pub(crate) struct PageBlock {
     pub(crate) objects: Vec<GraphicUnit>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ObjectReference {
+/// Attributes-only payload, so it parses through the main serde pass.
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct CompositeObject {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
+    #[serde(rename = "Boundary")]
+    pub(crate) boundary: Option<String>,
+    #[serde(rename = "CTM")]
+    pub(crate) transform: Option<String>,
+    #[serde(rename = "ResourceID")]
+    pub(crate) resource_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct TextObjectEnvelope {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
@@ -299,7 +336,7 @@ pub(crate) struct TextObjectEnvelope {
     pub(crate) object: Option<Box<TextObject>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ImageObjectEnvelope {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
@@ -310,7 +347,7 @@ pub(crate) struct ImageObjectEnvelope {
 /// PathObject is parsed standalone like TextObject/ImageObject: serde-xml-rs
 /// 0.6 mishandles its nested Clips vectors when a sibling graphic unit
 /// follows, so the streaming pass extracts the payload separately.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PathObjectEnvelope {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
@@ -318,7 +355,7 @@ pub(crate) struct PathObjectEnvelope {
     pub(crate) object: Option<Box<PathObject>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PathObject {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
@@ -361,7 +398,7 @@ pub(crate) struct PathObject {
     pub(crate) clips: Option<Clips>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct TextObject {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
@@ -405,7 +442,7 @@ pub(crate) struct TextObject {
     pub(crate) cg_transforms: Vec<CgTransform>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct TextCode {
     #[serde(rename = "$value", default)]
     pub(crate) text: String,
@@ -419,7 +456,7 @@ pub(crate) struct TextCode {
     pub(crate) delta_y: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct CgTransform {
     #[serde(rename = "CodePosition")]
     pub(crate) code_position: Option<String>,
@@ -431,7 +468,7 @@ pub(crate) struct CgTransform {
     pub(crate) glyphs: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ImageObject {
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
@@ -455,7 +492,7 @@ pub(crate) struct ImageObject {
     pub(crate) border: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Clips {
     #[serde(rename = "TransFlag")]
     pub(crate) trans_flag: Option<String>,
@@ -463,13 +500,13 @@ pub(crate) struct Clips {
     pub(crate) clips: Vec<Clip>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Clip {
     #[serde(rename = "Area", default)]
     pub(crate) areas: Vec<ClipArea>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ClipArea {
     #[serde(rename = "CTM")]
     pub(crate) transform: Option<String>,
@@ -477,7 +514,7 @@ pub(crate) struct ClipArea {
     pub(crate) children: Vec<ClipAreaChild>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) enum ClipAreaChild {
     #[serde(rename = "Path")]
     Path(ClipPath),
@@ -485,7 +522,7 @@ pub(crate) enum ClipAreaChild {
     Text(ClipText),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ClipPath {
     #[serde(rename = "Boundary")]
     pub(crate) boundary: Option<String>,
@@ -501,10 +538,10 @@ pub(crate) struct ClipPath {
     pub(crate) abbreviated_data: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ClipText {}
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PaintColor {
     #[serde(rename = "Value")]
     pub(crate) value: Option<String>,

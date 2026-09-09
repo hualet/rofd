@@ -11,7 +11,9 @@ use crate::container::Container;
 use crate::paint::ColorSpaceKind;
 use crate::paint::PaintParameters;
 use crate::path::PackagePath;
-use crate::raw::{ColorSpaceEntry, DrawParamEntry, FontEntry, MultiMediaEntry, ResourceRoot};
+use crate::raw::{
+    ColorSpaceEntry, CompositeGraphicUnit, DrawParamEntry, FontEntry, MultiMediaEntry, ResourceRoot,
+};
 use crate::{Color, Error, LineCap, LineJoin, ResourceLimits, Result};
 
 /// A document resource category.
@@ -26,6 +28,8 @@ pub enum ResourceKind {
     DrawParam,
     /// A colour space resource with an optional indexed palette.
     ColorSpace,
+    /// A reusable vector graphic (`CompositeGraphicUnit`) resource.
+    VectorGraphic,
 }
 
 /// An encoded image format supported by the resource index.
@@ -191,6 +195,18 @@ enum ResourceEntry {
     Image(ImageRecord),
     DrawParam(DrawParamRecord),
     ColorSpace(ColorSpaceRecord),
+    VectorGraphic(VectorGraphicRecord),
+}
+
+/// A reusable vector graphic with its already-injected graphic-unit content.
+///
+/// The declared `Width`/`Height` are validated on insert but not retained:
+/// like ofdrw, rendering positions content by the referencing object's
+/// boundary and CTM instead of scaling to the declared size.
+#[derive(Debug)]
+struct VectorGraphicRecord {
+    content: Vec<crate::raw::GraphicUnit>,
+    declaration_path: String,
 }
 
 /// A colour space declaration with its optional palette entries.
@@ -292,7 +308,7 @@ impl ResourceCatalog {
         paths: &[PackagePath],
         limits: &ResourceLimits,
         strictness: crate::Strictness,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Vec<(String, crate::document::SkippedGraphicUnit)>)> {
         let mut count = 0usize;
         let mut documents = Vec::with_capacity(paths.len());
         for path in paths {
@@ -301,16 +317,24 @@ impl ResourceCatalog {
             documents.push((path, bytes));
         }
 
+        let lenient = strictness == crate::Strictness::Lenient;
+        let mut skipped_units = Vec::new();
         let mut catalog = Self::empty();
         catalog.strictness = strictness;
         for (path, bytes) in documents {
-            let mut deserializer = serde_xml_rs::Deserializer::new_from_reader(bytes.as_slice())
-                .non_contiguous_seq_elements(true);
-            let root =
+            let extracted = crate::document::extract_rich_objects(&bytes, path, lenient)?;
+            for unit in extracted.skipped {
+                skipped_units.push((path.as_str().to_owned(), unit));
+            }
+            let mut deserializer =
+                serde_xml_rs::Deserializer::new_from_reader(extracted.sanitized.as_slice())
+                    .non_contiguous_seq_elements(true);
+            let mut root =
                 ResourceRoot::deserialize(&mut deserializer).map_err(|error| Error::Xml {
                     path: path.as_str().to_owned(),
                     message: error.to_string(),
                 })?;
+            crate::document::inject_rich_objects_into_resource(&mut root, extracted.rich, path)?;
             if strictness == crate::Strictness::Strict && root.fonts.len() > 1 {
                 return Err(Error::InvalidStructure {
                     path: path.as_str().to_owned(),
@@ -341,8 +365,15 @@ impl ResourceCatalog {
             {
                 catalog.insert_color_space(color_space, path)?;
             }
+            for unit in root
+                .composite_graphic_units
+                .into_iter()
+                .flat_map(|units| units.entries)
+            {
+                catalog.insert_vector_graphic(unit, path, strictness)?;
+            }
         }
-        Ok(catalog)
+        Ok((catalog, skipped_units))
     }
 
     pub(crate) fn font(&self, id: u64, container: &Container, limit: u64) -> Result<FontResource> {
@@ -372,6 +403,11 @@ impl ResourceCatalog {
                 id,
                 ResourceKind::Font,
                 ResourceKind::ColorSpace,
+            )),
+            Some(ResourceEntry::VectorGraphic(_)) => Err(kind_mismatch(
+                id,
+                ResourceKind::Font,
+                ResourceKind::VectorGraphic,
             )),
             None => Err(Error::UnknownResource { object_id: id }),
         }
@@ -403,6 +439,11 @@ impl ResourceCatalog {
                 id,
                 ResourceKind::Image,
                 ResourceKind::ColorSpace,
+            )),
+            Some(ResourceEntry::VectorGraphic(_)) => Err(kind_mismatch(
+                id,
+                ResourceKind::Image,
+                ResourceKind::VectorGraphic,
             )),
             None => Err(Error::UnknownResource { object_id: id }),
         }
@@ -534,6 +575,78 @@ impl ResourceCatalog {
             }),
             path,
         )
+    }
+
+    fn insert_vector_graphic(
+        &mut self,
+        entry: CompositeGraphicUnit,
+        path: &PackagePath,
+        strictness: crate::Strictness,
+    ) -> Result<()> {
+        let id = parse_id(&entry.id, path)?;
+        let dimension = |value: Option<&str>, field: &'static str| -> Result<Option<f64>> {
+            match value {
+                None => Ok(None),
+                Some(value) => {
+                    let parsed = value.parse::<f64>().map_err(|_| {
+                        invalid_resource(path, Some(id), field, format!("invalid number {value}"))
+                    })?;
+                    if !parsed.is_finite() || parsed <= 0.0 {
+                        return Err(invalid_resource(
+                            path,
+                            Some(id),
+                            field,
+                            format!("expected a positive finite number, found {value}"),
+                        ));
+                    }
+                    Ok(Some(parsed))
+                }
+            }
+        };
+        let width = dimension(entry.width.as_deref(), "Width")?;
+        let height = dimension(entry.height.as_deref(), "Height")?;
+        if strictness == crate::Strictness::Strict {
+            for (value, field) in [(width, "Width"), (height, "Height")] {
+                if value.is_none() {
+                    return Err(invalid_resource(
+                        path,
+                        Some(id),
+                        field,
+                        "required value is missing".to_owned(),
+                    ));
+                }
+            }
+        }
+        let _ = (width, height);
+        let content = entry
+            .content
+            .map(|content| content.objects)
+            .unwrap_or_default();
+        if strictness == crate::Strictness::Strict && content.is_empty() {
+            return Err(invalid_resource(
+                path,
+                Some(id),
+                "Content",
+                "required child is missing".to_owned(),
+            ));
+        }
+        self.insert(
+            id,
+            ResourceEntry::VectorGraphic(VectorGraphicRecord {
+                content,
+                declaration_path: path.as_str().to_owned(),
+            }),
+            path,
+        )
+    }
+
+    /// Returns the graphic units of one reusable vector graphic.
+    pub(crate) fn vector_graphic_units(&self, id: u64) -> Result<&[crate::raw::GraphicUnit]> {
+        match self.entries.get(&id) {
+            Some(ResourceEntry::VectorGraphic(record)) => Ok(&record.content),
+            Some(other) => Err(kind_mismatch(id, ResourceKind::VectorGraphic, other.kind())),
+            None => Err(Error::UnknownResource { object_id: id }),
+        }
     }
 
     fn insert_color_space(&mut self, entry: ColorSpaceEntry, path: &PackagePath) -> Result<()> {
@@ -806,6 +919,7 @@ impl ResourceEntry {
             Self::Image(_) => ResourceKind::Image,
             Self::DrawParam(_) => ResourceKind::DrawParam,
             Self::ColorSpace(_) => ResourceKind::ColorSpace,
+            Self::VectorGraphic(_) => ResourceKind::VectorGraphic,
         }
     }
 
@@ -815,6 +929,7 @@ impl ResourceEntry {
             Self::Image(image) => &image.declaration_path,
             Self::DrawParam(draw_param) => &draw_param.declaration_path,
             Self::ColorSpace(color_space) => &color_space.declaration_path,
+            Self::VectorGraphic(vector_graphic) => &vector_graphic.declaration_path,
         }
     }
 }
@@ -834,6 +949,7 @@ fn preflight(
         MultiMedias,
         DrawParams,
         ColorSpaces,
+        CompositeGraphicUnits,
         Other,
     }
 
@@ -871,6 +987,8 @@ fn preflight(
                     matches!(parent, Some(Marker::Res)) && name.local_name == "DrawParams";
                 let is_color_spaces =
                     matches!(parent, Some(Marker::Res)) && name.local_name == "ColorSpaces";
+                let is_composite_graphic_units = matches!(parent, Some(Marker::Res))
+                    && name.local_name == "CompositeGraphicUnits";
                 let is_resource = (matches!(parent, Some(Marker::Fonts))
                     && name.local_name == "Font")
                     || (matches!(parent, Some(Marker::MultiMedias))
@@ -878,7 +996,9 @@ fn preflight(
                     || (matches!(parent, Some(Marker::DrawParams))
                         && name.local_name == "DrawParam")
                     || (matches!(parent, Some(Marker::ColorSpaces))
-                        && name.local_name == "ColorSpace");
+                        && name.local_name == "ColorSpace")
+                    || (matches!(parent, Some(Marker::CompositeGraphicUnits))
+                        && name.local_name == "CompositeGraphicUnit");
                 if is_resource {
                     *total = total.checked_add(1).ok_or_else(|| {
                         Error::LimitExceeded("resource count overflow".to_owned())
@@ -900,6 +1020,8 @@ fn preflight(
                     Marker::DrawParams
                 } else if is_color_spaces {
                     Marker::ColorSpaces
+                } else if is_composite_graphic_units {
+                    Marker::CompositeGraphicUnits
                 } else {
                     Marker::Other
                 });

@@ -366,6 +366,31 @@ impl<'a> DisplayListBuilder<'a> {
                 }
                 Ok(())
             }
+            PageObject::Composite(composite) => {
+                if composite.transform().is_singular() {
+                    display_list.push_diagnostic(
+                        composite.object_id(),
+                        source,
+                        RenderDiagnosticKind::SingularTransform,
+                    );
+                    return Ok(());
+                }
+                let (_, object_to_page) = object_transforms(
+                    composite.object_id(),
+                    composite.boundary(),
+                    composite.transform(),
+                )?;
+                display_list.push_command(Command::Save);
+                display_list.push_command(Command::ConcatTransform(object_to_page));
+                let result = (|| {
+                    for child in composite.objects() {
+                        self.lower_object(display_list, page, child, source, image_budget)?;
+                    }
+                    Ok(())
+                })();
+                display_list.push_command(Command::Restore);
+                result
+            }
             PageObject::Unsupported(object) => {
                 display_list.push_diagnostic(
                     object.object_id(),
@@ -739,7 +764,6 @@ fn diagnostic_message(kind: &RenderDiagnosticKind) -> String {
         RenderDiagnosticKind::UnsupportedObject { kind } => match kind {
             UnsupportedObjectKind::Text => "text objects are not supported".to_owned(),
             UnsupportedObjectKind::Image => "image objects are not supported".to_owned(),
-            UnsupportedObjectKind::Composite => "composite objects are not supported".to_owned(),
         },
         RenderDiagnosticKind::FontFallback {
             character,

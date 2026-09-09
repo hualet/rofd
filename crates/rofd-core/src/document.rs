@@ -681,12 +681,20 @@ impl Document {
         if let Some(catalog) = self.0.resource_catalog.get() {
             return Ok(catalog);
         }
-        let parsed = Arc::new(crate::resources::ResourceCatalog::load(
+        let (parsed, skipped_units) = crate::resources::ResourceCatalog::load(
             &self.0.container,
             &self.0.resource_paths,
             &self.0.limits,
             self.0.strictness,
-        )?);
+        )?;
+        for (skipped_path, unit) in skipped_units {
+            self.push_warning(Warning {
+                code: WarningCode::UnknownGraphicUnitSkipped,
+                path: skipped_path,
+                message: format!("skipped unknown graphic unit {}", unit.describe()),
+            })?;
+        }
+        let parsed = Arc::new(parsed);
         Ok(self.0.resource_catalog.get_or_init(|| Arc::clone(&parsed)))
     }
 
@@ -704,6 +712,11 @@ impl Document {
 
     pub(crate) fn draw_param(&self, id: u64) -> Result<crate::paint::PaintParameters> {
         self.resource_catalog()?.draw_param(id)
+    }
+
+    /// Returns the graphic units of one reusable vector graphic resource.
+    pub(crate) fn vector_graphic_units(&self, id: u64) -> Result<&[raw::GraphicUnit]> {
+        self.resource_catalog()?.vector_graphic_units(id)
     }
 
     pub(crate) fn resolve_paint_color(
@@ -1036,7 +1049,7 @@ fn parse_page_xml(
 /// Lenient parsing drops such elements (like ofdrw, which ignores every
 /// unrecognized page-block child) and reports each one as a warning instead
 /// of failing the whole page.
-struct SkippedGraphicUnit {
+pub(crate) struct SkippedGraphicUnit {
     name: String,
     id: Option<String>,
 }
@@ -1057,19 +1070,23 @@ impl SkippedGraphicUnit {
 /// another sibling unit, so these payloads never go through the main pass.
 /// The sanitized copy additionally omits skipped unknown graphic units so
 /// the main pass only ever sees deserializable elements.
-struct RichObjects {
+pub(crate) struct RichObjects {
     paths: Vec<raw::PathObject>,
     texts: Vec<raw::TextObject>,
     images: Vec<raw::ImageObject>,
 }
 
-struct ExtractedPage {
-    rich: RichObjects,
-    sanitized: Vec<u8>,
-    skipped: Vec<SkippedGraphicUnit>,
+pub(crate) struct ExtractedPage {
+    pub(crate) rich: RichObjects,
+    pub(crate) sanitized: Vec<u8>,
+    pub(crate) skipped: Vec<SkippedGraphicUnit>,
 }
 
-fn extract_rich_objects(bytes: &[u8], path: &PackagePath, lenient: bool) -> Result<ExtractedPage> {
+pub(crate) fn extract_rich_objects(
+    bytes: &[u8],
+    path: &PackagePath,
+    lenient: bool,
+) -> Result<ExtractedPage> {
     use xml::reader::{EventReader, XmlEvent};
 
     #[derive(Clone, Copy)]
@@ -1128,10 +1145,16 @@ fn extract_rich_objects(bytes: &[u8], path: &PackagePath, lenient: bool) -> Resu
                 name, attributes, ..
             } = &event
             {
-                let is_graphic_unit_container = matches!(
-                    elements.last().map(String::as_str),
-                    Some("Layer" | "PageBlock")
-                );
+                // `Content` is a graphic-unit container only inside resource
+                // catalogs (a `CompositeGraphicUnit` payload); a page's
+                // `Content` element holds `Layer` children instead.
+                let is_graphic_unit_container = match elements.last().map(String::as_str) {
+                    Some("Layer" | "PageBlock") => true,
+                    Some("Content") => elements
+                        .get(elements.len().saturating_sub(2))
+                        .is_some_and(|grandparent| grandparent == "CompositeGraphicUnit"),
+                    _ => false,
+                };
                 let kind = is_graphic_unit_container
                     .then_some(match name.local_name.as_str() {
                         "PathObject" => Some(Kind::Path),
@@ -1264,68 +1287,11 @@ fn extract_rich_objects(bytes: &[u8], path: &PackagePath, lenient: bool) -> Resu
     })
 }
 
-fn inject_rich_objects(
+pub(crate) fn inject_rich_objects(
     page: &mut raw::PageRoot,
     rich: RichObjects,
     path: &PackagePath,
 ) -> Result<()> {
-    fn visit(
-        objects: &mut [raw::GraphicUnit],
-        paths: &mut impl Iterator<Item = raw::PathObject>,
-        texts: &mut impl Iterator<Item = raw::TextObject>,
-        images: &mut impl Iterator<Item = raw::ImageObject>,
-        path: &PackagePath,
-    ) -> Result<()> {
-        for object in objects {
-            match object {
-                raw::GraphicUnit::Path(path_object) => {
-                    let parsed = paths.next().ok_or_else(|| Error::InvalidStructure {
-                        path: path.as_str().to_owned(),
-                        message: "missing parsed PathObject payload".to_owned(),
-                    })?;
-                    if parsed.id != path_object.id {
-                        return Err(Error::InvalidStructure {
-                            path: path.as_str().to_owned(),
-                            message: "PathObject extraction order mismatch".to_owned(),
-                        });
-                    }
-                    path_object.object = Some(Box::new(parsed));
-                }
-                raw::GraphicUnit::Text(text) => {
-                    let parsed = texts.next().ok_or_else(|| Error::InvalidStructure {
-                        path: path.as_str().to_owned(),
-                        message: "missing parsed TextObject payload".to_owned(),
-                    })?;
-                    if parsed.id != text.id {
-                        return Err(Error::InvalidStructure {
-                            path: path.as_str().to_owned(),
-                            message: "TextObject extraction order mismatch".to_owned(),
-                        });
-                    }
-                    text.object = Some(Box::new(parsed));
-                }
-                raw::GraphicUnit::Image(image) => {
-                    let parsed = images.next().ok_or_else(|| Error::InvalidStructure {
-                        path: path.as_str().to_owned(),
-                        message: "missing parsed ImageObject payload".to_owned(),
-                    })?;
-                    if parsed.id != image.id {
-                        return Err(Error::InvalidStructure {
-                            path: path.as_str().to_owned(),
-                            message: "ImageObject extraction order mismatch".to_owned(),
-                        });
-                    }
-                    image.object = Some(Box::new(parsed));
-                }
-                raw::GraphicUnit::Group(group) => {
-                    visit(&mut group.objects, paths, texts, images, path)?
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
     let RichObjects {
         paths,
         texts,
@@ -1336,7 +1302,7 @@ fn inject_rich_objects(
     let mut images = images.into_iter();
     if let Some(content) = &mut page.content {
         for layer in &mut content.layers {
-            visit(
+            inject_rich_units(
                 &mut layer.objects,
                 &mut paths,
                 &mut texts,
@@ -1345,11 +1311,110 @@ fn inject_rich_objects(
             )?;
         }
     }
+    finish_rich_injection(paths, texts, images, path)
+}
+
+/// Injects standalone-parsed payloads into a resource catalog's vector
+/// graphics, which hold graphic units through the same serde enum.
+pub(crate) fn inject_rich_objects_into_resource(
+    root: &mut raw::ResourceRoot,
+    rich: RichObjects,
+    path: &PackagePath,
+) -> Result<()> {
+    let RichObjects {
+        paths,
+        texts,
+        images,
+    } = rich;
+    let mut paths = paths.into_iter();
+    let mut texts = texts.into_iter();
+    let mut images = images.into_iter();
+    for unit in root
+        .composite_graphic_units
+        .iter_mut()
+        .flat_map(|units| units.entries.iter_mut())
+    {
+        if let Some(content) = &mut unit.content {
+            inject_rich_units(
+                &mut content.objects,
+                &mut paths,
+                &mut texts,
+                &mut images,
+                path,
+            )?;
+        }
+    }
+    finish_rich_injection(paths, texts, images, path)
+}
+
+fn finish_rich_injection(
+    mut paths: impl Iterator<Item = raw::PathObject>,
+    mut texts: impl Iterator<Item = raw::TextObject>,
+    mut images: impl Iterator<Item = raw::ImageObject>,
+    path: &PackagePath,
+) -> Result<()> {
     if paths.next().is_some() || texts.next().is_some() || images.next().is_some() {
         return Err(Error::InvalidStructure {
             path: path.as_str().to_owned(),
             message: "rich object extraction did not match parsed page structure".to_owned(),
         });
+    }
+    Ok(())
+}
+
+fn inject_rich_units(
+    objects: &mut [raw::GraphicUnit],
+    paths: &mut impl Iterator<Item = raw::PathObject>,
+    texts: &mut impl Iterator<Item = raw::TextObject>,
+    images: &mut impl Iterator<Item = raw::ImageObject>,
+    path: &PackagePath,
+) -> Result<()> {
+    for object in objects {
+        match object {
+            raw::GraphicUnit::Path(path_object) => {
+                let parsed = paths.next().ok_or_else(|| Error::InvalidStructure {
+                    path: path.as_str().to_owned(),
+                    message: "missing parsed PathObject payload".to_owned(),
+                })?;
+                if parsed.id != path_object.id {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: "PathObject extraction order mismatch".to_owned(),
+                    });
+                }
+                path_object.object = Some(Box::new(parsed));
+            }
+            raw::GraphicUnit::Text(text) => {
+                let parsed = texts.next().ok_or_else(|| Error::InvalidStructure {
+                    path: path.as_str().to_owned(),
+                    message: "missing parsed TextObject payload".to_owned(),
+                })?;
+                if parsed.id != text.id {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: "TextObject extraction order mismatch".to_owned(),
+                    });
+                }
+                text.object = Some(Box::new(parsed));
+            }
+            raw::GraphicUnit::Image(image) => {
+                let parsed = images.next().ok_or_else(|| Error::InvalidStructure {
+                    path: path.as_str().to_owned(),
+                    message: "missing parsed ImageObject payload".to_owned(),
+                })?;
+                if parsed.id != image.id {
+                    return Err(Error::InvalidStructure {
+                        path: path.as_str().to_owned(),
+                        message: "ImageObject extraction order mismatch".to_owned(),
+                    });
+                }
+                image.object = Some(Box::new(parsed));
+            }
+            raw::GraphicUnit::Group(group) => {
+                inject_rich_units(&mut group.objects, paths, texts, images, path)?
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

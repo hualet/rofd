@@ -2,7 +2,7 @@ use std::io::{Cursor, Write};
 
 use rofd_core::{
     Color, Document, FillRule, LayerSource, LineCap, LineJoin, LoadOptions, PathData, Point,
-    Transform, UnsupportedObjectKind,
+    Transform,
 };
 use rofd_render::{ClipPath, Command, DisplayList, RenderDiagnosticKind};
 use zip::{write::SimpleFileOptions, ZipWriter};
@@ -349,25 +349,56 @@ fn singular_object_transforms_skip_the_object_with_a_diagnostic() {
 }
 
 #[test]
-fn unsupported_composites_produce_diagnostics_and_no_drawing_commands() {
-    let page = open_page(
-        r#"<ofd:Content><ofd:Layer ID="1">
-  <ofd:PageBlock ID="3">
-    <ofd:CompositeObject ID="5"/>
-  </ofd:PageBlock>
-</ofd:Layer></ofd:Content>"#,
-    );
+fn composite_objects_lower_referenced_content_within_their_transform() {
+    // A composite draws the referenced vector graphic in its local space:
+    // the boundary translation and CTM position the content on the page.
+    let page_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area>
+  <ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="5" Boundary="10 20 30 40" ResourceID="8"/></ofd:Layer></ofd:Content>
+</ofd:Page>"#;
+    let document_xml = r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:PublicRes>Res.xml</ofd:PublicRes></ofd:CommonData><ofd:Pages><ofd:Page ID="900" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages></ofd:Document>"#;
+    let catalog = r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CompositeGraphicUnits><ofd:CompositeGraphicUnit ID="8" Width="30" Height="40"><ofd:Content ID="9"><ofd:PathObject ID="10" Boundary="0 0 30 40" Fill="true"><ofd:FillColor Value="255 0 0"/><ofd:AbbreviatedData>M 0 0 L 30 0 L 30 40 L 0 40 C</ofd:AbbreviatedData></ofd:PathObject></ofd:Content></ofd:CompositeGraphicUnit></ofd:CompositeGraphicUnits></ofd:Res>"#;
+    let entries = [
+        (
+            "OFD.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016" DocType="OFD" Version="1.0"><ofd:DocBody><ofd:DocInfo><ofd:DocID>display-list-fixture</ofd:DocID></ofd:DocInfo><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>"#,
+        ),
+        ("Doc_0/Document.xml", document_xml),
+        ("Doc_0/Pages/Page_0/Content.xml", page_xml),
+        ("Doc_0/Res.xml", catalog),
+    ];
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, contents) in entries {
+        writer
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(contents.as_bytes()).unwrap();
+    }
+    let bytes = writer.finish().unwrap().into_inner();
+    let page = Document::from_bytes(bytes, LoadOptions::default())
+        .unwrap()
+        .page(0)
+        .unwrap();
 
     let display_list = DisplayList::from_page(&page).unwrap();
 
-    assert!(display_list.commands().is_empty());
-    assert_eq!(display_list.diagnostics().len(), 1);
-    assert_eq!(display_list.diagnostics()[0].object_id(), 5);
-    assert_eq!(
-        display_list.diagnostics()[0].unsupported_kind(),
-        Some(UnsupportedObjectKind::Composite)
-    );
-    assert!(!display_list.diagnostics()[0].message().is_empty());
+    assert!(display_list.diagnostics().is_empty());
+    let commands = display_list.commands();
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        Command::ConcatTransform(transform) if transform.e() == 10.0 && transform.f() == 20.0
+    )));
+    assert!(commands
+        .iter()
+        .any(|command| matches!(command, Command::DrawPath(_))));
+    // The composite and its child each push their own transform scope.
+    let saves = commands
+        .iter()
+        .filter(|command| matches!(command, Command::Save))
+        .count();
+    assert_eq!(saves, 2);
 }
 
 #[test]

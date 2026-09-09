@@ -74,6 +74,9 @@ pub enum PageObject {
     Image(ImageObject),
     /// An ordered group originating from a page block.
     Group(PageGroup),
+    /// A composite object with the expanded content of its referenced vector
+    /// graphic resource.
+    Composite(CompositeObject),
     /// A known object kind not rendered by this version.
     Unsupported(UnsupportedObject),
 }
@@ -86,8 +89,51 @@ impl PageObject {
             Self::Text(object) => object.object_id(),
             Self::Image(object) => object.object_id(),
             Self::Group(object) => object.object_id(),
+            Self::Composite(object) => object.object_id(),
             Self::Unsupported(object) => object.object_id(),
         }
+    }
+}
+
+/// A composite object whose graphic units come from a reusable vector
+/// graphic resource.
+///
+/// Following ofdrw, the referenced content draws in the composite's local
+/// coordinate system: the boundary translation and CTM position it on the
+/// page, with no automatic scaling to the boundary size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompositeObject {
+    object_id: u64,
+    boundary: Rect,
+    transform: Transform,
+    resource_id: u64,
+    objects: Vec<PageObject>,
+}
+
+impl CompositeObject {
+    /// Returns the OFD object identifier.
+    pub fn object_id(&self) -> u64 {
+        self.object_id
+    }
+
+    /// Returns the object boundary.
+    pub fn boundary(&self) -> Rect {
+        self.boundary
+    }
+
+    /// Returns the object transform.
+    pub fn transform(&self) -> Transform {
+        self.transform
+    }
+
+    /// Returns the referenced vector graphic resource identifier.
+    pub fn resource_id(&self) -> u64 {
+        self.resource_id
+    }
+
+    /// Returns the converted content of the referenced vector graphic.
+    pub fn objects(&self) -> &[PageObject] {
+        &self.objects
     }
 }
 
@@ -136,8 +182,6 @@ pub enum UnsupportedObjectKind {
     Text,
     /// An image object not yet rendered by a downstream backend.
     Image,
-    /// A composite object.
-    Composite,
 }
 
 /// The algorithm used to determine the interior of a path.
@@ -288,6 +332,7 @@ pub(crate) fn convert_layers(
         path,
         object_ids: HashSet::new(),
         next_synthetic_id: u64::MAX,
+        vector_graphics: Vec::new(),
         remaining_path_commands: limits.max_path_commands,
         remaining_text_characters: limits.max_text_characters_per_page,
         remaining_glyphs: limits.max_glyphs_per_page,
@@ -407,6 +452,11 @@ impl ContentUsage {
                 self.add_clips(&text.clips);
             }
             PageObject::Image(image) => self.add_clips(&image.clips),
+            PageObject::Composite(composite) => {
+                for child in &composite.objects {
+                    self.add_object(child);
+                }
+            }
             PageObject::Unsupported(_) => {}
         }
     }
@@ -428,6 +478,7 @@ struct ConversionContext<'a> {
     path: &'a str,
     object_ids: HashSet<u64>,
     next_synthetic_id: u64,
+    vector_graphics: Vec<u64>,
     remaining_path_commands: usize,
     remaining_text_characters: usize,
     remaining_glyphs: usize,
@@ -524,25 +575,88 @@ impl ConversionContext<'_> {
                     PageObject::Image(self.convert_image(*object, object_id)?)
                 }
                 raw::GraphicUnit::Composite(object) => {
-                    self.unsupported(object.id.as_deref(), UnsupportedObjectKind::Composite)?
+                    let object_id = self.resolve_object_id(object.id.as_deref())?;
+                    self.register_id(object_id)?;
+                    let strict = self.document.strictness() == crate::Strictness::Strict;
+                    let boundary = match object.boundary.as_deref() {
+                        Some(value) => parse_object_boundary(value, self.path, object_id, strict)?,
+                        None if strict => {
+                            return Err(object_error(
+                                self.path,
+                                object_id,
+                                "Boundary",
+                                "required attribute is missing".to_owned(),
+                            ));
+                        }
+                        None => crate::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 0.0,
+                            height: 0.0,
+                        },
+                    };
+                    let transform =
+                        parse_transform(object.transform.as_deref(), self.path, object_id)?;
+                    let resource_id = parse_nonzero_id(
+                        required_object_field(
+                            object.resource_id.as_deref(),
+                            "ResourceID",
+                            self.path,
+                            object_id,
+                        )?,
+                        "ResourceID",
+                        self.path,
+                        object_id,
+                    )?;
+                    self.require_resource_kind(
+                        resource_id,
+                        ResourceKind::VectorGraphic,
+                        object_id,
+                        "ResourceID",
+                    )?;
+                    if self.vector_graphics.contains(&resource_id) {
+                        let mut cycle = self
+                            .vector_graphics
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>();
+                        cycle.push(resource_id.to_string());
+                        return Err(Error::InvalidStructure {
+                            path: self.path.to_owned(),
+                            message: format!(
+                                "vector graphic reference cycle: {}",
+                                cycle.join(" -> ")
+                            ),
+                        });
+                    }
+                    if self.vector_graphics.len() >= self.limits.max_page_block_depth {
+                        return Err(Error::LimitExceeded(format!(
+                            "vector graphic reference depth exceeds limit {}",
+                            self.limits.max_page_block_depth
+                        )));
+                    }
+                    let content = self
+                        .document
+                        .vector_graphic_units(resource_id)
+                        .map_err(|error| {
+                            reference_error(error, self.path, object_id, "ResourceID")
+                        })?
+                        .to_vec();
+                    self.vector_graphics.push(resource_id);
+                    let objects = self.convert_objects(content);
+                    self.vector_graphics.pop();
+                    PageObject::Composite(CompositeObject {
+                        object_id,
+                        boundary,
+                        transform,
+                        resource_id,
+                        objects: objects?,
+                    })
                 }
             };
             converted.push(object);
         }
         Ok(converted)
-    }
-
-    fn unsupported(
-        &mut self,
-        value: Option<&str>,
-        kind: UnsupportedObjectKind,
-    ) -> Result<PageObject> {
-        let id = self.resolve_object_id(value)?;
-        self.register_id(id)?;
-        Ok(PageObject::Unsupported(UnsupportedObject {
-            object_id: id,
-            kind,
-        }))
     }
 
     fn convert_path(&mut self, path: raw::PathObject, object_id: u64) -> Result<PathObject> {

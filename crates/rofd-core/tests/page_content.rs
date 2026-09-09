@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 
 use rofd_core::{
     Color, Document, Error, FillRule, LayerType, LoadOptions, PageObject, Rect, ResourceLimits,
-    Transform, UnsupportedObjectKind, WarningCode,
+    Transform, WarningCode,
 };
 use support::minimal_ofd;
 
@@ -213,25 +213,25 @@ fn accepts_xml_schema_numeric_boolean_attributes() {
 fn nested_page_blocks_preserve_exact_source_order() {
     let page = open_page(
         r#"<ofd:Content><ofd:Layer ID="1">
-  <ofd:CompositeObject ID="2"/>
+  <ofd:PathObject ID="2" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject>
   <ofd:PageBlock ID="3">
-    <ofd:CompositeObject ID="4"/>
-    <ofd:PageBlock ID="5"><ofd:CompositeObject ID="6"/></ofd:PageBlock>
-    <ofd:CompositeObject ID="7"/>
+    <ofd:PathObject ID="4" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject>
+    <ofd:PageBlock ID="5"><ofd:PathObject ID="6" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock>
+    <ofd:PathObject ID="7" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject>
   </ofd:PageBlock>
-  <ofd:CompositeObject ID="8"/>
+  <ofd:PathObject ID="8" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject>
 </ofd:Layer></ofd:Content>"#,
     )
     .unwrap();
 
     let objects = page.layers()[0].objects();
-    assert!(matches!(objects[0], PageObject::Unsupported(_)));
+    assert!(matches!(objects[0], PageObject::Path(_)));
     let PageObject::Group(group) = &objects[1] else {
         panic!("expected a page group");
     };
     assert_eq!(group.object_id(), 3);
     assert_eq!(group.objects().len(), 3);
-    assert!(matches!(group.objects()[0], PageObject::Unsupported(_)));
+    assert!(matches!(group.objects()[0], PageObject::Path(_)));
     let PageObject::Group(nested) = &group.objects()[1] else {
         panic!("expected a nested page group");
     };
@@ -241,25 +241,76 @@ fn nested_page_blocks_preserve_exact_source_order() {
     assert_eq!(objects[2].object_id(), 8);
 }
 
+const COMPOSITE_CATALOG: &str = r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:CompositeGraphicUnits>
+    <ofd:CompositeGraphicUnit ID="10" Width="20" Height="10">
+      <ofd:Content ID="20">
+        <ofd:PathObject ID="21" Boundary="0 0 5 5" Fill="true">
+          <ofd:FillColor Value="1 2 3"/>
+          <ofd:AbbreviatedData>M 0 0 L 5 0 L 5 5 L 0 5 C</ofd:AbbreviatedData>
+        </ofd:PathObject>
+      </ofd:Content>
+    </ofd:CompositeGraphicUnit>
+    <ofd:CompositeGraphicUnit ID="11" Width="20" Height="10">
+      <ofd:Content ID="30">
+        <ofd:CompositeObject ID="31" Boundary="0 0 10 10" ResourceID="11"/>
+      </ofd:Content>
+    </ofd:CompositeGraphicUnit>
+  </ofd:CompositeGraphicUnits>
+</ofd:Res>"#;
+
+fn composite_page(object: &str) -> rofd_core::Result<rofd_core::Page> {
+    let document_xml = r#"<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea><ofd:PublicRes>Res.xml</ofd:PublicRes></ofd:CommonData><ofd:Pages><ofd:Page ID="900" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages></ofd:Document>"#;
+    let page_xml = format!(
+        r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="1">{object}</ofd:Layer></ofd:Content></ofd:Page>"#
+    );
+    let bytes = support::ofd_with_document_page_and_entries(
+        document_xml,
+        &page_xml,
+        &[("Doc_0/Res.xml", COMPOSITE_CATALOG.as_bytes())],
+    );
+    Document::from_bytes(bytes, LoadOptions::default())?.page(0)
+}
+
 #[test]
-fn composite_objects_remain_explicit() {
-    let page = open_page(
-        r#"<ofd:Content><ofd:Layer ID="1">
-  <ofd:CompositeObject ID="4" ResourceID="10"/>
-</ofd:Layer></ofd:Content>"#,
+fn composite_objects_expand_their_referenced_vector_graphic() {
+    let page = composite_page(
+        r#"<ofd:CompositeObject ID="4" Boundary="10 20 30 40" CTM="2 0 0 2 0 0" ResourceID="10"/>"#,
     )
     .unwrap();
     let objects = page.layers()[0].objects();
-    for (index, (id, kind)) in [(4, UnsupportedObjectKind::Composite)]
-        .into_iter()
-        .enumerate()
-    {
-        let PageObject::Unsupported(object) = &objects[index] else {
-            panic!("expected an unsupported object");
-        };
-        assert_eq!(object.object_id(), id);
-        assert_eq!(object.kind(), kind);
-    }
+    assert_eq!(objects.len(), 1);
+    let PageObject::Composite(composite) = &objects[0] else {
+        panic!("expected a composite object");
+    };
+    assert_eq!(composite.object_id(), 4);
+    assert_eq!(composite.resource_id(), 10);
+    assert_eq!(composite.boundary().x, 10.0);
+    assert_eq!(composite.transform().a(), 2.0);
+    assert_eq!(composite.objects().len(), 1);
+    assert!(matches!(&composite.objects()[0], PageObject::Path(path) if path.object_id() == 21));
+}
+
+#[test]
+fn vector_graphic_reference_cycles_are_rejected() {
+    let error =
+        composite_page(r#"<ofd:CompositeObject ID="4" Boundary="0 0 10 10" ResourceID="11"/>"#)
+            .unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidStructure { ref message, .. } if message.contains("cycle")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn composite_objects_require_a_known_vector_graphic_resource() {
+    let error =
+        composite_page(r#"<ofd:CompositeObject ID="4" Boundary="0 0 10 10" ResourceID="99"/>"#)
+            .unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidPageObject { object_id: 4, field, .. } if field == "ResourceID"),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -508,7 +559,7 @@ fn rejects_zero_or_malformed_layer_group_and_leaf_ids() {
 #[test]
 fn rejects_duplicate_ids_anywhere_on_a_page() {
     let error = open_page_strict(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
     )
     .unwrap_err();
     assert!(
@@ -522,7 +573,7 @@ fn lenient_mode_tolerates_duplicate_and_missing_object_ids() {
     // template; ofdrw's converter/发票示例.ofd omits object and layer IDs
     // entirely. Both forms load in lenient mode.
     let page = open_page(
-        r#"<ofd:Content><ofd:Layer><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PathObject Boundary="0 0 2 2"><ofd:AbbreviatedData>M 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer><ofd:PageBlock ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject><ofd:PathObject Boundary="0 0 2 2"><ofd:AbbreviatedData>M 1 1</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
     )
     .unwrap();
     let objects = &page.layers()[0].objects();
@@ -552,7 +603,7 @@ fn counts_layers_groups_and_leaves_against_page_object_limit() {
         ..ResourceLimits::default()
     };
     let error = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap_err();
@@ -568,7 +619,7 @@ fn page_object_limit_accepts_exactly_one_layer_one_group_and_one_leaf() {
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:CompositeObject ID="3"/></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PathObject ID="3" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -599,18 +650,20 @@ fn page_object_limit_rejects_flat_oversize_before_raw_deserialization() {
 }
 
 #[test]
-fn page_object_limit_ignores_object_names_inside_composite_payload() {
+fn page_object_limit_counts_one_unknown_unit_not_its_payload() {
     let limits = ResourceLimits {
         max_page_objects: 2,
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"><ofd:Payload><ofd:PathObject/><ofd:ImageObject/></ofd:Payload></ofd:CompositeObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CustomUnit ID="2"><ofd:Payload><ofd:PathObject/><ofd:ImageObject/></ofd:Payload></ofd:CustomUnit></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
 
-    assert_eq!(page.layers()[0].objects()[0].object_id(), 2);
+    // The whole unknown unit is dropped in lenient mode, so neither it nor
+    // its payload contributes page objects.
+    assert!(page.layers()[0].objects().is_empty());
 }
 
 #[test]
@@ -669,7 +722,7 @@ fn page_block_depth_limit_accepts_the_exact_nesting_depth() {
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PageBlock ID="3"><ofd:CompositeObject ID="4"/></ofd:PageBlock></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PageBlock ID="2"><ofd:PageBlock ID="3"><ofd:PathObject ID="4" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:PageBlock></ofd:PageBlock></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -681,18 +734,18 @@ fn page_block_depth_limit_accepts_the_exact_nesting_depth() {
 }
 
 #[test]
-fn page_block_depth_ignores_page_block_names_inside_composite_payload() {
+fn page_block_depth_ignores_page_block_names_inside_unknown_unit_payload() {
     let limits = ResourceLimits {
         max_page_block_depth: 0,
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"><ofd:Payload><ofd:PageBlock/></ofd:Payload></ofd:CompositeObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CustomUnit ID="2"><ofd:Payload><ofd:PageBlock/></ofd:Payload></ofd:CustomUnit></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
 
-    assert_eq!(page.layers()[0].objects()[0].object_id(), 2);
+    assert!(page.layers()[0].objects().is_empty());
 }
 
 #[test]
@@ -719,7 +772,7 @@ fn xml_depth_limit_accepts_the_exact_nesting_depth() {
         ..ResourceLimits::default()
     };
     let page = open_page_with_limits(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:CompositeObject ID="2"><ofd:Payload/></ofd:CompositeObject></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 1 1"><ofd:AbbreviatedData>M 0 0</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
         limits,
     )
     .unwrap();
@@ -830,6 +883,7 @@ fn repository_fixture_exposes_paths_text_image_and_unsupported_nodes() {
                 PageObject::Path(_) => (paths + 1, text, images, unsupported),
                 PageObject::Text(_) => (paths, text + 1, images, unsupported),
                 PageObject::Image(_) => (paths, text, images + 1, unsupported),
+                PageObject::Composite(_) => (paths, text, images, unsupported),
                 PageObject::Unsupported(_) => (paths, text, images, unsupported + 1),
                 PageObject::Group(group) => {
                     let nested = counts(group.objects());
@@ -917,7 +971,7 @@ fn path_object_with_trailing_clips_does_not_consume_the_following_graphic_unit()
     // declare StrokeColor before AbbreviatedData; serde-xml-rs 0.6 loses the
     // following sibling unless the payload is extracted standalone.
     let page = open_page(
-        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" Stroke="true"><ofd:StrokeColor Value="0 0 0"/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData><ofd:Clips TransFlag="false"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 5 5" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 1 0 L 1 1 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips></ofd:PathObject><ofd:PathObject ID="3" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 0 0 L 2 2</ofd:AbbreviatedData></ofd:PathObject><ofd:CompositeObject ID="4" Boundary="0 0 10 10" ResourceID="9"/></ofd:Layer></ofd:Content>"#,
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 10 10" Stroke="true"><ofd:StrokeColor Value="0 0 0"/><ofd:AbbreviatedData>M 0 0 L 1 1</ofd:AbbreviatedData><ofd:Clips TransFlag="false"><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 5 5" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 1 0 L 1 1 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips></ofd:PathObject><ofd:PathObject ID="3" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 0 0 L 2 2</ofd:AbbreviatedData></ofd:PathObject><ofd:PathObject ID="4" Boundary="0 0 10 10"><ofd:AbbreviatedData>M 0 0 L 3 3</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#,
     )
     .unwrap();
     let objects = page.layers()[0].objects();
@@ -928,10 +982,7 @@ fn path_object_with_trailing_clips_does_not_consume_the_following_graphic_unit()
     assert_eq!(clipped.object_id(), 2);
     assert_eq!(clipped.clips().len(), 1);
     assert!(matches!(&objects[1], PageObject::Path(path) if path.object_id() == 3));
-    assert!(matches!(
-        &objects[2],
-        PageObject::Unsupported(object) if object.object_id() == 4
-    ));
+    assert!(matches!(&objects[2], PageObject::Path(path) if path.object_id() == 4));
 }
 
 #[test]
