@@ -8,7 +8,7 @@ export DH_VERBOSE = 1
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release -p rofd-ffi -p rofd --no-default-features --features rofd/qt-reader
+	cargo build --release -p rofd-ffi -p rofd --features rofd/qt-reader
 
 override_dh_auto_install:
 	install -D -m0755 target/release/rofd \
