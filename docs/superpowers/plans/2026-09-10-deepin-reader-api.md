@@ -45,17 +45,22 @@ rectangles, and explicit rejection of unsafe arbitrary Cairo paths.
 Files: core `src/{raw,document}.rs`, core metadata tests; FFI
 `src/{metadata,handles,abi,lib}.rs`, header, metadata tests, C consumers, READMEs.
 
-- [ ] Add a package with all DocInfo fields and `<Keywords><Keyword>one</Keyword>
+- [x] Add a package with all DocInfo fields and `<Keywords><Keyword>one</Keyword>
   <Keyword>二</Keyword></Keywords>`; assert `document.metadata().keywords` preserves
   order. Test missing fields and lazy warning snapshot growth.
-- [ ] Run core tests to confirm missing keywords behavior; implement raw and
+- [x] Run core tests to confirm missing keywords behavior; implement raw and
   public metadata field using existing bounded XML parsing.
-- [ ] Add owned metadata/warning list handles with complete NULL/empty/lifetime,
+- [x] Add owned metadata/warning list handles with complete NULL/empty/lifetime,
   out-of-range, record-tail and output-overlap tests before implementation.
-- [ ] Implement explicit field accessors, list counts and indexed queries using
+- [x] Implement explicit field accessors, list counts and indexed queries using
   existing FFI lifetime/error helpers; document missing versus empty values.
-- [ ] Verify build/tests/Clippy/C consumers; review and commit
+- [x] Verify build/tests/Clippy/C consumers; review and commit
   `feat(ffi): expose document metadata and warnings`.
+
+P1 metadata verification: workspace/all-targets 501 passed, 0 failed, 2
+intentional ignores; release FFI/Qt build, format, strict Clippy and dynamic
+C11/C++17 consumers/symbol checks passed. Independent spec and quality reviews
+approved. New coverage includes 3 core tests, 8 FFI tests and 2 conversion units.
 
 ## Task 3: P1 outlines and shared actions
 

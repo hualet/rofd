@@ -1,7 +1,9 @@
 rofd_abi_version
 rofd_document_free
+rofd_document_get_metadata
 rofd_document_get_page
 rofd_document_get_page_count
+rofd_document_get_warnings
 rofd_document_open
 rofd_error_free
 rofd_error_get_message
@@ -9,6 +11,18 @@ rofd_error_get_status
 rofd_find_options_init
 rofd_library_version
 rofd_load_options_init
+rofd_metadata_free
+rofd_metadata_get_abstract
+rofd_metadata_get_author
+rofd_metadata_get_creation_date
+rofd_metadata_get_creator
+rofd_metadata_get_creator_version
+rofd_metadata_get_document_id
+rofd_metadata_get_keyword
+rofd_metadata_get_keyword_count
+rofd_metadata_get_modification_date
+rofd_metadata_get_subject
+rofd_metadata_get_title
 rofd_page_find_text
 rofd_page_find_text_with_options
 rofd_page_free
@@ -44,3 +58,6 @@ rofd_text_selection_get_region
 rofd_text_selection_get_region_count
 rofd_text_selection_get_text
 rofd_text_selection_get_text_length
+rofd_warning_list_free
+rofd_warning_list_get_count
+rofd_warning_list_get_warning

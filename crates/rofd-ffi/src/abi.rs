@@ -32,6 +32,21 @@ pub const ROFD_STRICTNESS_LENIENT: u32 = 0;
 /// Strict document parsing mode.
 pub const ROFD_STRICTNESS_STRICT: u32 = 1;
 
+/// A parse warning category unknown to this ABI version.
+pub const ROFD_WARNING_UNKNOWN: u32 = 0;
+/// A page inherited the document page area.
+pub const ROFD_WARNING_PAGE_AREA_FALLBACK: u32 = 1;
+/// The document omitted its default page area.
+pub const ROFD_WARNING_DOCUMENT_PAGE_AREA_MISSING: u32 = 2;
+/// An invalid signature or stamp annotation was skipped.
+pub const ROFD_WARNING_SIGNATURE_SKIPPED: u32 = 3;
+/// An unknown graphic unit was skipped.
+pub const ROFD_WARNING_UNKNOWN_GRAPHIC_UNIT_SKIPPED: u32 = 4;
+/// An invalid page annotation was skipped.
+pub const ROFD_WARNING_ANNOTATION_SKIPPED: u32 = 5;
+/// Historical document bodies were skipped.
+pub const ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED: u32 = 6;
+
 /// Nearest-neighbor image interpolation.
 pub const ROFD_IMAGE_INTERPOLATION_NEAREST: u32 = 0;
 /// Bilinear image interpolation.
@@ -249,6 +264,19 @@ pub struct rofd_render_diagnostic_t {
     pub message: *const c_char,
 }
 
+/// One parse warning borrowed from an independently owned warning snapshot.
+#[repr(C)]
+pub struct rofd_warning_t {
+    /// Caller-provided record size; must cover the complete v1 prefix.
+    pub struct_size: u32,
+    /// Stable category represented by a `ROFD_WARNING_*` constant.
+    pub code: u32,
+    /// Borrowed NUL-terminated UTF-8 package path, valid until the snapshot is freed.
+    pub path: *const c_char,
+    /// Borrowed NUL-terminated UTF-8 explanation, valid until the snapshot is freed.
+    pub message: *const c_char,
+}
+
 // Each published size boundary includes trailing padding and must never change when fields are
 // appended. In particular, future fields must not reuse padding before one of these boundaries.
 pub(crate) const ROFD_LOAD_OPTIONS_V1_SIZE: usize = c_record_size(
@@ -297,6 +325,10 @@ pub(crate) const ROFD_RENDER_DIAGNOSTIC_V1_SIZE: usize = c_record_size(
         align_of::<u64>(),
         align_of::<*const c_char>(),
     ]),
+);
+pub(crate) const ROFD_WARNING_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_warning_t, message) + size_of::<*const c_char>(),
+    max_alignment(&[align_of::<u32>(), align_of::<*const c_char>()]),
 );
 
 const ROFD_LOAD_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_LOAD_OPTIONS_V1_SIZE];
@@ -564,6 +596,7 @@ mod tests {
 
     #[test]
     fn current_records_match_their_permanent_v1_boundaries() {
+        assert_eq!(ROFD_WARNING_V1_SIZE, size_of::<rofd_warning_t>());
         assert_eq!(ROFD_PIXEL_RECT_V1_SIZE, size_of::<rofd_pixel_rect_t>());
         assert_eq!(ROFD_LOAD_OPTIONS_V1_SIZE, size_of::<rofd_load_options_t>());
         assert_eq!(

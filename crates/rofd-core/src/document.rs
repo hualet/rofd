@@ -31,6 +31,8 @@ pub struct Metadata {
     pub creation_date: Option<String>,
     /// Modification date as stored by the producer.
     pub modification_date: Option<String>,
+    /// Keywords in declaration order, preserving repeated and empty entries.
+    pub keywords: Vec<String>,
 }
 
 /// Stable categories for recoverable OFD problems.
@@ -416,6 +418,7 @@ impl Document {
                 creator_version: info.creator_version,
                 creation_date: info.creation_date,
                 modification_date: info.mod_date,
+                keywords: info.keywords.entries,
             },
             default_page_area: page_area,
             pages,

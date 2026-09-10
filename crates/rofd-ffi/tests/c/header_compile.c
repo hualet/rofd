@@ -4,6 +4,15 @@
 #include "rofd.h"
 
 _Static_assert(ROFD_ABI_VERSION == 1u, "unexpected ABI version");
+_Static_assert(offsetof(rofd_warning_t, struct_size) == 0,
+               "warning struct_size must be first");
+_Static_assert(offsetof(rofd_warning_t, code) == sizeof(uint32_t),
+               "warning code must follow struct_size");
+_Static_assert(offsetof(rofd_warning_t, path) < offsetof(rofd_warning_t, message),
+               "warning pointers must retain declaration order");
+_Static_assert(ROFD_WARNING_UNKNOWN == 0u && ROFD_WARNING_PAGE_AREA_FALLBACK == 1u &&
+                   ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED == 6u,
+               "warning codes must remain stable");
 _Static_assert(sizeof(rofd_pixel_rect_t) == 20, "pixel viewport ABI size");
 _Static_assert(offsetof(rofd_pixel_rect_t, height) == 16, "pixel viewport field order");
 _Static_assert(sizeof(rofd_status_t) == sizeof(uint32_t),
@@ -59,6 +68,25 @@ _Static_assert(offsetof(rofd_render_diagnostic_t, struct_size) == 0,
                "render diagnostic struct_size must be first");
 
 static int consume_api(void) {
+    if (rofd_document_get_metadata(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_document_get_warnings(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_metadata_get_document_id(NULL) != NULL ||
+        rofd_metadata_get_title(NULL) != NULL ||
+        rofd_metadata_get_author(NULL) != NULL ||
+        rofd_metadata_get_subject(NULL) != NULL ||
+        rofd_metadata_get_abstract(NULL) != NULL ||
+        rofd_metadata_get_creator(NULL) != NULL ||
+        rofd_metadata_get_creator_version(NULL) != NULL ||
+        rofd_metadata_get_creation_date(NULL) != NULL ||
+        rofd_metadata_get_modification_date(NULL) != NULL ||
+        rofd_metadata_get_keyword_count(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_metadata_get_keyword(NULL, 0u, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_warning_list_get_count(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_warning_list_get_warning(NULL, 0u, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT) {
+        return 1;
+    }
+    rofd_metadata_free(NULL);
+    rofd_warning_list_free(NULL);
     rofd_pixel_rect_t viewport;
     rofd_pixel_rect_init(&viewport, sizeof(viewport));
     if (viewport.struct_size != sizeof(viewport) || viewport.width != 0 ||

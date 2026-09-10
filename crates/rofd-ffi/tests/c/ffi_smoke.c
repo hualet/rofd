@@ -58,6 +58,8 @@ static int is_rule_dark_red(uint32_t red, uint32_t green, uint32_t blue) {
 
 int main(int argc, char **argv) {
     rofd_document_t *document = NULL;
+    rofd_metadata_t *metadata = NULL;
+    rofd_warning_list_t *warnings = NULL;
     rofd_page_t *page = NULL;
     rofd_renderer_t *renderer = NULL;
     rofd_render_report_t *report = NULL;
@@ -79,6 +81,10 @@ int main(int argc, char **argv) {
     size_t page_count = 0u;
     size_t diagnostic_count = 0u;
     size_t page_index = SIZE_MAX;
+    size_t warning_count = 0u;
+    size_t initial_warning_count = 0u;
+    size_t keyword_count = SIZE_MAX;
+    const char *keyword = NULL;
     int32_t width = 0;
     int32_t height = 0;
     int stride = 0;
@@ -92,6 +98,11 @@ int main(int argc, char **argv) {
           ROFD_STATUS_OK);
     CHECK(document != NULL);
     CHECK(error == NULL);
+    CHECK(rofd_document_get_metadata(document, &metadata, &error) == ROFD_STATUS_OK);
+    CHECK(metadata != NULL);
+    CHECK(rofd_document_get_warnings(document, &warnings, &error) == ROFD_STATUS_OK);
+    CHECK(warnings != NULL);
+    CHECK(rofd_warning_list_get_count(warnings, &initial_warning_count, &error) == ROFD_STATUS_OK);
     CHECK(rofd_document_get_page_count(document, &page_count, &error) ==
           ROFD_STATUS_OK);
     CHECK(page_count == 1u);
@@ -131,6 +142,36 @@ int main(int argc, char **argv) {
 
     rofd_document_free(document);
     document = NULL;
+    /* Snapshots and their borrowed strings remain live after document free. */
+    CHECK(rofd_metadata_get_document_id(metadata) != NULL);
+    CHECK(strcmp(rofd_metadata_get_document_id(metadata), "2195d5df959c419cb575dab5eeabb065") == 0);
+    CHECK(rofd_metadata_get_creator(metadata) != NULL);
+    CHECK(strcmp(rofd_metadata_get_creator(metadata), "nuonuo") == 0);
+    CHECK(rofd_metadata_get_creator_version(metadata) != NULL);
+    CHECK(strcmp(rofd_metadata_get_creator_version(metadata), "1.0.0") == 0);
+    CHECK(rofd_metadata_get_creation_date(metadata) != NULL);
+    CHECK(strcmp(rofd_metadata_get_creation_date(metadata), "2025-01-06") == 0);
+    CHECK(rofd_metadata_get_modification_date(metadata) != NULL);
+    CHECK(strcmp(rofd_metadata_get_modification_date(metadata), "2024-10-22") == 0);
+    CHECK(rofd_metadata_get_title(metadata) == NULL);
+    CHECK(rofd_metadata_get_author(metadata) == NULL);
+    CHECK(rofd_metadata_get_subject(metadata) == NULL);
+    CHECK(rofd_metadata_get_abstract(metadata) == NULL);
+    CHECK(rofd_metadata_get_keyword_count(metadata, &keyword_count, &error) == ROFD_STATUS_OK);
+    CHECK(keyword_count == 0u);
+    CHECK(rofd_metadata_get_keyword(metadata, 0u, &keyword, &error) == ROFD_STATUS_PAGE_OUT_OF_RANGE);
+    CHECK(keyword == NULL && error != NULL);
+    CHECK(rofd_error_get_status(error) == ROFD_STATUS_PAGE_OUT_OF_RANGE);
+    rofd_error_free(error);
+    error = NULL;
+    CHECK(rofd_warning_list_get_count(warnings, &warning_count, &error) == ROFD_STATUS_OK);
+    CHECK(warning_count == initial_warning_count);
+    for (size_t index = 0; index < warning_count; ++index) {
+        rofd_warning_t warning = {0};
+        warning.struct_size = sizeof(warning);
+        CHECK(rofd_warning_list_get_warning(warnings, index, &warning, &error) == ROFD_STATUS_OK);
+        CHECK(warning.path != NULL && warning.message != NULL);
+    }
     CHECK(rofd_page_get_index(page, &page_index, &error) == ROFD_STATUS_OK);
     CHECK(page_index == 0u);
 
@@ -260,5 +301,7 @@ cleanup:
     rofd_renderer_free(renderer);
     rofd_page_free(page);
     rofd_document_free(document);
+    rofd_warning_list_free(warnings);
+    rofd_metadata_free(metadata);
     return result;
 }

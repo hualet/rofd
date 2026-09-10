@@ -6,6 +6,18 @@ static_assert(std::is_standard_layout_v<rofd_pixel_rect_t>, "pixel rectangle lay
 static_assert(sizeof(rofd_pixel_rect_t) == 20, "pixel viewport ABI size");
 
 static_assert(ROFD_ABI_VERSION == 1u, "unexpected ABI version");
+static_assert(std::is_standard_layout_v<rofd_warning_t>, "warning record layout");
+static_assert(std::is_same_v<decltype(&rofd_metadata_get_document_id),
+                             const char *(*)(const rofd_metadata_t *)>,
+              "metadata accessors borrow immutable UTF-8");
+static_assert(std::is_same_v<decltype(&rofd_metadata_get_keyword),
+                             rofd_status_t (*)(const rofd_metadata_t *, size_t,
+                                               const char **, rofd_error_t **)>,
+              "keyword query signature");
+static_assert(std::is_same_v<decltype(&rofd_warning_list_get_warning),
+                             rofd_status_t (*)(const rofd_warning_list_t *, size_t,
+                                               rofd_warning_t *, rofd_error_t **)>,
+              "warning snapshot query signature");
 static_assert(std::is_standard_layout_v<rofd_rect_t>,
               "rofd_rect_t must have standard layout");
 static_assert(std::is_standard_layout_v<rofd_render_options_t>,
@@ -53,6 +65,20 @@ static_assert(std::is_same_v<decltype(&rofd_page_get_selected_text),
               "unexpected selection declaration");
 
 int main() {
+    rofd_metadata_t *metadata = nullptr;
+    rofd_warning_list_t *warnings = nullptr;
+    rofd_warning_t warning{};
+    warning.struct_size = sizeof(warning);
+    if (rofd_document_get_metadata(nullptr, &metadata, nullptr) != ROFD_STATUS_INVALID_ARGUMENT ||
+        metadata != nullptr ||
+        rofd_document_get_warnings(nullptr, &warnings, nullptr) != ROFD_STATUS_INVALID_ARGUMENT ||
+        warnings != nullptr || rofd_metadata_get_title(nullptr) != nullptr ||
+        rofd_warning_list_get_warning(nullptr, 0, &warning, nullptr) != ROFD_STATUS_INVALID_ARGUMENT ||
+        warning.struct_size != sizeof(warning) || warning.code != 0 ||
+        warning.path != nullptr || warning.message != nullptr)
+        return 1;
+    rofd_metadata_free(metadata);
+    rofd_warning_list_free(warnings);
     rofd_pixel_rect_t viewport;
     rofd_pixel_rect_init(&viewport, sizeof(viewport));
     if (viewport.struct_size != sizeof(viewport) ||

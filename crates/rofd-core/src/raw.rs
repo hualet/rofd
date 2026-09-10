@@ -70,6 +70,14 @@ pub(crate) struct DocInfo {
     pub(crate) creator_version: Option<String>,
     pub(crate) creation_date: Option<String>,
     pub(crate) mod_date: Option<String>,
+    #[serde(default)]
+    pub(crate) keywords: Keywords,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct Keywords {
+    #[serde(rename = "Keyword", default)]
+    pub(crate) entries: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

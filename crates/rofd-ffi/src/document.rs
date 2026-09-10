@@ -47,7 +47,7 @@ impl LoadOptionsInput {
     }
 }
 
-unsafe fn document_ref<'a>(
+pub(crate) unsafe fn document_ref<'a>(
     document: *const rofd_document_t,
 ) -> Result<&'a DocumentHandle, FfiError> {
     if document.is_null() {

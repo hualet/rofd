@@ -6,6 +6,60 @@ link with `rofd_ffi` plus Cairo. Check `rofd_abi_version()` against
 `ROFD_ABI_VERSION` before using an ABI whose version is not already known by
 the application.
 
+## Metadata and parse warnings
+
+`rofd_document_get_metadata` returns an independently owned immutable snapshot.
+The nine string getters borrow UTF-8 values from that snapshot: a missing field
+returns `NULL`, while an explicitly empty field returns a non-NULL empty string.
+Dates retain their producer representation. Keywords preserve declaration
+order, repeated values and empty entries; access them with
+`rofd_metadata_get_keyword_count` and `rofd_metadata_get_keyword`.
+
+`rofd_document_get_warnings` copies only warnings collected so far. It does not
+load pages or force lazy parsing. A snapshot taken before the first page query
+can therefore be empty even when a later snapshot contains a page-area fallback
+warning. Existing snapshots remain unchanged. These are parsing warnings;
+rendering diagnostics remain available through the rendering report API.
+
+```c
+rofd_metadata_t *metadata = NULL;
+rofd_warning_list_t *warnings = NULL;
+if (rofd_document_get_metadata(document, &metadata, NULL) == ROFD_STATUS_OK) {
+    const char *title = rofd_metadata_get_title(metadata);
+    printf("title: %s\n", title ? title : "(missing)");
+}
+if (rofd_document_get_warnings(document, &warnings, NULL) == ROFD_STATUS_OK) {
+    size_t count = 0;
+    if (rofd_warning_list_get_count(warnings, &count, NULL) == ROFD_STATUS_OK) {
+        for (size_t i = 0; i < count; ++i) {
+            rofd_warning_t warning = {0};
+            warning.struct_size = sizeof(warning);
+            if (rofd_warning_list_get_warning(warnings, i, &warning, NULL)
+                    == ROFD_STATUS_OK)
+                fprintf(stderr, "%u %s: %s\n", warning.code,
+                        warning.path, warning.message);
+        }
+    }
+}
+rofd_metadata_free(metadata);
+rofd_warning_list_free(warnings);
+```
+
+Both snapshot types remain usable after document and page handles are freed.
+Borrowed strings must not be modified or separately freed, and remain valid
+until their snapshot is freed. Embedded NULs are displayed as `\0` so C string
+consumers retain the full value. Warning codes are stable `ROFD_WARNING_*`
+constants; future unknown categories map to `ROFD_WARNING_UNKNOWN` (0).
+
+Warning output records require an initialized `struct_size`. Queries clear the
+known prefix including padding and restore that size, preserving unknown tail
+bytes. Invalid indices use `ROFD_STATUS_PAGE_OUT_OF_RANGE`. Required NULL
+arguments fail with `ROFD_STATUS_INVALID_ARGUMENT`; ordinary failures null
+handle/string outputs or zero counts and valid record prefixes. Malformed
+address layouts preserve every output. Overlaps preserve ordinary outputs and
+may publish an error only to a separate valid error slot. These APIs keep the
+existing ABI version and layouts; no GUI types enter the core metadata API.
+
 ## Text semantic C example
 
 Page text, layout, and search use independently owned result handles. This
@@ -211,6 +265,6 @@ rectangles to the tile; unsafe extreme path coordinates return
   in use. Cairo access and synchronization remain the caller's responsibility.
 
 The v1 surface intentionally defers link and image mappings, richer annotation
-and signature queries, outline/metadata APIs, progressive rendering, callbacks,
+and signature queries, outline APIs, progressive rendering, callbacks,
 custom font providers, non-Cairo backends, and advanced composite or color-space
 controls.

@@ -73,6 +73,14 @@ file URI, and unknown action names. Queries never execute an action or open a
 file/network destination. Unknown actions remain inspectable with warnings.
 Reuse the outline action model. Preserve ordering for deterministic hit testing.
 
+The standard defines a graphic Boundary in its current container coordinates;
+its CTM transforms object-local content. Map a fallback Boundary through the
+parent container transform, not through that object's CTM a second time (a
+20 mm image with a 20x normalized-image CTM must not acquire a 400 mm link box).
+Map explicit local Region geometry through the content transform. Region bounds
+are conservative; cubic control points may be absent, defaulting to the current
+point and endpoint respectively.
+
 ## ABI and delivery
 
 All additions preserve v1 symbols/records/SONAME, struct_size rules, independent
@@ -91,6 +99,9 @@ checks. Do not push or tag as part of this feature task.
   normative attributes first; any producer compatibility handling must be
   explicit and tested. Action Event is DO/PO/CLICK; Region is optional and
   defaults to the enclosing graphic/page boundary. GotoA NewWindow defaults true.
+- Further primary checks: printed p16 (named Bookmark has Name and Dest), p51
+  (Boundary uses current container coordinates; CTM uses object coordinates),
+  pp56-58 (Region Bezier control defaults and Arc attributes).
 - Existing `crates/rofd-render/src/cairo_renderer.rs` and FFI safety helpers.
 - Existing semantic API design: `2026-09-09-poppler-style-c-semantic-api-design.md`.
 - ofdrw official core models: `basicStructure/outlines/CT_OutlineElem.java`,

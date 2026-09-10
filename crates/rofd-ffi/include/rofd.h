@@ -90,6 +90,14 @@ typedef uint32_t rofd_status_t;
 #define ROFD_STRICTNESS_LENIENT 0u
 #define ROFD_STRICTNESS_STRICT 1u
 
+#define ROFD_WARNING_UNKNOWN 0u
+#define ROFD_WARNING_PAGE_AREA_FALLBACK 1u
+#define ROFD_WARNING_DOCUMENT_PAGE_AREA_MISSING 2u
+#define ROFD_WARNING_SIGNATURE_SKIPPED 3u
+#define ROFD_WARNING_UNKNOWN_GRAPHIC_UNIT_SKIPPED 4u
+#define ROFD_WARNING_ANNOTATION_SKIPPED 5u
+#define ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED 6u
+
 #define ROFD_IMAGE_INTERPOLATION_NEAREST 0u
 #define ROFD_IMAGE_INTERPOLATION_BILINEAR 1u
 
@@ -111,6 +119,8 @@ typedef uint32_t rofd_status_t;
 #define ROFD_DIAGNOSTIC_IMAGE_BORDER_UNSUPPORTED 6u
 
 typedef struct rofd_document rofd_document_t;
+typedef struct rofd_metadata rofd_metadata_t;
+typedef struct rofd_warning_list rofd_warning_list_t;
 typedef struct rofd_page rofd_page_t;
 typedef struct rofd_renderer rofd_renderer_t;
 typedef struct rofd_render_report rofd_render_report_t;
@@ -213,6 +223,17 @@ typedef struct rofd_render_diagnostic {
     const char *message;
 } rofd_render_diagnostic_t;
 
+/** One parse warning. Set struct_size before passing this output record.
+ * The path and message are borrowed NUL-terminated UTF-8 strings owned by the
+ * warning list; they remain valid until rofd_warning_list_free. Embedded NULs
+ * are represented by the two visible characters '\\' and '0'. */
+typedef struct rofd_warning {
+    uint32_t struct_size;
+    uint32_t code; /* ROFD_WARNING_*; future unknown categories map to UNKNOWN. */
+    const char *path;
+    const char *message;
+} rofd_warning_t;
+
 uint32_t rofd_abi_version(void);
 const char *rofd_library_version(void);
 
@@ -247,6 +268,87 @@ rofd_status_t rofd_document_get_page(const rofd_document_t *document,
                                      rofd_page_t **page,
                                      rofd_error_t **error);
 void rofd_document_free(rofd_document_t *document);
+
+/** Copies document metadata into an independently owned immutable snapshot.
+ * document and metadata are required; error is optional. The snapshot survives
+ * document free and must be released with rofd_metadata_free.
+ *
+ * All non-NULL output slots must be aligned, writable, mutually disjoint and
+ * disjoint from source handle storage. Invalid input/output address layouts
+ * leave every output untouched. Overlaps leave ordinary outputs untouched but
+ * may publish a failure to an independent valid error slot. Other failures
+ * null the metadata output. These transaction rules also apply to metadata
+ * keyword and warning-list queries below, zeroing counts or nulling string/
+ * handle outputs on ordinary failures. NULL required inputs are invalid.
+ * Inputs must remain live and immutable for each call, and outputs must not be
+ * accessed concurrently. Snapshots support concurrent read-only queries. */
+rofd_status_t rofd_document_get_metadata(const rofd_document_t *document,
+                                        rofd_metadata_t **metadata,
+                                        rofd_error_t **error);
+
+/** Borrow metadata strings. NULL handles or missing fields return NULL;
+ * explicitly empty fields return a non-NULL empty string. Dates retain their
+ * producer representation. Every returned UTF-8 string remains valid until
+ * rofd_metadata_free; do not modify or free it. Embedded NULs are represented
+ * by the two visible characters '\\' and '0'. A non-NULL handle must be a live
+ * metadata snapshot and must not be freed concurrently. */
+const char *rofd_metadata_get_document_id(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_title(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_author(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_subject(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_abstract(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_creator(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_creator_version(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_creation_date(const rofd_metadata_t *metadata);
+const char *rofd_metadata_get_modification_date(const rofd_metadata_t *metadata);
+
+/** Counts keywords in declaration order, including repeated and empty entries.
+ * metadata and count are required; error is optional. */
+rofd_status_t rofd_metadata_get_keyword_count(const rofd_metadata_t *metadata,
+                                             size_t *count,
+                                             rofd_error_t **error);
+/** Borrows a keyword with the same string lifetime as the metadata readers.
+ * metadata and keyword are required; error is optional. A zero-based index
+ * outside the keyword list returns ROFD_STATUS_PAGE_OUT_OF_RANGE. */
+rofd_status_t rofd_metadata_get_keyword(const rofd_metadata_t *metadata,
+                                       size_t index,
+                                       const char **keyword,
+                                       rofd_error_t **error);
+/** Frees metadata and invalidates all strings borrowed from it. NULL is a no-op.
+ * A non-NULL handle must be uniquely owned, live and freed exactly once, without
+ * concurrent readers or subsequent uses of its borrowed strings. */
+void rofd_metadata_free(rofd_metadata_t *metadata);
+
+/** Captures only parse warnings already collected by the document. This call
+ * does not load pages or force any lazy parsing. Later queries may collect new
+ * warnings; existing snapshots remain unchanged. The independently owned
+ * snapshot survives document/page free. document and warnings are required;
+ * error is optional. The metadata transaction and pointer rules above apply. */
+rofd_status_t rofd_document_get_warnings(const rofd_document_t *document,
+                                        rofd_warning_list_t **warnings,
+                                        rofd_error_t **error);
+/** warnings and count are required; error is optional. */
+rofd_status_t rofd_warning_list_get_count(const rofd_warning_list_t *warnings,
+                                         size_t *count,
+                                         rofd_error_t **error);
+/** Borrows a zero-based warning. Invalid indices return
+ * ROFD_STATUS_PAGE_OUT_OF_RANGE. warnings and warning are required; error is
+ * optional. The caller must initialize warning->struct_size to at least
+ * sizeof(rofd_warning_t). The non-NULL record must be aligned and readable for
+ * struct_size, and a supported prefix must be writable. The transaction clears
+ * the complete v1 prefix including padding, preserves the caller's struct_size,
+ * and leaves unknown tail bytes unchanged. Ordinary failures zero the valid
+ * prefix except struct_size. Undersized records stay untouched. Invalid address
+ * layouts and overlaps follow the metadata transaction rules above. Borrowed
+ * path/message pointers remain valid only until rofd_warning_list_free. */
+rofd_status_t rofd_warning_list_get_warning(const rofd_warning_list_t *warnings,
+                                           size_t index,
+                                           rofd_warning_t *warning,
+                                           rofd_error_t **error);
+/** Frees a snapshot and invalidates borrowed strings. NULL is a no-op.
+ * A non-NULL handle must be uniquely owned, live and freed exactly once, without
+ * concurrent readers or subsequent uses of its borrowed strings. */
+void rofd_warning_list_free(rofd_warning_list_t *warnings);
 
 /** Borrow a live page without consuming it; its storage must be disjoint from
  * page_index and error and must not be freed during the call. */

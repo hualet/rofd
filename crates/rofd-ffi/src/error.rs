@@ -1,4 +1,7 @@
-use crate::abi::{ROFD_RENDER_DIAGNOSTIC_V1_SIZE, ROFD_TEXT_CHAR_V1_SIZE, ROFD_TEXT_MATCH_V1_SIZE};
+use crate::abi::{
+    ROFD_RENDER_DIAGNOSTIC_V1_SIZE, ROFD_TEXT_CHAR_V1_SIZE, ROFD_TEXT_MATCH_V1_SIZE,
+    ROFD_WARNING_V1_SIZE,
+};
 use crate::handles::{drop_raw_handle, handle_ref, into_raw_handle, ErrorHandle, HandleToken};
 use crate::{
     rofd_error_t, rofd_render_diagnostic_t, rofd_status_t, ROFD_STATUS_INTERNAL,
@@ -191,6 +194,40 @@ pub(crate) struct DiagnosticFields {
     pub(crate) message: *const c_char,
 }
 
+pub(crate) struct WarningFields {
+    pub(crate) code: u32,
+    pub(crate) path: *const c_char,
+    pub(crate) message: *const c_char,
+}
+
+pub(crate) struct WarningOutput {
+    output: *mut crate::rofd_warning_t,
+    declared_size: u32,
+    valid_address: bool,
+}
+
+impl WarningOutput {
+    /// Captures the initialized size only after rejecting malformed addresses.
+    ///
+    /// # Safety
+    /// A non-null, aligned pointer with a representable record range must be
+    /// readable for its first u32; supported prefixes must also be writable.
+    pub(crate) unsafe fn required(output: *mut crate::rofd_warning_t) -> Self {
+        let valid_address = SlotRange::for_pointer(output).is_ok();
+        let declared_size = if output.is_null() || !valid_address {
+            0
+        } else {
+            // SAFETY: Address checks passed and the caller guarantees a readable size field.
+            unsafe { output.cast::<u32>().read() }
+        };
+        Self {
+            output,
+            declared_size,
+            valid_address,
+        }
+    }
+}
+
 pub(crate) struct TextCharFields {
     pub(crate) utf8_offset: usize,
     pub(crate) utf8_length: usize,
@@ -314,6 +351,12 @@ macro_rules! zero_scalars {
 }
 
 zero_scalars!(i32, u32, u64, usize, f64);
+
+impl scalar_private::Sealed for *const c_char {}
+
+impl ZeroScalar for *const c_char {
+    const ZERO: Self = ptr::null();
+}
 
 impl scalar_private::Sealed for crate::rofd_rect_t {}
 
@@ -515,6 +558,45 @@ unsafe impl<T: ZeroScalar> OutputSlot for ScalarOutput<T> {
 
 impl output_private::Slot for DiagnosticOutput {}
 
+impl output_private::Slot for WarningOutput {}
+
+unsafe impl OutputSlot for WarningOutput {
+    type Staged = WarningFields;
+
+    fn collect_range(&self, ranges: &mut SlotRanges) -> Result<(), ()> {
+        if !self.valid_address {
+            return Err(());
+        }
+        if self.declared_size as usize >= ROFD_WARNING_V1_SIZE {
+            ranges.push(self.output)
+        } else {
+            ranges.push(self.output.cast::<u32>())
+        }
+    }
+
+    unsafe fn initialize(&self) -> bool {
+        if self.output.is_null() || (self.declared_size as usize) < ROFD_WARNING_V1_SIZE {
+            return false;
+        }
+        // SAFETY: Preflight checked alignment and overlap, and the declared prefix is writable.
+        // Clearing bytes includes padding, while field writes preserve the captured size and tail.
+        unsafe {
+            ptr::write_bytes(self.output.cast::<u8>(), 0, ROFD_WARNING_V1_SIZE);
+            ptr::addr_of_mut!((*self.output).struct_size).write(self.declared_size);
+        }
+        true
+    }
+
+    unsafe fn commit(self, staged: Self::Staged) {
+        // SAFETY: Successful initialization established the complete writable v1 prefix.
+        unsafe {
+            ptr::addr_of_mut!((*self.output).code).write(staged.code);
+            ptr::addr_of_mut!((*self.output).path).write(staged.path);
+            ptr::addr_of_mut!((*self.output).message).write(staged.message);
+        }
+    }
+}
+
 unsafe impl OutputSlot for DiagnosticOutput {
     type Staged = DiagnosticFields;
 
@@ -700,6 +782,28 @@ unsafe impl<T: ZeroScalar> OutputSet for ScalarOutput<T> {
 }
 
 impl output_private::Set for DiagnosticOutput {}
+
+impl output_private::Set for WarningOutput {}
+
+unsafe impl OutputSet for WarningOutput {
+    type Staged = <Self as OutputSlot>::Staged;
+
+    fn ranges(&self) -> Result<SlotRanges, ()> {
+        let mut ranges = SlotRanges::default();
+        self.collect_range(&mut ranges)?;
+        Ok(ranges)
+    }
+
+    unsafe fn initialize(&self) -> bool {
+        // SAFETY: Delegate to the sole record slot under the same contract.
+        unsafe { OutputSlot::initialize(self) }
+    }
+
+    unsafe fn commit(self, staged: Self::Staged) {
+        // SAFETY: Delegate after successful transactional initialization.
+        unsafe { OutputSlot::commit(self, staged) };
+    }
+}
 
 unsafe impl OutputSet for DiagnosticOutput {
     type Staged = <Self as OutputSlot>::Staged;

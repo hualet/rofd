@@ -12,6 +12,14 @@ macro_rules! opaque_handle {
 }
 
 opaque_handle!(rofd_document_t, "Opaque owned OFD document handle.");
+opaque_handle!(
+    rofd_metadata_t,
+    "Opaque independently owned document metadata snapshot."
+);
+opaque_handle!(
+    rofd_warning_list_t,
+    "Opaque independently owned parse-warning snapshot."
+);
 opaque_handle!(rofd_page_t, "Opaque owned OFD page handle.");
 opaque_handle!(rofd_renderer_t, "Opaque owned OFD renderer handle.");
 opaque_handle!(
@@ -37,6 +45,29 @@ pub(crate) struct ErrorHandle {
 
 pub(crate) struct DocumentHandle {
     pub(crate) inner: rofd_core::Document,
+}
+
+pub(crate) struct MetadataHandle {
+    pub(crate) document_id: Option<CString>,
+    pub(crate) title: Option<CString>,
+    pub(crate) author: Option<CString>,
+    pub(crate) subject: Option<CString>,
+    pub(crate) abstract_text: Option<CString>,
+    pub(crate) creator: Option<CString>,
+    pub(crate) creator_version: Option<CString>,
+    pub(crate) creation_date: Option<CString>,
+    pub(crate) modification_date: Option<CString>,
+    pub(crate) keywords: Vec<CString>,
+}
+
+pub(crate) struct OwnedWarning {
+    pub(crate) code: u32,
+    pub(crate) path: CString,
+    pub(crate) message: CString,
+}
+
+pub(crate) struct WarningListHandle {
+    pub(crate) warnings: Vec<OwnedWarning>,
 }
 
 pub(crate) struct PageHandle {
@@ -98,6 +129,18 @@ impl token_private::Sealed for rofd_document_t {}
 
 impl HandleToken for rofd_document_t {
     type Storage = DocumentHandle;
+}
+
+impl token_private::Sealed for rofd_metadata_t {}
+
+impl HandleToken for rofd_metadata_t {
+    type Storage = MetadataHandle;
+}
+
+impl token_private::Sealed for rofd_warning_list_t {}
+
+impl HandleToken for rofd_warning_list_t {
+    type Storage = WarningListHandle;
 }
 
 impl token_private::Sealed for rofd_page_t {}
@@ -202,6 +245,8 @@ mod tests {
     #[test]
     fn owned_handle_storage_is_send_and_sync() {
         assert_send_sync::<DocumentHandle>();
+        assert_send_sync::<super::MetadataHandle>();
+        assert_send_sync::<super::WarningListHandle>();
         assert_send_sync::<PageHandle>();
         assert_send_sync::<RendererHandle>();
         assert_send_sync::<RenderReportHandle>();
