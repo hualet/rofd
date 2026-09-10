@@ -19,6 +19,16 @@ opaque_handle!(
     "Opaque owned OFD render report handle."
 );
 opaque_handle!(rofd_error_t, "Opaque owned OFD error handle.");
+opaque_handle!(rofd_string_t, "Opaque owned UTF-8 string handle.");
+opaque_handle!(rofd_text_layout_t, "Opaque owned page text layout handle.");
+opaque_handle!(
+    rofd_text_search_t,
+    "Opaque owned text-search result handle."
+);
+opaque_handle!(
+    rofd_text_selection_t,
+    "Opaque owned text-selection result handle."
+);
 
 pub(crate) struct ErrorHandle {
     pub(crate) status: rofd_status_t,
@@ -46,6 +56,27 @@ pub(crate) struct OwnedDiagnostic {
 
 pub(crate) struct RenderReportHandle {
     pub(crate) diagnostics: Vec<OwnedDiagnostic>,
+}
+
+#[allow(dead_code)] // Populated and consumed by semantic entry points added in the next task.
+pub(crate) struct StringHandle {
+    pub(crate) bytes: CString,
+}
+
+#[allow(dead_code)] // Populated and consumed by semantic entry points added in the next task.
+pub(crate) struct TextLayoutHandle {
+    pub(crate) characters: Vec<rofd_core::TextChar>,
+}
+
+#[allow(dead_code)] // Populated and consumed by semantic entry points added in a subsequent task.
+pub(crate) struct TextSearchHandle {
+    pub(crate) matches: Vec<rofd_core::TextMatch>,
+}
+
+#[allow(dead_code)] // Populated and consumed by semantic entry points added in a subsequent task.
+pub(crate) struct TextSelectionHandle {
+    pub(crate) text: CString,
+    pub(crate) regions: Vec<rofd_core::Rect>,
 }
 
 mod token_private {
@@ -89,6 +120,30 @@ impl token_private::Sealed for rofd_render_report_t {}
 
 impl HandleToken for rofd_render_report_t {
     type Storage = RenderReportHandle;
+}
+
+impl token_private::Sealed for rofd_string_t {}
+
+impl HandleToken for rofd_string_t {
+    type Storage = StringHandle;
+}
+
+impl token_private::Sealed for rofd_text_layout_t {}
+
+impl HandleToken for rofd_text_layout_t {
+    type Storage = TextLayoutHandle;
+}
+
+impl token_private::Sealed for rofd_text_search_t {}
+
+impl HandleToken for rofd_text_search_t {
+    type Storage = TextSearchHandle;
+}
+
+impl token_private::Sealed for rofd_text_selection_t {}
+
+impl HandleToken for rofd_text_selection_t {
+    type Storage = TextSelectionHandle;
 }
 
 pub(crate) fn into_raw_handle<Token: HandleToken>(storage: Box<Token::Storage>) -> *mut Token {
@@ -141,15 +196,22 @@ impl HandleToken for TestHandleToken {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentHandle, PageHandle, RenderReportHandle, RendererHandle};
+    use super::{
+        DocumentHandle, PageHandle, RenderReportHandle, RendererHandle, StringHandle,
+        TextLayoutHandle, TextSearchHandle, TextSelectionHandle,
+    };
 
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
-    fn document_page_renderer_and_report_storage_are_send_and_sync() {
+    fn owned_handle_storage_is_send_and_sync() {
         assert_send_sync::<DocumentHandle>();
         assert_send_sync::<PageHandle>();
         assert_send_sync::<RendererHandle>();
         assert_send_sync::<RenderReportHandle>();
+        assert_send_sync::<StringHandle>();
+        assert_send_sync::<TextLayoutHandle>();
+        assert_send_sync::<TextSearchHandle>();
+        assert_send_sync::<TextSelectionHandle>();
     }
 }

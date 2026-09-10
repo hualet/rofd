@@ -37,6 +37,23 @@ pub const ROFD_IMAGE_INTERPOLATION_NEAREST: u32 = 0;
 /// Bilinear image interpolation.
 pub const ROFD_IMAGE_INTERPOLATION_BILINEAR: u32 = 1;
 
+/// Enables case-sensitive literal text search.
+pub const ROFD_FIND_CASE_SENSITIVE: u32 = 1 << 0;
+/// Restricts text search results to whole words.
+pub const ROFD_FIND_WHOLE_WORDS: u32 = 1 << 1;
+
+/// Marks a text character inserted while flattening source text objects.
+pub const ROFD_TEXT_CHAR_SYNTHESIZED_SEPARATOR: u32 = 1 << 0;
+/// Marks a text character whose geometry is conservative rather than exact.
+pub const ROFD_TEXT_CHAR_CONSERVATIVE_GEOMETRY: u32 = 1 << 1;
+
+/// Selects only glyphs intersecting a selection rectangle.
+pub const ROFD_SELECTION_GLYPH: u32 = 0;
+/// Expands a selection rectangle to complete words.
+pub const ROFD_SELECTION_WORD: u32 = 1;
+/// Expands a selection rectangle to complete logical lines.
+pub const ROFD_SELECTION_LINE: u32 = 2;
+
 /// Diagnostic indicating an unsupported object.
 pub const ROFD_DIAGNOSTIC_UNSUPPORTED_OBJECT: u32 = 1;
 /// Diagnostic indicating that a fallback font was used.
@@ -69,6 +86,17 @@ impl Default for rofd_load_options_t {
             strictness: ROFD_STRICTNESS_LENIENT,
         }
     }
+}
+
+/// Options used when searching canonical page text.
+#[repr(C)]
+pub struct rofd_find_options_t {
+    /// Size of this record in bytes.
+    pub struct_size: u32,
+    /// Text search behavior represented by `ROFD_FIND_*` flags.
+    pub flags: u32,
+    /// Maximum number of matches returned by a search.
+    pub max_results: usize,
 }
 
 /// Options used when constructing a renderer.
@@ -162,6 +190,36 @@ pub struct rofd_rect_t {
     pub height_mm: f64,
 }
 
+/// One Unicode scalar and its source metadata in canonical page text.
+#[repr(C)]
+pub struct rofd_text_char_t {
+    /// Size of this record in bytes.
+    pub struct_size: u32,
+    /// Byte offset of the scalar in canonical UTF-8 page text.
+    pub utf8_offset: usize,
+    /// Byte length of the scalar in canonical UTF-8 page text.
+    pub utf8_length: usize,
+    /// Character geometry in page millimetres.
+    pub rect_mm: rofd_rect_t,
+    /// Character properties represented by `ROFD_TEXT_CHAR_*` flags.
+    pub flags: u32,
+    /// Identifier of the source text object, or zero for a synthesized character.
+    pub object_id: u64,
+}
+
+/// One literal text search match in canonical page text.
+#[repr(C)]
+pub struct rofd_text_match_t {
+    /// Size of this record in bytes.
+    pub struct_size: u32,
+    /// Byte offset of the match in canonical UTF-8 page text.
+    pub utf8_offset: usize,
+    /// Byte length of the match in canonical UTF-8 page text.
+    pub utf8_length: usize,
+    /// Union of visible matched character boxes in page millimetres.
+    pub rect_mm: rofd_rect_t,
+}
+
 /// One rendering diagnostic exposed through the C ABI.
 #[repr(C)]
 pub struct rofd_render_diagnostic_t {
@@ -194,6 +252,29 @@ pub(crate) const ROFD_RENDER_OPTIONS_V1_SIZE: usize = c_record_size(
     offset_of!(rofd_render_options_t, max_raster_bytes) + size_of::<u64>(),
     max_alignment(&[align_of::<u32>(), align_of::<f64>(), align_of::<u64>()]),
 );
+pub(crate) const ROFD_FIND_OPTIONS_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_find_options_t, max_results) + size_of::<usize>(),
+    max_alignment(&[align_of::<u32>(), align_of::<usize>()]),
+);
+#[allow(dead_code)] // Consumed by semantic output accessors added in the next task.
+pub(crate) const ROFD_TEXT_CHAR_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_text_char_t, object_id) + size_of::<u64>(),
+    max_alignment(&[
+        align_of::<u32>(),
+        align_of::<usize>(),
+        align_of::<rofd_rect_t>(),
+        align_of::<u64>(),
+    ]),
+);
+#[allow(dead_code)] // Consumed by semantic output accessors added in a subsequent task.
+pub(crate) const ROFD_TEXT_MATCH_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_text_match_t, rect_mm) + size_of::<rofd_rect_t>(),
+    max_alignment(&[
+        align_of::<u32>(),
+        align_of::<usize>(),
+        align_of::<rofd_rect_t>(),
+    ]),
+);
 pub(crate) const ROFD_RENDER_DIAGNOSTIC_V1_SIZE: usize = c_record_size(
     offset_of!(rofd_render_diagnostic_t, message) + size_of::<*const c_char>(),
     max_alignment(&[
@@ -206,6 +287,7 @@ pub(crate) const ROFD_RENDER_DIAGNOSTIC_V1_SIZE: usize = c_record_size(
 const ROFD_LOAD_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_LOAD_OPTIONS_V1_SIZE];
 const ROFD_RENDERER_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_RENDERER_OPTIONS_V1_SIZE];
 const ROFD_RENDER_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_RENDER_OPTIONS_V1_SIZE];
+const ROFD_FIND_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_FIND_OPTIONS_V1_SIZE];
 
 static LIBRARY_VERSION: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
 
@@ -287,6 +369,49 @@ pub unsafe extern "C" fn rofd_load_options_init(
                 .write(u32::try_from(initialized_size).expect("ABI version size must fit in u32"));
             // Every selectable version currently includes the complete v1 field set.
             ptr::addr_of_mut!((*options).strictness).write(ROFD_STRICTNESS_LENIENT);
+        }
+    });
+}
+
+/// Initializes the known text search options prefix to its defaults.
+///
+/// A null pointer or a capacity smaller than the oldest supported version is a
+/// no-op. Otherwise the highest complete supported version that fits is
+/// initialized, and bytes beyond that permanent version boundary are unchanged.
+/// The selected boundary, not caller capacity, is written to `struct_size`.
+///
+/// # Safety
+///
+/// A null `options` is always accepted and is a no-op, regardless of
+/// `options_size`. If `options` is non-null and `options_size` can hold a
+/// supported version, it must be properly aligned and point to valid, writable
+/// storage for at least the selected version prefix. A non-null pointer is not
+/// dereferenced when no supported version fits.
+#[no_mangle]
+pub unsafe extern "C" fn rofd_find_options_init(
+    options: *mut rofd_find_options_t,
+    options_size: usize,
+) {
+    let _ = catch_unwind(|| {
+        if options.is_null() {
+            return;
+        }
+        let Some(initialized_size) =
+            highest_supported_version_size(options_size, ROFD_FIND_OPTIONS_VERSION_SIZES)
+        else {
+            return;
+        };
+
+        // SAFETY: Version selection and the caller contract guarantee a valid, writable prefix.
+        // Clearing the prefix first initializes every padding byte; field writes do not touch
+        // any unknown trailing bytes in a larger caller allocation.
+        unsafe {
+            options.cast::<u8>().write_bytes(0, initialized_size);
+            ptr::addr_of_mut!((*options).struct_size)
+                .write(u32::try_from(initialized_size).expect("ABI version size must fit in u32"));
+            // Every selectable version currently includes the complete v1 field set.
+            ptr::addr_of_mut!((*options).flags).write(0);
+            ptr::addr_of_mut!((*options).max_results).write(10_000);
         }
     });
 }
@@ -404,6 +529,9 @@ mod tests {
             ROFD_RENDER_OPTIONS_V1_SIZE,
             size_of::<rofd_render_options_t>()
         );
+        assert_eq!(ROFD_FIND_OPTIONS_V1_SIZE, size_of::<rofd_find_options_t>());
+        assert_eq!(ROFD_TEXT_CHAR_V1_SIZE, size_of::<rofd_text_char_t>());
+        assert_eq!(ROFD_TEXT_MATCH_V1_SIZE, size_of::<rofd_text_match_t>());
     }
 
     #[test]

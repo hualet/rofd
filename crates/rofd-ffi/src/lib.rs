@@ -18,6 +18,7 @@ pub use document::{
 pub use error::{rofd_error_free, rofd_error_get_message, rofd_error_get_status};
 pub use handles::{
     rofd_document_t, rofd_error_t, rofd_page_t, rofd_render_report_t, rofd_renderer_t,
+    rofd_string_t, rofd_text_layout_t, rofd_text_search_t, rofd_text_selection_t,
 };
 pub use renderer::{
     rofd_renderer_free, rofd_renderer_get_pixel_size, rofd_renderer_new,

@@ -30,6 +30,12 @@ extern "C" {
  * until that report is freed. A cairo_t passed for rendering is borrowed;
  * ownership remains with the caller.
  *
+ * Semantic page queries return caller-owned opaque result handles. Borrowed
+ * string data remains valid until its string or text-selection owner is freed.
+ * A semantic result remains valid after the source page or document is freed.
+ * Every input string and input record must remain readable for the complete
+ * call and must be disjoint from every ordinary output and error output slot.
+ *
  * Every options record begins with struct_size. Call the matching initializer
  * with the writable capacity of the record before changing fields. A NULL
  * pointer, or a capacity smaller than the oldest supported version boundary,
@@ -87,6 +93,16 @@ typedef uint32_t rofd_status_t;
 #define ROFD_IMAGE_INTERPOLATION_NEAREST 0u
 #define ROFD_IMAGE_INTERPOLATION_BILINEAR 1u
 
+#define ROFD_FIND_CASE_SENSITIVE (1u << 0)
+#define ROFD_FIND_WHOLE_WORDS (1u << 1)
+
+#define ROFD_TEXT_CHAR_SYNTHESIZED_SEPARATOR (1u << 0)
+#define ROFD_TEXT_CHAR_CONSERVATIVE_GEOMETRY (1u << 1)
+
+#define ROFD_SELECTION_GLYPH 0u
+#define ROFD_SELECTION_WORD 1u
+#define ROFD_SELECTION_LINE 2u
+
 #define ROFD_DIAGNOSTIC_UNSUPPORTED_OBJECT 1u
 #define ROFD_DIAGNOSTIC_FONT_FALLBACK 2u
 #define ROFD_DIAGNOSTIC_MISSING_GLYPH 3u
@@ -99,11 +115,21 @@ typedef struct rofd_page rofd_page_t;
 typedef struct rofd_renderer rofd_renderer_t;
 typedef struct rofd_render_report rofd_render_report_t;
 typedef struct rofd_error rofd_error_t;
+typedef struct rofd_string rofd_string_t;
+typedef struct rofd_text_layout rofd_text_layout_t;
+typedef struct rofd_text_search rofd_text_search_t;
+typedef struct rofd_text_selection rofd_text_selection_t;
 
 typedef struct rofd_load_options {
     uint32_t struct_size;
     uint32_t strictness;
 } rofd_load_options_t;
+
+typedef struct rofd_find_options {
+    uint32_t struct_size;
+    uint32_t flags;
+    size_t max_results;
+} rofd_find_options_t;
 
 /**
  * Renderer construction options.
@@ -147,6 +173,22 @@ typedef struct rofd_rect {
     double height_mm;
 } rofd_rect_t;
 
+typedef struct rofd_text_char {
+    uint32_t struct_size;
+    size_t utf8_offset;
+    size_t utf8_length;
+    rofd_rect_t rect_mm;
+    uint32_t flags;
+    uint64_t object_id;
+} rofd_text_char_t;
+
+typedef struct rofd_text_match {
+    uint32_t struct_size;
+    size_t utf8_offset;
+    size_t utf8_length;
+    rofd_rect_t rect_mm;
+} rofd_text_match_t;
+
 typedef struct rofd_render_diagnostic {
     uint32_t struct_size;
     uint32_t kind;
@@ -158,6 +200,7 @@ uint32_t rofd_abi_version(void);
 const char *rofd_library_version(void);
 
 void rofd_load_options_init(rofd_load_options_t *options, size_t options_size);
+void rofd_find_options_init(rofd_find_options_t *options, size_t options_size);
 void rofd_renderer_options_init(rofd_renderer_options_t *options,
                                 size_t options_size);
 void rofd_render_options_init(rofd_render_options_t *options,
