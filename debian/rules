@@ -18,14 +18,14 @@ override_dh_auto_install:
 	install -D -m0644 resources/logo.png \
 		debian/rofd/usr/share/icons/hicolor/256x256/apps/rofd.png
 	install -D -m0644 target/release/librofd_ffi.so \
-		debian/librofd-ffi0/usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so.0.1.0
+		debian/librofd-ffi0/usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so.0.3.0
 	install -D -m0644 crates/rofd-ffi/include/rofd.h \
 		debian/librofd-ffi-dev/usr/include/rofd.h
 	dh_link -plibrofd-ffi0 \
-		usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so.0.1.0 \
+		usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so.0.3.0 \
 		usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so.0
 	dh_link -plibrofd-ffi-dev \
-		usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so.0.1.0 \
+		usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so.0.3.0 \
 		usr/lib/$(DEB_HOST_MULTIARCH)/librofd_ffi.so
 
 override_dh_auto_clean:

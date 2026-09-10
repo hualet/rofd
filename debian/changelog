@@ -1,3 +1,10 @@
+rofd (0.3.0-1) unstable; urgency=medium
+
+  * Add bounded, cached page text semantics together with C APIs for
+    text extraction, layout, search, and selection.
+
+ -- HualetWang <hualet@hualet.org>  Thu, 10 Sep 2026 20:31:20 +0800
+
 rofd (0.2.3-1) unstable; urgency=medium
 
   * New OFD rendering features: text clip areas (Clip/Text), structured
