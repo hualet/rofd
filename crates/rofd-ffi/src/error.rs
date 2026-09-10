@@ -1,4 +1,4 @@
-use crate::abi::{ROFD_RENDER_DIAGNOSTIC_V1_SIZE, ROFD_TEXT_CHAR_V1_SIZE};
+use crate::abi::{ROFD_RENDER_DIAGNOSTIC_V1_SIZE, ROFD_TEXT_CHAR_V1_SIZE, ROFD_TEXT_MATCH_V1_SIZE};
 use crate::handles::{drop_raw_handle, handle_ref, into_raw_handle, ErrorHandle, HandleToken};
 use crate::{
     rofd_error_t, rofd_render_diagnostic_t, rofd_status_t, ROFD_STATUS_INTERNAL,
@@ -199,6 +199,12 @@ pub(crate) struct TextCharFields {
     pub(crate) object_id: u64,
 }
 
+pub(crate) struct TextMatchFields {
+    pub(crate) utf8_offset: usize,
+    pub(crate) utf8_length: usize,
+    pub(crate) rect_mm: crate::rofd_rect_t,
+}
+
 pub(crate) struct TextCharOutput {
     output: *mut crate::rofd_text_char_t,
     declared_size: u32,
@@ -211,6 +217,31 @@ impl TextCharOutput {
     /// A non-null pointer must be readable for its first u32. The transaction
     /// validates alignment before writing the supported record prefix.
     pub(crate) unsafe fn required(output: *mut crate::rofd_text_char_t) -> Self {
+        let declared_size = if output.is_null() {
+            0
+        } else {
+            // SAFETY: The caller provides a readable initialized prefix field.
+            unsafe { output.cast::<u32>().read_unaligned() }
+        };
+        Self {
+            output,
+            declared_size,
+        }
+    }
+}
+
+pub(crate) struct TextMatchOutput {
+    output: *mut crate::rofd_text_match_t,
+    declared_size: u32,
+}
+
+impl TextMatchOutput {
+    /// Captures the caller's input size before any transactional writes.
+    ///
+    /// # Safety
+    /// A non-null pointer must be readable for its first u32. The transaction
+    /// validates alignment before writing the supported record prefix.
+    pub(crate) unsafe fn required(output: *mut crate::rofd_text_match_t) -> Self {
         let declared_size = if output.is_null() {
             0
         } else {
@@ -558,6 +589,41 @@ unsafe impl OutputSlot for TextCharOutput {
     }
 }
 
+impl output_private::Slot for TextMatchOutput {}
+
+unsafe impl OutputSlot for TextMatchOutput {
+    type Staged = TextMatchFields;
+
+    fn collect_range(&self, ranges: &mut SlotRanges) -> Result<(), ()> {
+        if self.declared_size as usize >= ROFD_TEXT_MATCH_V1_SIZE {
+            ranges.push(self.output)
+        } else {
+            ranges.push(self.output.cast::<u32>())
+        }
+    }
+
+    unsafe fn initialize(&self) -> bool {
+        if self.output.is_null() || (self.declared_size as usize) < ROFD_TEXT_MATCH_V1_SIZE {
+            return false;
+        }
+        // SAFETY: The caller's supported boundary promises a writable complete v1 prefix.
+        unsafe {
+            ptr::write_bytes(self.output.cast::<u8>(), 0, ROFD_TEXT_MATCH_V1_SIZE);
+            ptr::addr_of_mut!((*self.output).struct_size).write(self.declared_size);
+        }
+        true
+    }
+
+    unsafe fn commit(self, staged: Self::Staged) {
+        // SAFETY: Initialization validated and cleared the complete v1 record.
+        unsafe {
+            ptr::addr_of_mut!((*self.output).utf8_offset).write(staged.utf8_offset);
+            ptr::addr_of_mut!((*self.output).utf8_length).write(staged.utf8_length);
+            ptr::addr_of_mut!((*self.output).rect_mm).write(staged.rect_mm);
+        }
+    }
+}
+
 /// A complete transaction over all outputs of one FFI operation.
 ///
 /// # Safety
@@ -658,6 +724,28 @@ unsafe impl OutputSet for DiagnosticOutput {
 impl output_private::Set for TextCharOutput {}
 
 unsafe impl OutputSet for TextCharOutput {
+    type Staged = <Self as OutputSlot>::Staged;
+
+    fn ranges(&self) -> Result<SlotRanges, ()> {
+        let mut ranges = SlotRanges::default();
+        self.collect_range(&mut ranges)?;
+        Ok(ranges)
+    }
+
+    unsafe fn initialize(&self) -> bool {
+        // SAFETY: Delegate to the sole record slot under the same contract.
+        unsafe { OutputSlot::initialize(self) }
+    }
+
+    unsafe fn commit(self, staged: Self::Staged) {
+        // SAFETY: Delegate after successful transactional initialization.
+        unsafe { OutputSlot::commit(self, staged) };
+    }
+}
+
+impl output_private::Set for TextMatchOutput {}
+
+unsafe impl OutputSet for TextMatchOutput {
     type Staged = <Self as OutputSlot>::Staged;
 
     fn ranges(&self) -> Result<SlotRanges, ()> {

@@ -29,7 +29,11 @@ pub use report::{
     rofd_render_report_free, rofd_render_report_get_count, rofd_render_report_get_diagnostic,
 };
 pub use semantic::{
+    rofd_page_find_text, rofd_page_find_text_with_options, rofd_page_get_selected_text,
     rofd_page_get_text, rofd_page_get_text_for_area, rofd_page_get_text_layout, rofd_string_free,
     rofd_string_get_data, rofd_string_get_length, rofd_text_layout_free, rofd_text_layout_get_char,
-    rofd_text_layout_get_count,
+    rofd_text_layout_get_count, rofd_text_search_free, rofd_text_search_get_count,
+    rofd_text_search_get_match, rofd_text_selection_free, rofd_text_selection_get_region,
+    rofd_text_selection_get_region_count, rofd_text_selection_get_text,
+    rofd_text_selection_get_text_length,
 };

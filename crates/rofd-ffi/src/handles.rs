@@ -66,12 +66,10 @@ pub(crate) struct TextLayoutHandle {
     pub(crate) characters: Vec<rofd_core::TextChar>,
 }
 
-#[allow(dead_code)] // Populated and consumed by semantic entry points added in a subsequent task.
 pub(crate) struct TextSearchHandle {
     pub(crate) matches: Vec<rofd_core::TextMatch>,
 }
 
-#[allow(dead_code)] // Populated and consumed by semantic entry points added in a subsequent task.
 pub(crate) struct TextSelectionHandle {
     pub(crate) text: CString,
     pub(crate) regions: Vec<rofd_core::Rect>,

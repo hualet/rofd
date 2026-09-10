@@ -266,7 +266,6 @@ pub(crate) const ROFD_TEXT_CHAR_V1_SIZE: usize = c_record_size(
         align_of::<u64>(),
     ]),
 );
-#[allow(dead_code)] // Consumed by semantic output accessors added in a subsequent task.
 pub(crate) const ROFD_TEXT_MATCH_V1_SIZE: usize = c_record_size(
     offset_of!(rofd_text_match_t, rect_mm) + size_of::<rofd_rect_t>(),
     max_alignment(&[

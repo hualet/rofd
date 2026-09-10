@@ -301,6 +301,65 @@ rofd_status_t rofd_text_layout_get_char(const rofd_text_layout_t *layout,
 /** Free once after all reads finish; NULL is a no-op. Copied records remain valid. */
 void rofd_text_layout_free(rofd_text_layout_t *layout);
 
+/** Find canonical page text with case-insensitive substring defaults. query
+ * must be non-NULL, valid nonempty UTF-8. The independently owned result
+ * survives page/document destruction and is freed with rofd_text_search_free.
+ * Input and output storage follow the global disjointness contract. */
+rofd_status_t rofd_page_find_text(const rofd_page_t *page, const char *query,
+                                  rofd_text_search_t **search,
+                                  rofd_error_t **error);
+/** Find canonical page text with versioned options. NULL options select
+ * defaults. Unknown flags and zero max_results are invalid; larger record tails
+ * are ignored and result count is bounded by the page resource policy. */
+rofd_status_t rofd_page_find_text_with_options(
+    const rofd_page_t *page, const char *query,
+    const rofd_find_options_t *options, rofd_text_search_t **search,
+    rofd_error_t **error);
+/** Return the number of owned matches. search and count are required; failure
+ * initializes a valid count output to zero. */
+rofd_status_t rofd_text_search_get_count(const rofd_text_search_t *search,
+                                         size_t *count,
+                                         rofd_error_t **error);
+/** Copy one match by index. Set match->struct_size to sizeof(rofd_text_match_t)
+ * or a larger caller size. The permanent v1 prefix is cleared transactionally,
+ * struct_size and unknown tail are preserved, and an absent match rectangle is
+ * returned as zeros. Out-of-range returns ROFD_STATUS_PAGE_OUT_OF_RANGE. */
+rofd_status_t rofd_text_search_get_match(const rofd_text_search_t *search,
+                                         size_t index,
+                                         rofd_text_match_t *match,
+                                         rofd_error_t **error);
+/** Free an owned search result once after all reads; NULL is a no-op. */
+void rofd_text_search_free(rofd_text_search_t *search);
+
+/** Select text intersecting selection_mm using a ROFD_SELECTION_* style. The
+ * rectangle is in physical-page millimetres and follows the same finite,
+ * non-negative-dimension rules as area extraction. The independently owned
+ * result survives page/document destruction and must be freed with
+ * rofd_text_selection_free. page, selection_mm and selection are required. */
+rofd_status_t rofd_page_get_selected_text(
+    const rofd_page_t *page, uint32_t style,
+    const rofd_rect_t *selection_mm, rofd_text_selection_t **selection,
+    rofd_error_t **error);
+/** Borrow immutable NUL-terminated selected UTF-8 text until selection free;
+ * NULL returns NULL. */
+const char *rofd_text_selection_get_text(
+    const rofd_text_selection_t *selection);
+/** Selected UTF-8 byte length excluding the terminating NUL; NULL is zero. */
+size_t rofd_text_selection_get_text_length(
+    const rofd_text_selection_t *selection);
+/** Return the number of ordered selected page regions. selection and count are
+ * required; failure initializes a valid count output to zero. */
+rofd_status_t rofd_text_selection_get_region_count(
+    const rofd_text_selection_t *selection, size_t *count,
+    rofd_error_t **error);
+/** Copy one region in physical-page millimetres. Out-of-range returns
+ * ROFD_STATUS_PAGE_OUT_OF_RANGE and initializes a valid output to zeros. */
+rofd_status_t rofd_text_selection_get_region(
+    const rofd_text_selection_t *selection, size_t index,
+    rofd_rect_t *region_mm, rofd_error_t **error);
+/** Free an owned text selection after all borrowed text reads; NULL is a no-op. */
+void rofd_text_selection_free(rofd_text_selection_t *selection);
+
 rofd_status_t rofd_renderer_new(const rofd_renderer_options_t *options,
                                 rofd_renderer_t **renderer,
                                 rofd_error_t **error);
