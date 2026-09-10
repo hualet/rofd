@@ -6,6 +6,12 @@ static_assert(std::is_standard_layout_v<rofd_pixel_rect_t>, "pixel rectangle lay
 static_assert(sizeof(rofd_pixel_rect_t) == 20, "pixel viewport ABI size");
 
 static_assert(ROFD_ABI_VERSION == 1u, "unexpected ABI version");
+static_assert(std::is_standard_layout_v<rofd_outline_node_t> &&
+              std::is_standard_layout_v<rofd_action_t> &&
+              std::is_standard_layout_v<rofd_destination_t>, "navigation record layouts");
+static_assert(std::is_same_v<decltype(&rofd_document_get_outline),
+                            rofd_status_t (*)(const rofd_document_t *, rofd_outline_t **,
+                                              rofd_error_t **)>, "outline snapshot signature");
 static_assert(std::is_standard_layout_v<rofd_warning_t>, "warning record layout");
 static_assert(std::is_same_v<decltype(&rofd_metadata_get_document_id),
                              const char *(*)(const rofd_metadata_t *)>,
@@ -65,6 +71,11 @@ static_assert(std::is_same_v<decltype(&rofd_page_get_selected_text),
               "unexpected selection declaration");
 
 int main() {
+    rofd_outline_t *outline = nullptr;
+    if (rofd_document_get_outline(nullptr, &outline, nullptr) != ROFD_STATUS_INVALID_ARGUMENT ||
+        outline != nullptr || rofd_outline_get_count(nullptr, nullptr, nullptr) != ROFD_STATUS_INVALID_ARGUMENT)
+        return 1;
+    rofd_outline_free(outline);
     rofd_metadata_t *metadata = nullptr;
     rofd_warning_list_t *warnings = nullptr;
     rofd_warning_t warning{};

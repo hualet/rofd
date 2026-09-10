@@ -46,6 +46,59 @@ pub const ROFD_WARNING_UNKNOWN_GRAPHIC_UNIT_SKIPPED: u32 = 4;
 pub const ROFD_WARNING_ANNOTATION_SKIPPED: u32 = 5;
 /// Historical document bodies were skipped.
 pub const ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED: u32 = 6;
+/// A navigation entry or target was invalid or unresolved.
+pub const ROFD_WARNING_NAVIGATION_INVALID: u32 = 7;
+/// A navigation action, event or destination type was retained but is unsupported.
+pub const ROFD_WARNING_NAVIGATION_UNSUPPORTED: u32 = 8;
+/// A producer compatibility representation was used for navigation data.
+pub const ROFD_WARNING_NAVIGATION_COMPATIBILITY: u32 = 9;
+
+/// Sentinel for an absent node relation or unresolved page index.
+pub const ROFD_NO_INDEX: usize = usize::MAX;
+/// An unsupported action, whose source name remains available.
+pub const ROFD_ACTION_UNKNOWN: u32 = 0;
+/// A jump inside the current document.
+pub const ROFD_ACTION_GOTO: u32 = 1;
+/// A URI action; this library never opens it.
+pub const ROFD_ACTION_URI: u32 = 2;
+/// An action referring to a document attachment.
+pub const ROFD_ACTION_ATTACHMENT: u32 = 3;
+/// An unknown event, whose source name remains available.
+pub const ROFD_ACTION_EVENT_UNKNOWN: u32 = 0;
+/// The source action declares the document-open event (DO).
+pub const ROFD_ACTION_EVENT_DOCUMENT_OPEN: u32 = 1;
+/// The source action declares the page-open event (PO).
+pub const ROFD_ACTION_EVENT_PAGE_OPEN: u32 = 2;
+/// The source action declares the click event (CLICK).
+pub const ROFD_ACTION_EVENT_CLICK: u32 = 3;
+/// An attachment action requests a new window; absent source values default true.
+pub const ROFD_ACTION_NEW_WINDOW: u32 = 1 << 0;
+/// An unknown destination mode, whose source name remains available.
+pub const ROFD_DESTINATION_UNKNOWN: u32 = 0;
+/// Position at optional left/top coordinates and zoom.
+pub const ROFD_DESTINATION_XYZ: u32 = 1;
+/// Fit the destination page.
+pub const ROFD_DESTINATION_FIT: u32 = 2;
+/// Fit horizontally, with optional top position.
+pub const ROFD_DESTINATION_FIT_H: u32 = 3;
+/// Fit vertically, with optional left position.
+pub const ROFD_DESTINATION_FIT_V: u32 = 4;
+/// Fit the rectangle given by destination coordinates.
+pub const ROFD_DESTINATION_FIT_R: u32 = 5;
+/// The destination has a resolved zero-based page index.
+pub const ROFD_DESTINATION_HAS_PAGE_INDEX: u32 = 1 << 0;
+/// The destination retains an OFD page identifier, even if unresolved.
+pub const ROFD_DESTINATION_HAS_PAGE_ID: u32 = 1 << 1;
+/// The source explicitly specified a left coordinate.
+pub const ROFD_DESTINATION_HAS_LEFT: u32 = 1 << 2;
+/// The source explicitly specified a top coordinate.
+pub const ROFD_DESTINATION_HAS_TOP: u32 = 1 << 3;
+/// The source explicitly specified a right coordinate.
+pub const ROFD_DESTINATION_HAS_RIGHT: u32 = 1 << 4;
+/// The source explicitly specified a bottom coordinate.
+pub const ROFD_DESTINATION_HAS_BOTTOM: u32 = 1 << 5;
+/// The source explicitly specified zoom; zero means retain current zoom.
+pub const ROFD_DESTINATION_HAS_ZOOM: u32 = 1 << 6;
 
 /// Nearest-neighbor image interpolation.
 pub const ROFD_IMAGE_INTERPOLATION_NEAREST: u32 = 0;
@@ -277,6 +330,77 @@ pub struct rofd_warning_t {
     pub message: *const c_char,
 }
 
+/// One node borrowed from an independently owned preorder outline snapshot.
+#[repr(C)]
+pub struct rofd_outline_node_t {
+    /// Caller-provided size covering the complete v1 prefix.
+    pub struct_size: u32,
+    /// One for expanded, zero for collapsed; omitted source values default expanded.
+    pub expanded: u32,
+    /// Borrowed NUL-terminated UTF-8 title, valid until the outline is freed.
+    pub title: *const c_char,
+    /// Parent preorder index, or [`ROFD_NO_INDEX`] for a root.
+    pub parent: usize,
+    /// First child preorder index, or [`ROFD_NO_INDEX`].
+    pub first_child: usize,
+    /// Next sibling preorder index, or [`ROFD_NO_INDEX`].
+    pub next_sibling: usize,
+    /// Number of ordered actions on this node.
+    pub action_count: usize,
+}
+
+/// One inert action borrowed from its outline or page-link snapshot.
+#[repr(C)]
+pub struct rofd_action_t {
+    /// Caller-provided size covering the complete v1 prefix.
+    pub struct_size: u32,
+    /// Action category represented by `ROFD_ACTION_*`.
+    pub kind: u32,
+    /// Event category represented by `ROFD_ACTION_EVENT_*`.
+    pub event: u32,
+    /// Optional behavior flags, currently [`ROFD_ACTION_NEW_WINDOW`].
+    pub flags: u32,
+    /// Borrowed source action name, including unsupported names.
+    pub type_name: *const c_char,
+    /// Borrowed source event name, including unsupported names.
+    pub event_name: *const c_char,
+    /// Borrowed URI for a URI action, otherwise null; no URI is executed.
+    pub uri: *const c_char,
+    /// Borrowed optional URI base, otherwise null; resolution belongs to the caller.
+    pub uri_base: *const c_char,
+    /// Borrowed attachment identifier for GotoA, otherwise null.
+    pub attachment_id: *const c_char,
+    /// Borrowed named-bookmark reference for Goto, otherwise null.
+    pub bookmark: *const c_char,
+}
+
+/// Optional destination information borrowed from an action's owning snapshot.
+#[repr(C)]
+pub struct rofd_destination_t {
+    /// Caller-provided size covering the complete v1 prefix.
+    pub struct_size: u32,
+    /// Destination mode represented by `ROFD_DESTINATION_*`.
+    pub kind: u32,
+    /// Presence bits represented by `ROFD_DESTINATION_HAS_*`.
+    pub flags: u32,
+    /// Resolved zero-based page index, or [`ROFD_NO_INDEX`] on successful unresolved queries.
+    pub page_index: usize,
+    /// Original OFD page identifier when HAS_PAGE_ID is set, otherwise zero.
+    pub page_id: u64,
+    /// Borrowed destination mode name, or null when no destination is available.
+    pub mode_name: *const c_char,
+    /// Optional source left coordinate in physical-page millimetres.
+    pub left_mm: f64,
+    /// Optional source top coordinate in physical-page millimetres.
+    pub top_mm: f64,
+    /// Optional source right coordinate in physical-page millimetres.
+    pub right_mm: f64,
+    /// Optional source bottom coordinate in physical-page millimetres.
+    pub bottom_mm: f64,
+    /// Optional source zoom; zero means retain the current zoom.
+    pub zoom: f64,
+}
+
 // Each published size boundary includes trailing padding and must never change when fields are
 // appended. In particular, future fields must not reuse padding before one of these boundaries.
 pub(crate) const ROFD_LOAD_OPTIONS_V1_SIZE: usize = c_record_size(
@@ -329,6 +453,28 @@ pub(crate) const ROFD_RENDER_DIAGNOSTIC_V1_SIZE: usize = c_record_size(
 pub(crate) const ROFD_WARNING_V1_SIZE: usize = c_record_size(
     offset_of!(rofd_warning_t, message) + size_of::<*const c_char>(),
     max_alignment(&[align_of::<u32>(), align_of::<*const c_char>()]),
+);
+pub(crate) const ROFD_OUTLINE_NODE_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_outline_node_t, action_count) + size_of::<usize>(),
+    max_alignment(&[
+        align_of::<u32>(),
+        align_of::<usize>(),
+        align_of::<*const c_char>(),
+    ]),
+);
+pub(crate) const ROFD_ACTION_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_action_t, bookmark) + size_of::<*const c_char>(),
+    max_alignment(&[align_of::<u32>(), align_of::<*const c_char>()]),
+);
+pub(crate) const ROFD_DESTINATION_V1_SIZE: usize = c_record_size(
+    offset_of!(rofd_destination_t, zoom) + size_of::<f64>(),
+    max_alignment(&[
+        align_of::<u32>(),
+        align_of::<usize>(),
+        align_of::<u64>(),
+        align_of::<*const c_char>(),
+        align_of::<f64>(),
+    ]),
 );
 
 const ROFD_LOAD_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_LOAD_OPTIONS_V1_SIZE];
@@ -596,6 +742,9 @@ mod tests {
 
     #[test]
     fn current_records_match_their_permanent_v1_boundaries() {
+        assert_eq!(ROFD_OUTLINE_NODE_V1_SIZE, size_of::<rofd_outline_node_t>());
+        assert_eq!(ROFD_ACTION_V1_SIZE, size_of::<rofd_action_t>());
+        assert_eq!(ROFD_DESTINATION_V1_SIZE, size_of::<rofd_destination_t>());
         assert_eq!(ROFD_WARNING_V1_SIZE, size_of::<rofd_warning_t>());
         assert_eq!(ROFD_PIXEL_RECT_V1_SIZE, size_of::<rofd_pixel_rect_t>());
         assert_eq!(ROFD_LOAD_OPTIONS_V1_SIZE, size_of::<rofd_load_options_t>());

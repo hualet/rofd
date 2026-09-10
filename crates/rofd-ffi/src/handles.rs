@@ -21,6 +21,10 @@ opaque_handle!(
     "Opaque independently owned parse-warning snapshot."
 );
 opaque_handle!(rofd_page_t, "Opaque owned OFD page handle.");
+opaque_handle!(
+    rofd_outline_t,
+    "Opaque independently owned document outline snapshot."
+);
 opaque_handle!(rofd_renderer_t, "Opaque owned OFD renderer handle.");
 opaque_handle!(
     rofd_render_report_t,
@@ -72,6 +76,33 @@ pub(crate) struct WarningListHandle {
 
 pub(crate) struct PageHandle {
     pub(crate) inner: rofd_core::Page,
+}
+
+pub(crate) struct OwnedAction {
+    pub(crate) kind: u32,
+    pub(crate) event: u32,
+    pub(crate) flags: u32,
+    pub(crate) type_name: CString,
+    pub(crate) event_name: CString,
+    pub(crate) uri: Option<CString>,
+    pub(crate) uri_base: Option<CString>,
+    pub(crate) attachment_id: Option<CString>,
+    pub(crate) bookmark: Option<CString>,
+    pub(crate) destination: Option<rofd_core::Destination>,
+    pub(crate) destination_mode_name: Option<CString>,
+}
+
+pub(crate) struct OwnedOutlineNode {
+    pub(crate) title: CString,
+    pub(crate) parent: Option<usize>,
+    pub(crate) first_child: Option<usize>,
+    pub(crate) next_sibling: Option<usize>,
+    pub(crate) expanded: bool,
+    pub(crate) actions: Vec<OwnedAction>,
+}
+
+pub(crate) struct OutlineHandle {
+    pub(crate) nodes: Vec<OwnedOutlineNode>,
 }
 
 pub(crate) struct RendererHandle {
@@ -147,6 +178,12 @@ impl token_private::Sealed for rofd_page_t {}
 
 impl HandleToken for rofd_page_t {
     type Storage = PageHandle;
+}
+
+impl token_private::Sealed for rofd_outline_t {}
+
+impl HandleToken for rofd_outline_t {
+    type Storage = OutlineHandle;
 }
 
 impl token_private::Sealed for rofd_renderer_t {}
@@ -244,6 +281,7 @@ mod tests {
 
     #[test]
     fn owned_handle_storage_is_send_and_sync() {
+        assert_send_sync::<super::OutlineHandle>();
         assert_send_sync::<DocumentHandle>();
         assert_send_sync::<super::MetadataHandle>();
         assert_send_sync::<super::WarningListHandle>();

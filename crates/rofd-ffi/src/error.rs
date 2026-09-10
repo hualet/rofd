@@ -200,6 +200,111 @@ pub(crate) struct WarningFields {
     pub(crate) message: *const c_char,
 }
 
+// New navigation records share one audited transaction implementation. Staged
+// values contain only non-owning scalar fields; commit never copies padding,
+// invokes user code, or overwrites the captured size / unknown record tail.
+macro_rules! navigation_record_output {
+    ($output:ident, $fields:ident, $record:ty, $size:path, {$($field:ident: $type:ty),+ $(,)?}) => {
+        pub(crate) struct $fields {
+            $(pub(crate) $field: $type,)+
+        }
+
+        pub(crate) struct $output {
+            output: *mut $record,
+            declared_size: u32,
+            valid_address: bool,
+        }
+
+        impl $output {
+            /// Captures a record size after validating its address layout.
+            ///
+            /// # Safety
+            /// A non-null layout-valid pointer must be readable for its first
+            /// initialized u32; a supported prefix must also be writable.
+            pub(crate) unsafe fn required(output: *mut $record) -> Self {
+                let valid_address = SlotRange::for_pointer(output).is_ok();
+                let declared_size = if output.is_null() || !valid_address {
+                    0
+                } else {
+                    // SAFETY: Layout is valid and caller promises a readable size.
+                    unsafe { output.cast::<u32>().read() }
+                };
+                Self { output, declared_size, valid_address }
+            }
+        }
+
+        impl output_private::Slot for $output {}
+
+        unsafe impl OutputSlot for $output {
+            type Staged = $fields;
+
+            fn collect_range(&self, ranges: &mut SlotRanges) -> Result<(), ()> {
+                if !self.valid_address { return Err(()); }
+                if self.declared_size as usize >= $size {
+                    ranges.push(self.output)
+                } else {
+                    ranges.push(self.output.cast::<u32>())
+                }
+            }
+
+            unsafe fn initialize(&self) -> bool {
+                if self.output.is_null() || (self.declared_size as usize) < $size {
+                    return false;
+                }
+                // SAFETY: Boundary preflight validated all output/input ranges;
+                // the caller declared a writable prefix. Clear its padding too.
+                unsafe {
+                    ptr::write_bytes(self.output.cast::<u8>(), 0, $size);
+                    ptr::addr_of_mut!((*self.output).struct_size).write(self.declared_size);
+                }
+                true
+            }
+
+            unsafe fn commit(self, staged: Self::Staged) {
+                // SAFETY: Initialization established the complete writable
+                // prefix; scalar field writes are infallible and do not touch tails.
+                unsafe { $(ptr::addr_of_mut!((*self.output).$field).write(staged.$field);)+ }
+            }
+        }
+
+        impl output_private::Set for $output {}
+
+        unsafe impl OutputSet for $output {
+            type Staged = $fields;
+            fn ranges(&self) -> Result<SlotRanges, ()> {
+                let mut ranges = SlotRanges::default();
+                self.collect_range(&mut ranges)?;
+                Ok(ranges)
+            }
+            unsafe fn initialize(&self) -> bool {
+                // SAFETY: Forward the same validated transaction to its sole slot.
+                unsafe { OutputSlot::initialize(self) }
+            }
+            unsafe fn commit(self, staged: Self::Staged) {
+                // SAFETY: Forward after successful initialization of the sole slot.
+                unsafe { OutputSlot::commit(self, staged) }
+            }
+        }
+    };
+}
+
+navigation_record_output!(OutlineNodeOutput, OutlineNodeFields, crate::rofd_outline_node_t,
+crate::abi::ROFD_OUTLINE_NODE_V1_SIZE, {
+    expanded: u32, title: *const c_char, parent: usize, first_child: usize,
+    next_sibling: usize, action_count: usize,
+});
+navigation_record_output!(ActionOutput, ActionFields, crate::rofd_action_t,
+crate::abi::ROFD_ACTION_V1_SIZE, {
+    kind: u32, event: u32, flags: u32, type_name: *const c_char,
+    event_name: *const c_char, uri: *const c_char, uri_base: *const c_char,
+    attachment_id: *const c_char, bookmark: *const c_char,
+});
+navigation_record_output!(DestinationOutput, DestinationFields, crate::rofd_destination_t,
+crate::abi::ROFD_DESTINATION_V1_SIZE, {
+    kind: u32, flags: u32, page_index: usize, page_id: u64, mode_name: *const c_char,
+    left_mm: f64, top_mm: f64, right_mm: f64, bottom_mm: f64, zoom: f64,
+});
+
 pub(crate) struct WarningOutput {
     output: *mut crate::rofd_warning_t,
     declared_size: u32,

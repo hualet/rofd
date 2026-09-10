@@ -10,8 +10,9 @@ use crate::{
     rofd_document_t, rofd_error_t, rofd_metadata_t, rofd_status_t, rofd_warning_list_t,
     rofd_warning_t, ROFD_STATUS_INVALID_ARGUMENT, ROFD_STATUS_PAGE_OUT_OF_RANGE,
     ROFD_WARNING_ANNOTATION_SKIPPED, ROFD_WARNING_DOCUMENT_PAGE_AREA_MISSING,
-    ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED, ROFD_WARNING_PAGE_AREA_FALLBACK,
-    ROFD_WARNING_SIGNATURE_SKIPPED, ROFD_WARNING_UNKNOWN,
+    ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED, ROFD_WARNING_NAVIGATION_COMPATIBILITY,
+    ROFD_WARNING_NAVIGATION_INVALID, ROFD_WARNING_NAVIGATION_UNSUPPORTED,
+    ROFD_WARNING_PAGE_AREA_FALLBACK, ROFD_WARNING_SIGNATURE_SKIPPED, ROFD_WARNING_UNKNOWN,
     ROFD_WARNING_UNKNOWN_GRAPHIC_UNIT_SKIPPED,
 };
 use rofd_core::{Metadata, Warning, WarningCode};
@@ -53,6 +54,9 @@ fn warning_code(code: WarningCode) -> u32 {
         WarningCode::UnknownGraphicUnitSkipped => ROFD_WARNING_UNKNOWN_GRAPHIC_UNIT_SKIPPED,
         WarningCode::AnnotationSkipped => ROFD_WARNING_ANNOTATION_SKIPPED,
         WarningCode::HistoricalDocBodySkipped => ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED,
+        WarningCode::NavigationInvalid => ROFD_WARNING_NAVIGATION_INVALID,
+        WarningCode::NavigationUnsupported => ROFD_WARNING_NAVIGATION_UNSUPPORTED,
+        WarningCode::NavigationCompatibility => ROFD_WARNING_NAVIGATION_COMPATIBILITY,
         _ => ROFD_WARNING_UNKNOWN,
     }
 }
@@ -424,6 +428,9 @@ mod tests {
             (WarningCode::UnknownGraphicUnitSkipped, 4),
             (WarningCode::AnnotationSkipped, 5),
             (WarningCode::HistoricalDocBodySkipped, 6),
+            (WarningCode::NavigationInvalid, 7),
+            (WarningCode::NavigationUnsupported, 8),
+            (WarningCode::NavigationCompatibility, 9),
         ] {
             assert_eq!(warning_code(code), expected);
         }

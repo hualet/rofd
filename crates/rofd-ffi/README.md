@@ -6,6 +6,51 @@ link with `rofd_ffi` plus Cairo. Check `rofd_abi_version()` against
 `ROFD_ABI_VERSION` before using an ABI whose version is not already known by
 the application.
 
+## Outline and navigation actions
+
+`rofd_document_get_outline` returns an independently owned preorder snapshot.
+An absent outline produces an empty snapshot. Node records expose a UTF-8 title,
+expanded state (default true), action count and parent/first-child/next-sibling
+indices; `ROFD_NO_INDEX` means no relation. Source `Count` values do not determine
+the actual tree. All indices are zero-based.
+
+Query each node's ordered actions with `rofd_outline_get_action`. The shared
+`rofd_action_t` distinguishes internal Goto, URI and attachment GotoA, preserving
+unknown action/event names. URI bases and attachment identifiers remain raw
+strings; queries never execute actions, fetch a URI or open an attachment.
+
+For Goto, `rofd_outline_get_action_destination` returns a versioned destination
+record. It resolves OFD PageID or a named bookmark into a page index. Check
+`ROFD_DESTINATION_HAS_PAGE_INDEX` before navigating: broken references use
+`ROFD_NO_INDEX`, not page zero. An unresolved bookmark may have no destination
+fields. Asking a non-Goto action for a destination returns `UNSUPPORTED`.
+Other `HAS_*` bits distinguish absent coordinates/zoom from explicit zero.
+Coordinates are absolute physical-page millimetres, independent of rendering
+DPI, scale and rotation; the caller applies destination-mode defaults. Explicit
+zero zoom means retain the current zoom.
+
+Initialize every node/action/destination output's `struct_size` with `sizeof`.
+Queries clear the known record prefix (including padding) on ordinary failure,
+preserve that declared size and leave unknown tails untouched. Strings are
+borrowed until `rofd_outline_free`, even if the source document is already freed.
+The usual input/output overlap, error and thread-safety contracts apply.
+
+Navigation semantics are parsed lazily and use the document's resource limits.
+Strict malformed navigation fails the outline query; lenient recovery reports
+warnings while retaining usable entries. Unknown action/event/mode names are
+inert and inspectable. Normative Dest attributes take precedence; ofdrw-style
+numeric child elements are accepted with a compatibility warning. Global XML
+well-formedness and depth checks still occur when opening the document.
+The exact historical namespace `http://www.ofdspec.org` is also accepted with a
+compatibility warning; unrelated extension namespaces cannot impersonate OFD.
+Retained XML strings and expanded navigation/diagnostic strings have independent
+byte budgets, including repeated bookmark targets and namespace names. Exceeding
+a budget fails the query in both modes without publishing a partial snapshot.
+
+The C ABI runner also generates a small controlled OFD under its own target
+directory and dynamically checks a nonempty tree, destinations, action payloads,
+record tails and ownership. It does not need an external ZIP command or Python.
+
 ## Metadata and parse warnings
 
 `rofd_document_get_metadata` returns an independently owned immutable snapshot.
@@ -265,6 +310,6 @@ rectangles to the tile; unsafe extreme path coordinates return
   in use. Cairo access and synchronization remain the caller's responsibility.
 
 The v1 surface intentionally defers link and image mappings, richer annotation
-and signature queries, outline APIs, progressive rendering, callbacks,
+and signature queries, progressive rendering, callbacks,
 custom font providers, non-Cairo backends, and advanced composite or color-space
 controls.

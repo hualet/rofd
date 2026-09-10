@@ -67,15 +67,24 @@ approved. New coverage includes 3 core tests, 8 FFI tests and 2 conversion units
 Files: core `src/{navigation,raw,document,lib}.rs`, navigation tests; FFI
 `src/{navigation,handles,abi,lib}.rs`, header, tests and C consumers.
 
-- [ ] Add nested outline fixtures with Expanded=false, advisory Count mismatch,
+- [x] Add nested outline fixtures with Expanded=false, advisory Count mismatch,
   direct Dest and named Bookmark, absent/broken destinations and unknown actions.
   Assert actual topology, page-index resolution, optional coordinates and limits.
-- [ ] Run failing tests; implement bounded shared action/destination parsing and
+- [x] Run failing tests; implement bounded shared action/destination parsing and
   outline flattening. Keep unsupported action type names and warning evidence.
-- [ ] Add C snapshot queries and tests for ownership after document free,
+- [x] Add C snapshot queries and tests for ownership after document free,
   sentinel relations, destination validity, output transactions and record tails.
-- [ ] Verify build/tests/Clippy/C consumers; review and commit
+- [x] Verify build/tests/Clippy/C consumers; review and commit
   `feat(core): expose document outlines and destinations`.
+
+P1 outline verification: workspace/all-targets 526 passed, 0 failed, 2
+intentional ignores; release FFI/Qt build, format, strict Clippy and dynamic
+C11/C++17 consumers/symbol checks passed. Independent spec and quality reviews
+approved. Nineteen core navigation tests, five FFI tests and an exact-budget unit
+cover topology, ownership, compatibility, malformed inputs and resource limits.
+Review regressions bound repeated bookmark-mode copies, namespace expansion and
+escaped diagnostic strings before allocation/retention; failed queries publish
+neither partial cache nor warnings. The real z.ofd fixture resolves five nodes.
 
 ## Task 4: P2 page link mappings
 

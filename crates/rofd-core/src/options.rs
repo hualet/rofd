@@ -12,7 +12,10 @@ pub enum Strictness {
 pub struct ResourceLimits {
     /// Maximum number of ZIP entries.
     pub max_entries: usize,
-    /// Maximum uncompressed size of one entry.
+    /// Maximum uncompressed size of one entry. Independent navigation budgets
+    /// also cap retained XML arena strings (including expanded namespaces and
+    /// entities), and cumulative expanded model and diagnostic strings, at this
+    /// many bytes. Bookmark destination copies consume the model budget.
     pub max_entry_size: u64,
     /// Maximum sum of declared uncompressed entry sizes.
     pub max_total_size: u64,
@@ -31,8 +34,12 @@ pub struct ResourceLimits {
     /// `Text` child consumes one unit even though these structures do not have
     /// object IDs. The limit is enforced during XML preflight, before recursive
     /// deserialization, and again across effective template expansion.
+    /// Independently, a lazy document navigation query uses this as an aggregate
+    /// cap on selected outline/bookmark XML elements, including action children
+    /// and unknown extensions. Unrelated document elements are not charged.
     pub max_page_objects: usize,
-    /// Maximum nesting depth of page blocks or template references on one page.
+    /// Maximum nesting depth of page blocks or template references on one page,
+    /// and independently of outline nodes during a lazy navigation query.
     pub max_page_block_depth: usize,
     /// Maximum nesting depth of elements in any parsed XML document.
     pub max_xml_depth: usize,

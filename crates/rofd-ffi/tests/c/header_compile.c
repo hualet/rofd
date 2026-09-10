@@ -4,6 +4,12 @@
 #include "rofd.h"
 
 _Static_assert(ROFD_ABI_VERSION == 1u, "unexpected ABI version");
+_Static_assert(offsetof(rofd_outline_node_t, struct_size) == 0 &&
+               offsetof(rofd_action_t, struct_size) == 0 &&
+               offsetof(rofd_destination_t, struct_size) == 0,
+               "navigation records are versioned");
+_Static_assert(ROFD_NO_INDEX == SIZE_MAX && ROFD_DESTINATION_HAS_ZOOM == (1u << 6),
+               "navigation constants are stable");
 _Static_assert(offsetof(rofd_warning_t, struct_size) == 0,
                "warning struct_size must be first");
 _Static_assert(offsetof(rofd_warning_t, code) == sizeof(uint32_t),
@@ -68,6 +74,13 @@ _Static_assert(offsetof(rofd_render_diagnostic_t, struct_size) == 0,
                "render diagnostic struct_size must be first");
 
 static int consume_api(void) {
+    if (rofd_document_get_outline(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_outline_get_count(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_outline_get_node(NULL, 0, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_outline_get_action(NULL, 0, 0, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_outline_get_action_destination(NULL, 0, 0, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT)
+        return 1;
+    rofd_outline_free(NULL);
     if (rofd_document_get_metadata(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
         rofd_document_get_warnings(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
         rofd_metadata_get_document_id(NULL) != NULL ||

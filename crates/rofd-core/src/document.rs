@@ -56,6 +56,13 @@ pub enum WarningCode {
     /// The OFD.xml contains multiple DocBody elements; only the first
     /// (current version) was loaded and historical versions were skipped.
     HistoricalDocBodySkipped,
+    /// Malformed or unresolved optional navigation data was retained safely.
+    NavigationInvalid,
+    /// An unsupported navigation action, event, or destination mode was retained.
+    NavigationUnsupported,
+    /// A historical navigation namespace or numeric destination child used
+    /// compatibility parsing.
+    NavigationCompatibility,
 }
 
 /// A recoverable OFD conformance diagnostic.
@@ -94,6 +101,7 @@ struct TemplateReference {
 #[derive(Debug)]
 struct DocumentInner {
     container: Container,
+    document_path: PackagePath,
     limits: crate::ResourceLimits,
     metadata: Metadata,
     default_page_area: Option<crate::raw::PageArea>,
@@ -110,6 +118,8 @@ struct DocumentInner {
     annotations_path: Option<PackagePath>,
     page_annotations: OnceLock<Vec<crate::PageAnnotation>>,
     page_annotation_initialization: Mutex<()>,
+    navigation: OnceLock<crate::navigation::NavigationData>,
+    navigation_initialization: Mutex<()>,
 }
 
 /// A read-only OFD document.
@@ -407,6 +417,7 @@ impl Document {
         };
         Ok(Self(Arc::new(DocumentInner {
             container,
+            document_path,
             limits,
             metadata: Metadata {
                 document_id: info.document_id,
@@ -434,6 +445,8 @@ impl Document {
             annotations_path,
             page_annotations: OnceLock::new(),
             page_annotation_initialization: Mutex::new(()),
+            navigation: OnceLock::new(),
+            navigation_initialization: Mutex::new(()),
         })))
     }
 
@@ -445,6 +458,52 @@ impl Document {
     /// Returns the number of indexed pages.
     pub fn page_count(&self) -> usize {
         self.0.pages.len()
+    }
+
+    /// Returns the outline tree as an immutable preorder array.
+    ///
+    /// Navigation is parsed only on first query and shared by document clones.
+    /// Its semantic errors do not prevent opening the document or reading pages.
+    /// Strict mode rejects malformed or unresolved destinations; lenient mode
+    /// retains usable entries and reports navigation warnings once. Unsupported
+    /// action types and events remain inspectable in both modes and are never
+    /// executed. The advisory OFD `Count` does not determine tree topology.
+    /// Native namespaces are the standard `http://www.ofdspec.org/2016`,
+    /// unqualified XML, and the warned historical `http://www.ofdspec.org` alias.
+    /// Numeric `Dest` child compatibility never overrides normative attributes.
+    pub fn outline(&self) -> Result<&[crate::OutlineNode]> {
+        if let Some(data) = self.0.navigation.get() {
+            return Ok(&data.outlines);
+        }
+        let _initialization =
+            self.0.navigation_initialization.lock().map_err(|_| {
+                Error::Internal("navigation initialization lock poisoned".to_owned())
+            })?;
+        if let Some(data) = self.0.navigation.get() {
+            return Ok(&data.outlines);
+        }
+        let bytes = self.0.container.read(&self.0.document_path)?;
+        let pages: Vec<_> = self
+            .0
+            .pages
+            .iter()
+            .enumerate()
+            .map(|(index, page)| (page.id, index))
+            .collect();
+        let (data, warnings) = crate::navigation::parse_navigation(
+            &bytes,
+            self.0.document_path.as_str(),
+            &self.0.limits,
+            self.0.strictness,
+            &pages,
+        )?;
+        let mut committed = self
+            .0
+            .warnings
+            .lock()
+            .map_err(|_| Error::Internal("document warning lock poisoned".to_owned()))?;
+        committed.extend(warnings);
+        Ok(&self.0.navigation.get_or_init(|| data).outlines)
     }
 
     /// Looks up a font resource after atomically validating all declared catalogs.

@@ -17,3 +17,7 @@ rofd-render = { path = "../rofd-render" }
 
 [dev-dependencies]
 zip.workspace = true
+
+[[example]]
+name = "abi-fixtures"
+path = "tests/c/generate_fixtures.rs"

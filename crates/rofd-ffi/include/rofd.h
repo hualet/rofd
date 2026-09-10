@@ -97,6 +97,33 @@ typedef uint32_t rofd_status_t;
 #define ROFD_WARNING_UNKNOWN_GRAPHIC_UNIT_SKIPPED 4u
 #define ROFD_WARNING_ANNOTATION_SKIPPED 5u
 #define ROFD_WARNING_HISTORICAL_DOC_BODY_SKIPPED 6u
+#define ROFD_WARNING_NAVIGATION_INVALID 7u
+#define ROFD_WARNING_NAVIGATION_UNSUPPORTED 8u
+#define ROFD_WARNING_NAVIGATION_COMPATIBILITY 9u
+
+#define ROFD_NO_INDEX SIZE_MAX
+#define ROFD_ACTION_UNKNOWN 0u
+#define ROFD_ACTION_GOTO 1u
+#define ROFD_ACTION_URI 2u
+#define ROFD_ACTION_ATTACHMENT 3u
+#define ROFD_ACTION_EVENT_UNKNOWN 0u
+#define ROFD_ACTION_EVENT_DOCUMENT_OPEN 1u
+#define ROFD_ACTION_EVENT_PAGE_OPEN 2u
+#define ROFD_ACTION_EVENT_CLICK 3u
+#define ROFD_ACTION_NEW_WINDOW (1u << 0)
+#define ROFD_DESTINATION_UNKNOWN 0u
+#define ROFD_DESTINATION_XYZ 1u
+#define ROFD_DESTINATION_FIT 2u
+#define ROFD_DESTINATION_FIT_H 3u
+#define ROFD_DESTINATION_FIT_V 4u
+#define ROFD_DESTINATION_FIT_R 5u
+#define ROFD_DESTINATION_HAS_PAGE_INDEX (1u << 0)
+#define ROFD_DESTINATION_HAS_PAGE_ID (1u << 1)
+#define ROFD_DESTINATION_HAS_LEFT (1u << 2)
+#define ROFD_DESTINATION_HAS_TOP (1u << 3)
+#define ROFD_DESTINATION_HAS_RIGHT (1u << 4)
+#define ROFD_DESTINATION_HAS_BOTTOM (1u << 5)
+#define ROFD_DESTINATION_HAS_ZOOM (1u << 6)
 
 #define ROFD_IMAGE_INTERPOLATION_NEAREST 0u
 #define ROFD_IMAGE_INTERPOLATION_BILINEAR 1u
@@ -121,6 +148,7 @@ typedef uint32_t rofd_status_t;
 typedef struct rofd_document rofd_document_t;
 typedef struct rofd_metadata rofd_metadata_t;
 typedef struct rofd_warning_list rofd_warning_list_t;
+typedef struct rofd_outline rofd_outline_t;
 typedef struct rofd_page rofd_page_t;
 typedef struct rofd_renderer rofd_renderer_t;
 typedef struct rofd_render_report rofd_render_report_t;
@@ -233,6 +261,55 @@ typedef struct rofd_warning {
     const char *path;
     const char *message;
 } rofd_warning_t;
+
+/** Preorder outline node. All indices are zero-based; absent relations use
+ * ROFD_NO_INDEX. title is borrowed until the outline snapshot is freed. */
+typedef struct rofd_outline_node {
+    uint32_t struct_size;
+    uint32_t expanded; /**< Exactly 0 or 1; omitted source values default to 1. */
+    const char *title;
+    size_t parent;
+    size_t first_child;
+    size_t next_sibling;
+    size_t action_count;
+} rofd_outline_node_t;
+
+/** Inert action. All strings are borrowed from the queried snapshot. An
+ * irrelevant or missing optional payload is NULL, distinct from an empty
+ * string. URI and URI base are preserved, not resolved or executed. GotoA
+ * uses attachment_id, an identifier string (not necessarily a number). */
+typedef struct rofd_action {
+    uint32_t struct_size;
+    uint32_t kind; /**< ROFD_ACTION_UNKNOWN/GOTO/URI/ATTACHMENT. */
+    uint32_t event; /**< ROFD_ACTION_EVENT_*; inspect before choosing to act. */
+    uint32_t flags; /**< ROFD_ACTION_NEW_WINDOW, default true for GotoA. */
+    const char *type_name; /**< Source name, retained for unknown actions. */
+    const char *event_name; /**< Source event, retained for unknown events. */
+    const char *uri;
+    const char *uri_base;
+    const char *attachment_id;
+    const char *bookmark;
+} rofd_action_t;
+
+/** Destination in absolute physical-page millimetres, independent of render
+ * DPI, scale or rotation. Only HAS_* fields are meaningful. On successful
+ * unresolved queries page_index is ROFD_NO_INDEX, never an invented page zero.
+ * Absent numeric coordinates are zero, with the corresponding HAS_* bit clear.
+ * The caller applies destination-mode defaults; explicit zero zoom means keep
+ * current zoom. mode_name is borrowed from the queried snapshot. */
+typedef struct rofd_destination {
+    uint32_t struct_size;
+    uint32_t kind; /**< ROFD_DESTINATION_UNKNOWN/XYZ/FIT/FIT_H/FIT_V/FIT_R. */
+    uint32_t flags; /**< ROFD_DESTINATION_HAS_* presence bits. */
+    size_t page_index;
+    uint64_t page_id;
+    const char *mode_name;
+    double left_mm;
+    double top_mm;
+    double right_mm;
+    double bottom_mm;
+    double zoom;
+} rofd_destination_t;
 
 uint32_t rofd_abi_version(void);
 const char *rofd_library_version(void);
@@ -349,6 +426,54 @@ rofd_status_t rofd_warning_list_get_warning(const rofd_warning_list_t *warnings,
  * A non-NULL handle must be uniquely owned, live and freed exactly once, without
  * concurrent readers or subsequent uses of its borrowed strings. */
 void rofd_warning_list_free(rofd_warning_list_t *warnings);
+
+/** Returns an independently owned immutable preorder outline snapshot, even
+ * when empty. Navigation is parsed lazily and may add parse warnings; it never
+ * executes actions. Nodes, actions and strings remain valid after document
+ * free. document and outline are required; error is optional.
+ *
+ * The same pointer/transaction rules apply to all outline queries below:
+ * non-NULL inputs must remain live and immutable; output slots must be aligned,
+ * writable, mutually disjoint and disjoint from input handle storage, without
+ * conflicting concurrent access. Malformed address layouts leave all outputs
+ * untouched; overlaps preserve ordinary outputs but may publish an independent
+ * error. Other failures null handle outputs or zero counts. NULL required
+ * arguments return INVALID_ARGUMENT; invalid node/action indices return
+ * PAGE_OUT_OF_RANGE. Snapshots permit concurrent read-only access. */
+rofd_status_t rofd_document_get_outline(const rofd_document_t *document,
+                                       rofd_outline_t **outline,
+                                       rofd_error_t **error);
+/** outline and count are required; error is optional. */
+rofd_status_t rofd_outline_get_count(const rofd_outline_t *outline,
+                                    size_t *count, rofd_error_t **error);
+/** Borrows a node. All navigation output records require initialized
+ * struct_size >= sizeof(the v1 record). The first uint32_t must be readable;
+ * a supported prefix must be writable. Valid prefixes are cleared including
+ * padding on ordinary failure, preserving captured struct_size and unknown
+ * tails. Undersized records remain untouched. These record rules apply to node,
+ * action and destination queries. Title/other borrowed UTF-8 strings must not
+ * be modified or freed and expire on outline free; embedded NUL is represented
+ * by a visible backslash followed by zero. outline and node are required. */
+rofd_status_t rofd_outline_get_node(const rofd_outline_t *outline,
+                                   size_t node_index, rofd_outline_node_t *node,
+                                   rofd_error_t **error);
+/** Borrows an action by its zero-based index in the node's declaration order.
+ * Unknown action/event names remain inspectable. No action is executed.
+ * outline and action are required; error is optional. */
+rofd_status_t rofd_outline_get_action(const rofd_outline_t *outline,
+                                     size_t node_index, size_t action_index,
+                                     rofd_action_t *action, rofd_error_t **error);
+/** Non-Goto actions return UNSUPPORTED. Unresolved Goto actions succeed without
+ * HAS_PAGE_INDEX; a missing bookmark may have no destination fields at all.
+ * Check presence bits before navigation; never interpret a missing target as
+ * page zero. outline and destination are required; error is optional. */
+rofd_status_t rofd_outline_get_action_destination(
+    const rofd_outline_t *outline, size_t node_index, size_t action_index,
+    rofd_destination_t *destination, rofd_error_t **error);
+/** Frees a uniquely owned snapshot and invalidates all borrowed strings. NULL
+ * is a no-op. A non-NULL handle must be freed exactly once, without concurrent
+ * readers or later uses of borrowed data. */
+void rofd_outline_free(rofd_outline_t *outline);
 
 /** Borrow a live page without consuming it; its storage must be disjoint from
  * page_index and error and must not be freed during the call. */

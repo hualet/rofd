@@ -23,6 +23,8 @@ ROFD_FFI_LIBRARY="$ROFD_FFI_DEBUG_DIR/librofd_ffi.so"
 ROFD_C_HEADER_BIN="$ROFD_FFI_DEBUG_DIR/rofd-ffi-header-c"
 ROFD_CPP_HEADER_BIN="$ROFD_FFI_DEBUG_DIR/rofd-ffi-header-cpp"
 ROFD_SMOKE_BIN="$ROFD_FFI_DEBUG_DIR/rofd-ffi-smoke"
+ROFD_NAVIGATION_BIN="$ROFD_FFI_DEBUG_DIR/rofd-ffi-navigation-smoke"
+ROFD_NAVIGATION_FIXTURE="$ROFD_FFI_DEBUG_DIR/rofd-ffi-navigation.ofd"
 ROFD_SYMBOLS_FILE="$ROFD_FFI_DEBUG_DIR/rofd-ffi-symbols.txt"
 
 cargo build -p rofd-ffi --manifest-path "$ROFD_REPO_ROOT/Cargo.toml" \
@@ -56,6 +58,16 @@ cc -std=c11 -Wall -Wextra -Werror -pedantic $(pkg-config --cflags cairo) \
     -lrofd_ffi $(pkg-config --libs cairo) -Wl,-rpath,"$ROFD_FFI_DEBUG_DIR" \
     -o "$ROFD_SMOKE_BIN"
 "$ROFD_SMOKE_BIN" "$ROFD_REPO_ROOT/learning/test.ofd"
+
+# Generate a controlled package using the existing Rust ZIP test dependency,
+# then verify nonempty versioned records through the newly built dynamic ABI.
+cargo run -p rofd-ffi --example abi-fixtures --manifest-path "$ROFD_REPO_ROOT/Cargo.toml" \
+    --target-dir "$ROFD_FFI_TARGET_DIR" --target "$ROFD_HOST_TRIPLE" -- "$ROFD_NAVIGATION_FIXTURE"
+cc -std=c11 -Wall -Wextra -Werror -pedantic $(pkg-config --cflags cairo) \
+    -I"$INCLUDE_DIR" "$TEST_DIR/navigation_smoke.c" -L"$ROFD_FFI_DEBUG_DIR" \
+    -lrofd_ffi $(pkg-config --libs cairo) -Wl,-rpath,"$ROFD_FFI_DEBUG_DIR" \
+    -o "$ROFD_NAVIGATION_BIN"
+"$ROFD_NAVIGATION_BIN" "$ROFD_NAVIGATION_FIXTURE"
 
 nm -D --defined-only "$ROFD_FFI_LIBRARY" | awk '{print $3}' | \
     sed -n '/^rofd_/p' | LC_ALL=C sort > "$ROFD_SYMBOLS_FILE"

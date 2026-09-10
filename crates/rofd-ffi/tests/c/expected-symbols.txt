@@ -1,6 +1,7 @@
 rofd_abi_version
 rofd_document_free
 rofd_document_get_metadata
+rofd_document_get_outline
 rofd_document_get_page
 rofd_document_get_page_count
 rofd_document_get_warnings
@@ -23,6 +24,11 @@ rofd_metadata_get_keyword_count
 rofd_metadata_get_modification_date
 rofd_metadata_get_subject
 rofd_metadata_get_title
+rofd_outline_free
+rofd_outline_get_action
+rofd_outline_get_action_destination
+rofd_outline_get_count
+rofd_outline_get_node
 rofd_page_find_text
 rofd_page_find_text_with_options
 rofd_page_free
