@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "rofd.h"
 
@@ -61,10 +62,16 @@ int main(int argc, char **argv) {
     rofd_renderer_t *renderer = NULL;
     rofd_render_report_t *report = NULL;
     rofd_error_t *error = NULL;
+    rofd_string_t *text = NULL;
+    rofd_text_layout_t *layout = NULL;
+    rofd_text_search_t *search = NULL;
+    rofd_text_selection_t *selection = NULL;
     cairo_surface_t *surface = NULL;
     cairo_t *cairo = NULL;
     rofd_render_options_t render_options;
     rofd_render_diagnostic_t diagnostic = {0};
+    rofd_find_options_t find_options;
+    rofd_text_match_t match = {0};
     rofd_rect_t page_rect = {0.0, 0.0, 0.0, 0.0};
     size_t page_count = 0u;
     size_t diagnostic_count = 0u;
@@ -91,6 +98,33 @@ int main(int argc, char **argv) {
     CHECK(rofd_page_get_size_mm(page, &page_rect, &error) == ROFD_STATUS_OK);
     CHECK(page_rect.width_mm == 211.5);
     CHECK(page_rect.height_mm == 140.0);
+
+    CHECK(rofd_page_get_text(page, &text, &error) == ROFD_STATUS_OK);
+    CHECK(rofd_string_get_data(text) != NULL);
+    CHECK(strstr(rofd_string_get_data(text), "电子发票（普通发票）") != NULL);
+    CHECK(rofd_page_get_text_layout(page, &layout, &error) == ROFD_STATUS_OK);
+    CHECK(rofd_text_layout_get_count(layout, &page_count, &error) ==
+          ROFD_STATUS_OK);
+    CHECK(page_count > 0u);
+
+    rofd_find_options_init(&find_options, sizeof(find_options));
+    find_options.flags = ROFD_FIND_WHOLE_WORDS;
+    CHECK(rofd_page_find_text_with_options(page, "发票号码", &find_options,
+                                           &search, &error) == ROFD_STATUS_OK);
+    CHECK(rofd_text_search_get_count(search, &page_count, &error) ==
+          ROFD_STATUS_OK);
+    CHECK(page_count == 1u);
+    match.struct_size = sizeof(match);
+    CHECK(rofd_text_search_get_match(search, 0u, &match, &error) ==
+          ROFD_STATUS_OK);
+    CHECK(match.utf8_length == strlen("发票号码"));
+    CHECK(match.rect_mm.width_mm > 0.0 && match.rect_mm.height_mm > 0.0);
+    CHECK(rofd_page_get_selected_text(page, ROFD_SELECTION_WORD,
+                                      &match.rect_mm, &selection, &error) ==
+          ROFD_STATUS_OK);
+    CHECK(rofd_text_selection_get_region_count(selection, &page_count, &error) ==
+          ROFD_STATUS_OK);
+    CHECK(page_count > 0u);
 
     rofd_document_free(document);
     document = NULL;
@@ -152,6 +186,17 @@ int main(int argc, char **argv) {
           ROFD_STATUS_OK);
     CHECK(diagnostic.message != NULL);
     CHECK(diagnostic.message[0] != '\0');
+
+    rofd_page_free(page);
+    page = NULL;
+    match.struct_size = sizeof(match);
+    CHECK(rofd_text_search_get_match(search, 0u, &match, &error) ==
+          ROFD_STATUS_OK);
+    CHECK(match.utf8_length == strlen("发票号码"));
+    CHECK(rofd_text_selection_get_text(selection) != NULL);
+    CHECK(rofd_text_selection_get_text_length(selection) >=
+          strlen("发票号码"));
+    CHECK(strstr(rofd_text_selection_get_text(selection), "发票号码") != NULL);
     result = 0;
 
 cleanup:
@@ -161,6 +206,10 @@ cleanup:
                 message != NULL ? message : "<no message>");
     }
     rofd_error_free(error);
+    rofd_text_selection_free(selection);
+    rofd_text_search_free(search);
+    rofd_text_layout_free(layout);
+    rofd_string_free(text);
     rofd_render_report_free(report);
     if (cairo != NULL) {
         cairo_destroy(cairo);

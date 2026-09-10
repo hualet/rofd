@@ -6,6 +6,77 @@ link with `rofd_ffi` plus Cairo. Check `rofd_abi_version()` against
 `ROFD_ABI_VERSION` before using an ABI whose version is not already known by
 the application.
 
+## Text semantic C example
+
+Page text, layout, and search use independently owned result handles. This
+example opens page zero, prints its canonical UTF-8 text, and reports the first
+whole-word match for a query supplied on the command line:
+
+```c
+#include <rofd.h>
+#include <stddef.h>
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+    rofd_document_t *document = NULL;
+    rofd_page_t *page = NULL;
+    rofd_string_t *text = NULL;
+    rofd_text_layout_t *layout = NULL;
+    rofd_text_search_t *search = NULL;
+    rofd_error_t *error = NULL;
+    rofd_find_options_t options;
+    rofd_text_match_t match = {0};
+    size_t character_count = 0;
+    size_t match_count = 0;
+    int result = 1;
+
+#define ROFD_TRY(call) do {                                                \
+    if ((call) != ROFD_STATUS_OK) {                                        \
+        fprintf(stderr, "rofd: %s\n", error ? rofd_error_get_message(error) \
+                                             : "unknown error");           \
+        goto cleanup;                                                      \
+    }                                                                      \
+} while (0)
+
+    if (argc != 3 || rofd_abi_version() != ROFD_ABI_VERSION)
+        goto cleanup;
+    ROFD_TRY(rofd_document_open(argv[1], NULL, &document, &error));
+    ROFD_TRY(rofd_document_get_page(document, 0, &page, &error));
+    ROFD_TRY(rofd_page_get_text(page, &text, &error));
+    ROFD_TRY(rofd_page_get_text_layout(page, &layout, &error));
+    ROFD_TRY(rofd_text_layout_get_count(layout, &character_count, &error));
+
+    rofd_find_options_init(&options, sizeof(options));
+    options.flags = ROFD_FIND_WHOLE_WORDS;
+    ROFD_TRY(rofd_page_find_text_with_options(page, argv[2], &options,
+                                               &search, &error));
+    ROFD_TRY(rofd_text_search_get_count(search, &match_count, &error));
+    if (match_count != 0) {
+        match.struct_size = sizeof(match);
+        ROFD_TRY(rofd_text_search_get_match(search, 0, &match, &error));
+        printf("first match: byte %zu, length %zu\n", match.utf8_offset,
+               match.utf8_length);
+    }
+    fwrite(rofd_string_get_data(text), 1, rofd_string_get_length(text), stdout);
+    printf("\n%zu characters, %zu matches\n", character_count, match_count);
+    result = 0;
+
+cleanup:
+    rofd_error_free(error);
+    rofd_text_search_free(search);
+    rofd_text_layout_free(layout);
+    rofd_string_free(text);
+    rofd_page_free(page);
+    rofd_document_free(document);
+    return result;
+}
+```
+
+Rust consumers should call `rofd_core::Page::text()` and use the idiomatic
+`PageText`, `FindOptions`, `TextMatch`, and `TextSelection` values directly;
+the opaque handle model exists only to provide stable ownership across the C
+ABI.
+
 ## Complete C example
 
 ```c
@@ -105,6 +176,7 @@ For example, after building the shared library, compile with
   calls may share live handles across threads, but no handle may be freed while
   in use. Cairo access and synchronization remain the caller's responsibility.
 
-The v1 surface intentionally defers annotations, signatures, text search and
-selection, outline/metadata APIs, progressive rendering, callbacks, custom font
-providers, non-Cairo backends, and advanced composite or color-space controls.
+The v1 surface intentionally defers link and image mappings, richer annotation
+and signature queries, outline/metadata APIs, progressive rendering, callbacks,
+custom font providers, non-Cairo backends, and advanced composite or color-space
+controls.

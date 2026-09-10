@@ -32,6 +32,24 @@ static_assert(offsetof(rofd_text_char_t, struct_size) == 0,
 static_assert(offsetof(rofd_text_match_t, struct_size) == 0,
               "text match struct_size must be first");
 
+using page_find_text_fn = rofd_status_t (*)(const rofd_page_t *, const char *,
+                                            rofd_text_search_t **,
+                                            rofd_error_t **);
+using page_find_text_with_options_fn = rofd_status_t (*)(
+    const rofd_page_t *, const char *, const rofd_find_options_t *,
+    rofd_text_search_t **, rofd_error_t **);
+using page_get_selected_text_fn = rofd_status_t (*)(
+    const rofd_page_t *, std::uint32_t, const rofd_rect_t *,
+    rofd_text_selection_t **, rofd_error_t **);
+static_assert(std::is_same_v<decltype(&rofd_page_find_text), page_find_text_fn>,
+              "unexpected default search declaration");
+static_assert(std::is_same_v<decltype(&rofd_page_find_text_with_options),
+                             page_find_text_with_options_fn>,
+              "unexpected option search declaration");
+static_assert(std::is_same_v<decltype(&rofd_page_get_selected_text),
+                             page_get_selected_text_fn>,
+              "unexpected selection declaration");
+
 int main() {
     rofd_load_options_t load_options;
     rofd_renderer_options_t renderer_options;
@@ -51,6 +69,26 @@ int main() {
     rofd_renderer_options_init(&renderer_options, sizeof(renderer_options));
     rofd_render_options_init(&render_options, sizeof(render_options));
     rofd_find_options_init(&find_options, sizeof(find_options));
+
+    (void)&rofd_page_get_text;
+    (void)&rofd_page_get_text_for_area;
+    (void)&rofd_page_get_text_layout;
+    (void)&rofd_text_layout_get_count;
+    (void)&rofd_text_layout_get_char;
+    (void)&rofd_string_get_data;
+    (void)&rofd_string_get_length;
+    (void)&rofd_string_free;
+    (void)&rofd_page_find_text;
+    (void)&rofd_page_find_text_with_options;
+    (void)&rofd_text_search_get_count;
+    (void)&rofd_text_search_get_match;
+    (void)&rofd_text_search_free;
+    (void)&rofd_page_get_selected_text;
+    (void)&rofd_text_selection_get_text;
+    (void)&rofd_text_selection_get_text_length;
+    (void)&rofd_text_selection_get_region_count;
+    (void)&rofd_text_selection_get_region;
+    (void)&rofd_text_selection_free;
 
     (void)document;
     (void)page;

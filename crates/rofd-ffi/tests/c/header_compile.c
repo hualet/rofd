@@ -71,6 +71,39 @@ static int consume_api(void) {
     rofd_render_options_init(&render_options, sizeof(render_options));
     rofd_find_options_init(&find_options, sizeof(find_options));
 
+    if (rofd_page_get_text(NULL, NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_page_get_text_for_area(NULL, NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_page_get_text_layout(NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_text_layout_get_count(NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_text_layout_get_char(NULL, 0u, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_page_find_text(NULL, NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_page_find_text_with_options(NULL, NULL, NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_text_search_get_count(NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_text_search_get_match(NULL, 0u, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_page_get_selected_text(NULL, ROFD_SELECTION_GLYPH, NULL, NULL,
+                                    NULL) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_text_selection_get_region_count(NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_text_selection_get_region(NULL, 0u, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_string_get_data(NULL) != NULL || rofd_string_get_length(NULL) != 0u ||
+        rofd_text_selection_get_text(NULL) != NULL ||
+        rofd_text_selection_get_text_length(NULL) != 0u) {
+        return 1;
+    }
+    rofd_string_free(NULL);
+    rofd_text_layout_free(NULL);
+    rofd_text_search_free(NULL);
+    rofd_text_selection_free(NULL);
+
     (void)string;
     (void)layout;
     (void)search;
