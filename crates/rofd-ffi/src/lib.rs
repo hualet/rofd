@@ -9,6 +9,7 @@ mod error;
 mod handles;
 mod renderer;
 mod report;
+mod semantic;
 
 pub use abi::*;
 pub use document::{
@@ -26,4 +27,9 @@ pub use renderer::{
 };
 pub use report::{
     rofd_render_report_free, rofd_render_report_get_count, rofd_render_report_get_diagnostic,
+};
+pub use semantic::{
+    rofd_page_get_text, rofd_page_get_text_for_area, rofd_page_get_text_layout, rofd_string_free,
+    rofd_string_get_data, rofd_string_get_length, rofd_text_layout_free, rofd_text_layout_get_char,
+    rofd_text_layout_get_count,
 };

@@ -58,12 +58,10 @@ pub(crate) struct RenderReportHandle {
     pub(crate) diagnostics: Vec<OwnedDiagnostic>,
 }
 
-#[allow(dead_code)] // Populated and consumed by semantic entry points added in the next task.
 pub(crate) struct StringHandle {
     pub(crate) bytes: CString,
 }
 
-#[allow(dead_code)] // Populated and consumed by semantic entry points added in the next task.
 pub(crate) struct TextLayoutHandle {
     pub(crate) characters: Vec<rofd_core::TextChar>,
 }

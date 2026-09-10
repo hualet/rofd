@@ -14,3 +14,6 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 cairo-rs.workspace = true
 rofd-core = { path = "../rofd-core" }
 rofd-render = { path = "../rofd-render" }
+
+[dev-dependencies]
+zip.workspace = true

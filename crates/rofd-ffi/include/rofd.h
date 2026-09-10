@@ -243,6 +243,64 @@ rofd_status_t rofd_page_get_size_mm(const rofd_page_t *page,
                                     rofd_error_t **error);
 void rofd_page_free(rofd_page_t *page);
 
+/** Query canonical UTF-8 page text, including synthesized object separators.
+ * The returned string is independently owned and survives freeing page and
+ * document. Free it with rofd_string_free. Layout byte offsets index these
+ * exact bytes. page and text are required; error is optional. Every non-NULL
+ * output must be aligned, writable, mutually disjoint, and disjoint from live
+ * page storage. No conflicting concurrent access is permitted. */
+rofd_status_t rofd_page_get_text(const rofd_page_t *page,
+                                rofd_string_t **text, rofd_error_t **error);
+/** Return owned source glyphs with positive-area intersection, in canonical
+ * order, omitting synthesized separators. area_mm is required and must point
+ * to a complete initialized, readable, aligned rofd_rect_t in physical-page
+ * millimetres. Nonfinite coordinates or edges and negative dimensions return
+ * ROFD_STATUS_INVALID_ARGUMENT. Negative positions are valid; empty areas
+ * produce empty strings. The entire rectangle and live page storage must be
+ * disjoint from text and error. Ownership and output rules match get_text. */
+rofd_status_t rofd_page_get_text_for_area(const rofd_page_t *page,
+                                         const rofd_rect_t *area_mm,
+                                         rofd_string_t **text, rofd_error_t **error);
+/** Borrow immutable NUL-terminated UTF-8 bytes until rofd_string_free; NULL
+ * returns NULL. A non-NULL string handle must remain live during every read. */
+const char *rofd_string_get_data(const rofd_string_t *text);
+/** UTF-8 byte length excluding the terminating NUL; NULL returns zero. */
+size_t rofd_string_get_length(const rofd_string_t *text);
+/** Free once after all reads finish; NULL is a no-op. */
+void rofd_string_free(rofd_string_t *text);
+
+/** Return an independently owned immutable snapshot, one entry per Unicode
+ * scalar in canonical page text, including synthesized separators. Free with
+ * rofd_text_layout_free. The snapshot survives page and document destruction.
+ * page and layout are required; error is optional. All outputs must be aligned,
+ * writable, mutually disjoint and disjoint from live page storage. */
+rofd_status_t rofd_page_get_text_layout(const rofd_page_t *page,
+                                       rofd_text_layout_t **layout, rofd_error_t **error);
+/** Return the scalar count. layout and count are required. Live layout storage
+ * must be disjoint from aligned writable count and optional error outputs;
+ * outputs must be mutually disjoint. Failure initializes valid count to zero. */
+rofd_status_t rofd_text_layout_get_count(const rofd_text_layout_t *layout,
+                                        size_t *count, rofd_error_t **error);
+/** Copy one character by index; out-of-range returns ROFD_STATUS_PAGE_OUT_OF_RANGE.
+ * Before calling, set character->struct_size to sizeof(rofd_text_char_t) or a
+ * larger caller record size. A non-NULL record must have an initialized readable
+ * size field and, for supported sizes, an aligned writable complete v1 prefix.
+ * The transaction clears the permanent v1 prefix including padding, preserves
+ * the caller-declared struct_size and unknown tail, and publishes fields only
+ * on success. NULL and undersized records remain untouched; a separate error
+ * receives ROFD_STATUS_INVALID_ARGUMENT. Offsets and lengths are UTF-8 bytes in
+ * rofd_page_get_text's canonical string, not character indices or area-text
+ * offsets. Rectangles use physical-page millimetres; missing geometry is a zero
+ * rectangle. Synthesized separators have object_id zero and SYNTHESIZED_SEPARATOR;
+ * approximate geometry sets CONSERVATIVE_GEOMETRY (also set on current separators).
+ * Live layout storage and every output, including optional error, must be
+ * mutually disjoint and have no conflicting concurrent access during the call. */
+rofd_status_t rofd_text_layout_get_char(const rofd_text_layout_t *layout,
+                                       size_t index, rofd_text_char_t *character,
+                                       rofd_error_t **error);
+/** Free once after all reads finish; NULL is a no-op. Copied records remain valid. */
+void rofd_text_layout_free(rofd_text_layout_t *layout);
+
 rofd_status_t rofd_renderer_new(const rofd_renderer_options_t *options,
                                 rofd_renderer_t **renderer,
                                 rofd_error_t **error);
