@@ -4,6 +4,14 @@ use std::path::PathBuf;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A query argument or option is invalid.
+    #[error("invalid {field} option `{value}`")]
+    InvalidOption {
+        /// Argument or option name.
+        field: &'static str,
+        /// Rejected argument or option value.
+        value: String,
+    },
     /// An internal synchronization primitive or invariant became unusable.
     #[error("internal rofd state error: {0}")]
     Internal(String),

@@ -1,8 +1,355 @@
 mod support;
 
 use rofd_core::{
-    Document, Error, LoadOptions, Rect, ResourceLimits, TextCharFlags, TextGeometryPrecision,
+    Document, Error, FindOptions, LoadOptions, Rect, ResourceLimits, SelectionStyle, TextCharFlags,
+    TextGeometryPrecision, TextSelection,
 };
+
+fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+#[test]
+fn literal_search_defaults_to_case_insensitive_original_utf8_ranges() {
+    let page = page_with_text(&text_object(2, "中Foo foo发票🙂发票"));
+    let text = page.text().unwrap();
+    assert_eq!(
+        FindOptions::default(),
+        FindOptions {
+            case_sensitive: false,
+            whole_words: false,
+            max_results: 10_000,
+        }
+    );
+    let matches = text.find("foo", FindOptions::default()).unwrap();
+    assert_eq!(
+        matches
+            .iter()
+            .map(|hit| hit.utf8_range())
+            .collect::<Vec<_>>(),
+        vec![3..6, 7..10]
+    );
+    assert_eq!(&text.as_str()[matches[0].utf8_range()], "Foo");
+    assert_eq!(&text.as_str()[matches[1].utf8_range()], "foo");
+    let cjk = text.find("发票", FindOptions::default()).unwrap();
+    assert_eq!(
+        cjk.iter().map(|hit| hit.utf8_range()).collect::<Vec<_>>(),
+        vec![10..16, 20..26]
+    );
+    assert!(text
+        .find("missing", FindOptions::default())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn search_respects_case_and_original_unicode_word_boundaries() {
+    let page = page_with_text(&text_object(
+        2,
+        "Foo foo foobar _foo foo_ 中foo foo中 (foo)",
+    ));
+    let text = page.text().unwrap();
+    let case = FindOptions {
+        case_sensitive: true,
+        whole_words: true,
+        ..FindOptions::default()
+    };
+    let hits = text.find("foo", case).unwrap();
+    assert_eq!(
+        hits.iter().map(|hit| hit.utf8_range()).collect::<Vec<_>>(),
+        vec![4..7, 40..43]
+    );
+    assert_eq!(
+        text.find(
+            "foo",
+            FindOptions {
+                case_sensitive: false,
+                ..case
+            }
+        )
+        .unwrap()
+        .len(),
+        3
+    );
+}
+
+#[test]
+fn rejected_whole_word_candidate_does_not_hide_later_overlapping_candidate() {
+    let page = page_with_text(&text_object(2, "xfoo foo foo"));
+    let text = page.text().unwrap();
+    for case_sensitive in [false, true] {
+        let hits = text
+            .find(
+                "foo foo",
+                FindOptions {
+                    case_sensitive,
+                    whole_words: true,
+                    ..FindOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            hits.iter().map(|hit| hit.utf8_range()).collect::<Vec<_>>(),
+            vec![5..12]
+        );
+    }
+}
+
+#[test]
+fn lowercase_expansions_map_partial_matches_to_complete_source_scalars() {
+    let page = page_with_text(&text_object(2, "中İiİ"));
+    let text = page.text().unwrap();
+    for (query, expected) in [
+        ("i", vec![3..5, 5..6, 6..8]),
+        ("\u{307}", vec![3..5, 6..8]),
+        ("İ", vec![3..5, 6..8]),
+        ("\u{307}i", std::iter::once(3..6).collect()),
+    ] {
+        let hits = text.find(query, FindOptions::default()).unwrap();
+        assert_eq!(
+            hits.iter().map(|hit| hit.utf8_range()).collect::<Vec<_>>(),
+            expected
+        );
+        for hit in hits {
+            assert!(text.as_str().get(hit.utf8_range()).is_some());
+        }
+    }
+    assert!(text
+        .find(
+            "i",
+            FindOptions {
+                whole_words: true,
+                ..FindOptions::default()
+            }
+        )
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn search_is_nonoverlapping_left_to_right_and_stops_at_exact_cap() {
+    let page = page_with_text(&text_object(2, "aaaaa"));
+    let text = page.text().unwrap();
+    for case_sensitive in [false, true] {
+        let options = FindOptions {
+            case_sensitive,
+            ..FindOptions::default()
+        };
+        let hits = text.find("aa", options).unwrap();
+        assert_eq!(
+            hits.iter().map(|hit| hit.utf8_range()).collect::<Vec<_>>(),
+            vec![0..2, 2..4]
+        );
+        for cap in [1, 2, 3, usize::MAX] {
+            let hits = text
+                .find(
+                    "aa",
+                    FindOptions {
+                        max_results: cap,
+                        ..options
+                    },
+                )
+                .unwrap();
+            assert_eq!(hits.len(), cap.min(2));
+            assert_eq!(hits[0].utf8_range(), 0..2);
+        }
+    }
+}
+
+#[test]
+fn invalid_search_options_are_rejected_even_on_empty_pages() {
+    for page in [page_with_text(""), page_with_text(&text_object(2, "a"))] {
+        let text = page.text().unwrap();
+        assert!(matches!(
+            text.find("", FindOptions::default()),
+            Err(Error::InvalidOption { field: "query", .. })
+        ));
+        assert!(matches!(
+            text.find(
+                "a",
+                FindOptions {
+                    max_results: 0,
+                    ..FindOptions::default()
+                }
+            ),
+            Err(Error::InvalidOption {
+                field: "max_results",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn match_rectangles_union_visible_characters_and_allow_separator_only_matches() {
+    let page = page_with_text(&format!("{}{}", text_object(2, "ab"), text_object(3, "中")));
+    let text = page.text().unwrap();
+    assert_eq!(
+        text.find("ab", FindOptions::default()).unwrap()[0].rect_mm(),
+        Some(rect(1.0, 1.0, 8.0, 4.0))
+    );
+    assert_eq!(
+        text.find("b\n中", FindOptions::default()).unwrap()[0].rect_mm(),
+        Some(rect(1.0, 1.0, 8.0, 4.0))
+    );
+    assert_eq!(
+        text.find("\n", FindOptions::default()).unwrap()[0].rect_mm(),
+        None
+    );
+}
+
+fn selection_page() -> rofd_core::Page {
+    page_with_text(
+        r#"<ofd:TextObject ID="2" Boundary="0 0 100 8" Font="10" Size="4"><ofd:TextCode X="1" Y="5">ab_中, cd</ofd:TextCode></ofd:TextObject>
+<ofd:TextObject ID="3" Boundary="0 10 100 8" Font="10" Size="4"><ofd:TextCode X="1" Y="5">ef gh</ofd:TextCode></ofd:TextObject>"#,
+    )
+}
+
+#[test]
+fn area_extraction_and_glyph_selection_require_positive_intersection() {
+    let page = selection_page();
+    let text = page.text().unwrap();
+    let area = rect(5.0, 2.0, 4.0, 12.0);
+    assert_eq!(text.text_for_area(area).unwrap(), "bf");
+    let selection = text.select(area, SelectionStyle::Glyph).unwrap();
+    assert_eq!(selection.text(), "bf");
+    assert_eq!(
+        selection.regions(),
+        &[rect(5.0, 1.0, 4.0, 4.0), rect(5.0, 11.0, 4.0, 4.0)]
+    );
+    assert_eq!(text.text_for_area(rect(8.9, 2.0, 0.2, 1.0)).unwrap(), "b_");
+    assert_eq!(text.text_for_area(rect(1.0, 5.0, 4.0, 1.0)).unwrap(), "");
+}
+
+#[test]
+fn word_selection_expands_unicode_words_without_crossing_punctuation_or_space() {
+    let page = selection_page();
+    let text = page.text().unwrap();
+    let selection = text
+        .select(rect(6.0, 2.0, 8.0, 1.0), SelectionStyle::Word)
+        .unwrap();
+    assert_eq!(selection.text(), "ab_中");
+    assert_eq!(selection.regions(), &[rect(1.0, 1.0, 16.0, 4.0)]);
+    assert_eq!(
+        text.select(rect(18.0, 2.0, 1.0, 1.0), SelectionStyle::Word)
+            .unwrap()
+            .text(),
+        ","
+    );
+    assert_eq!(
+        text.select(rect(22.0, 2.0, 1.0, 1.0), SelectionStyle::Word)
+            .unwrap()
+            .text(),
+        " "
+    );
+    assert_eq!(
+        text.select(rect(26.0, 2.0, 1.0, 12.0), SelectionStyle::Word)
+            .unwrap()
+            .text(),
+        "cd"
+    );
+}
+
+#[test]
+fn line_selection_preserves_internal_synthesized_newlines_and_region_order() {
+    let page = selection_page();
+    let text = page.text().unwrap();
+    let one = text
+        .select(rect(6.0, 2.0, 1.0, 1.0), SelectionStyle::Line)
+        .unwrap();
+    assert_eq!(one.text(), "ab_中, cd");
+    assert_eq!(one.regions(), &[rect(1.0, 1.0, 32.0, 4.0)]);
+    let both = text
+        .select(rect(6.0, 2.0, 1.0, 12.0), SelectionStyle::Line)
+        .unwrap();
+    assert_eq!(both.text(), "ab_中, cd\nef gh");
+    assert_eq!(
+        both.regions(),
+        &[rect(1.0, 1.0, 32.0, 4.0), rect(1.0, 11.0, 20.0, 4.0)]
+    );
+}
+
+#[test]
+fn selection_preserves_canonical_order_when_geometry_runs_backwards() {
+    let page = page_with_text(
+        r#"<ofd:TextObject ID="2" Boundary="0 0 100 8" Font="10" Size="4"><ofd:TextCode X="13" Y="5" DeltaX="-4 -4 -4">abc</ofd:TextCode></ofd:TextObject>"#,
+    );
+    let text = page.text().unwrap();
+    let area = rect(1.0, 1.0, 12.0, 4.0);
+    assert_eq!(text.text_for_area(area).unwrap(), "abc");
+    let selection = text.select(area, SelectionStyle::Glyph).unwrap();
+    assert_eq!(selection.text(), "abc");
+    assert_eq!(selection.regions(), &[rect(1.0, 1.0, 12.0, 4.0)]);
+}
+
+#[test]
+fn invalid_rectangles_error_while_empty_or_missed_rectangles_return_empty_results() {
+    let page = selection_page();
+    let text = page.text().unwrap();
+    for area in [
+        rect(0.0, 0.0, -1.0, 20.0),
+        rect(0.0, 0.0, 20.0, -1.0),
+        rect(f64::NAN, 0.0, 20.0, 20.0),
+        rect(0.0, f64::INFINITY, 20.0, 20.0),
+        rect(0.0, 0.0, f64::INFINITY, 20.0),
+        rect(0.0, 0.0, 20.0, f64::NAN),
+        rect(f64::MAX, 0.0, f64::MAX, 20.0),
+    ] {
+        assert!(matches!(
+            text.text_for_area(area),
+            Err(Error::InvalidOption { field: "area", .. })
+        ));
+        for style in [
+            SelectionStyle::Glyph,
+            SelectionStyle::Word,
+            SelectionStyle::Line,
+        ] {
+            assert!(matches!(
+                text.select(area, style),
+                Err(Error::InvalidOption { field: "area", .. })
+            ));
+        }
+    }
+    for area in [
+        rect(0.0, 0.0, 0.0, 20.0),
+        rect(0.0, 0.0, 20.0, 0.0),
+        rect(100.0, 100.0, 1.0, 1.0),
+    ] {
+        assert_eq!(text.text_for_area(area).unwrap(), "");
+        for style in [
+            SelectionStyle::Glyph,
+            SelectionStyle::Word,
+            SelectionStyle::Line,
+        ] {
+            assert_eq!(text.select(area, style).unwrap(), TextSelection::default());
+        }
+    }
+    // Negative positions are valid; only negative dimensions are invalid.
+    assert_eq!(text.text_for_area(rect(-1.0, -1.0, 3.0, 3.0)).unwrap(), "a");
+}
+
+#[test]
+fn unrepresentable_geometry_unions_fail_without_nonfinite_output() {
+    let page = page_with_text(
+        r#"<ofd:TextObject ID="2" Boundary="0 0 100 8" Font="10" Size="1e307"><ofd:TextCode X="-1e308" Y="1e307">a</ofd:TextCode><ofd:TextCode X="1e308" Y="1e307">b</ofd:TextCode></ofd:TextObject>"#,
+    );
+    let text = page.text().unwrap();
+    assert!(matches!(
+        text.find("ab", FindOptions::default()),
+        Err(Error::InvalidValue { .. })
+    ));
+    let area = rect(-1e308, 0.0, 1e307, 1e307);
+    assert_eq!(text.text_for_area(area).unwrap(), "a");
+    assert!(matches!(
+        text.select(area, SelectionStyle::Line),
+        Err(Error::InvalidValue { .. })
+    ));
+}
 
 const FONT_CATALOG: &str = r#"<ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Fonts><ofd:Font ID="10" FontName="Fixture"/></ofd:Fonts></ofd:Res>"#;
 

@@ -2,6 +2,77 @@ use std::ops::Range;
 
 use crate::{Error, PageObject, Point, Rect, ResourceLimits, Result, TextObject, Transform};
 
+/// Options for literal search in canonical page text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FindOptions {
+    /// Matches exact original case when true; otherwise uses scalar lowercasing.
+    pub case_sensitive: bool,
+    /// Requires adjacent original scalars to be neither alphanumeric nor `_`.
+    pub whole_words: bool,
+    /// Maximum number of returned matches; must be greater than zero.
+    pub max_results: usize,
+}
+
+impl Default for FindOptions {
+    fn default() -> Self {
+        Self {
+            case_sensitive: false,
+            whole_words: false,
+            max_results: 10_000,
+        }
+    }
+}
+
+/// Controls expansion from source glyphs intersecting a selection rectangle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectionStyle {
+    /// Selects only intersecting source glyphs.
+    Glyph,
+    /// Expands intersecting word characters through adjacent alphanumeric or `_` scalars.
+    Word,
+    /// Expands to logical lines delimited by synthesized newline separators.
+    Line,
+}
+
+/// A literal search match in canonical page text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextMatch {
+    utf8_range: Range<usize>,
+    rect_mm: Option<Rect>,
+}
+
+impl TextMatch {
+    /// Returns the matched byte range in [`PageText::as_str`].
+    pub fn utf8_range(&self) -> Range<usize> {
+        self.utf8_range.clone()
+    }
+
+    /// Returns the union of visible matched character boxes in page millimetres.
+    /// Separator-only matches have no geometry.
+    pub fn rect_mm(&self) -> Option<Rect> {
+        self.rect_mm
+    }
+}
+
+/// Selected canonical text and its ordered per-line geometry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextSelection {
+    text: String,
+    regions: Vec<Rect>,
+}
+
+impl TextSelection {
+    /// Returns the selected text in canonical order.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Returns one union of selected visible boxes per participating logical line.
+    pub fn regions(&self) -> &[Rect] {
+        &self.regions
+    }
+}
+
 /// Describes the fidelity of a character's reported geometry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextGeometryPrecision {
@@ -89,6 +160,306 @@ impl PageText {
     pub fn characters(&self) -> &[TextChar] {
         &self.characters
     }
+
+    /// Extracts source glyphs with positive-area intersection, in canonical order.
+    /// Synthesized separators are omitted. Empty rectangles produce empty text;
+    /// nonfinite coordinates, nonfinite edges or negative dimensions return
+    /// [`Error::InvalidOption`]. Negative positions are valid.
+    pub fn text_for_area(&self, area: Rect) -> Result<String> {
+        validate_area(area)?;
+        let mut text = String::new();
+        for character in &self.characters {
+            if character.rect_mm.is_some_and(|rect| intersects(rect, area)) {
+                text.push_str(&self.text[character.utf8_range.clone()]);
+            }
+        }
+        Ok(text)
+    }
+
+    /// Finds nonoverlapping literal matches from left to right, stopping at the
+    /// configured result limit. Empty queries and a zero limit return
+    /// [`Error::InvalidOption`]. Unrepresentable geometry unions return
+    /// [`Error::InvalidValue`].
+    ///
+    /// Case-insensitive search uses Unicode scalar lowercasing, without Unicode
+    /// normalization or full case folding. Matches inside a lowercase expansion
+    /// cover the complete original scalar; returned original ranges never overlap.
+    /// Whole-word boundaries are evaluated against adjacent original scalars.
+    pub fn find(&self, query: &str, options: FindOptions) -> Result<Vec<TextMatch>> {
+        if query.is_empty() {
+            return Err(Error::InvalidOption {
+                field: "query",
+                value: String::new(),
+            });
+        }
+        if options.max_results == 0 {
+            return Err(Error::InvalidOption {
+                field: "max_results",
+                value: "0".into(),
+            });
+        }
+        let mut folded = String::new();
+        // Every folded byte explicitly maps back to its canonical TextChar.
+        let mut original_indices = Vec::new();
+        let haystack = if options.case_sensitive {
+            self.as_str()
+        } else {
+            for (index, character) in self.characters.iter().enumerate() {
+                for scalar in self.text[character.utf8_range.clone()]
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                {
+                    let end = checked_index_add(folded.len(), scalar.len_utf8())?;
+                    folded.push(scalar);
+                    original_indices.resize(end, index);
+                }
+            }
+            &folded
+        };
+        // Bound query allocation by the searchable page, even for a huge query.
+        let mut folded_query = String::new();
+        let needle = if options.case_sensitive {
+            query
+        } else {
+            for scalar in query.chars().flat_map(char::to_lowercase) {
+                if checked_index_add(folded_query.len(), scalar.len_utf8())? > haystack.len() {
+                    return Ok(Vec::new());
+                }
+                folded_query.push(scalar);
+            }
+            &folded_query
+        };
+        if needle.len() > haystack.len() {
+            return Ok(Vec::new());
+        }
+        let needle = needle.as_bytes();
+        let prefix_table = literal_prefix_table(needle);
+        let mut matches = Vec::new();
+        let mut previous_end = 0;
+        let mut matched = 0;
+        for (index, byte) in haystack.bytes().enumerate() {
+            while matched > 0 && needle[matched] != byte {
+                matched = prefix_table[matched - 1];
+            }
+            if needle[matched] == byte {
+                matched += 1;
+            }
+            if matched != needle.len() {
+                continue;
+            }
+
+            let end = checked_index_add(index, 1)?;
+            let start = end.checked_sub(needle.len()).ok_or_else(index_overflow)?;
+            debug_assert!(haystack.is_char_boundary(start));
+            debug_assert!(haystack.is_char_boundary(end));
+            let (first, after_last) = if options.case_sensitive {
+                (
+                    self.characters
+                        .partition_point(|ch| ch.utf8_range.end <= start),
+                    self.characters
+                        .partition_point(|ch| ch.utf8_range.start < end),
+                )
+            } else {
+                let last_byte = end.checked_sub(1).ok_or_else(index_overflow)?;
+                (
+                    original_indices[start],
+                    checked_index_add(original_indices[last_byte], 1)?,
+                )
+            };
+            let characters = &self.characters[first..after_last];
+            let utf8_range = characters
+                .first()
+                .expect("nonempty literal match")
+                .utf8_range
+                .start
+                ..characters
+                    .last()
+                    .expect("nonempty literal match")
+                    .utf8_range
+                    .end;
+            if utf8_range.start < previous_end {
+                // Retain the longest literal prefix that is also a suffix. This
+                // considers the next candidate at a later folded-scalar boundary
+                // instead of skipping every candidate that overlaps a rejection.
+                matched = prefix_table[matched - 1];
+                continue;
+            }
+            if options.whole_words
+                && (first
+                    .checked_sub(1)
+                    .is_some_and(|index| self.is_word(index))
+                    || self.is_word(after_last))
+            {
+                matched = prefix_table[matched - 1];
+                continue;
+            }
+            let rect_mm = union_rectangles(characters.iter().filter_map(|ch| ch.rect_mm))?;
+            previous_end = utf8_range.end;
+            matches.push(TextMatch {
+                utf8_range,
+                rect_mm,
+            });
+            if matches.len() == options.max_results {
+                break;
+            }
+            // Accepted matches remain nonoverlapping in the searched text.
+            matched = 0;
+        }
+        Ok(matches)
+    }
+
+    /// Selects intersecting source glyphs, optionally expanding words or logical
+    /// lines. Geometry intersection and area errors follow [`Self::text_for_area`].
+    /// A region union that cannot be represented finitely returns
+    /// [`Error::InvalidValue`], without publishing partial selection data.
+    ///
+    /// Glyph and word selections emit selected source scalars without synthesized
+    /// separators. Line selections retain a synthesized newline only when both
+    /// adjacent lines are selected. Regions are ordered by canonical text, with
+    /// one union per selected logical line, never across synthesized separators.
+    pub fn select(&self, area: Rect, style: SelectionStyle) -> Result<TextSelection> {
+        validate_area(area)?;
+        let mut selected = self
+            .characters
+            .iter()
+            .map(|ch| ch.rect_mm.is_some_and(|rect| intersects(rect, area)))
+            .collect::<Vec<_>>();
+        if style != SelectionStyle::Glyph {
+            // Expand disjoint groups once, so selecting a long word or line is
+            // linear in the page size rather than quadratic in the number of hits.
+            let mut first = 0;
+            for index in 0..self.characters.len() {
+                let boundary = match style {
+                    SelectionStyle::Word => !self.is_word(index),
+                    SelectionStyle::Line => self.is_separator(index),
+                    SelectionStyle::Glyph => unreachable!(),
+                };
+                if boundary {
+                    expand_selected_group(&mut selected[first..index]);
+                    first = checked_index_add(index, 1)?;
+                }
+            }
+            expand_selected_group(&mut selected[first..]);
+        }
+        let mut selection = TextSelection::default();
+        let mut region = None;
+        for (index, character) in self.characters.iter().enumerate() {
+            if self.is_separator(index) {
+                if let Some(rect) = region.take() {
+                    selection.regions.push(rect);
+                }
+                if style == SelectionStyle::Line
+                    && index.checked_sub(1).is_some_and(|before| selected[before])
+                    && selected
+                        .get(checked_index_add(index, 1)?)
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    selection
+                        .text
+                        .push_str(&self.text[character.utf8_range.clone()]);
+                }
+            } else if selected[index] {
+                selection
+                    .text
+                    .push_str(&self.text[character.utf8_range.clone()]);
+                region = union_rectangles(region.into_iter().chain(character.rect_mm))?;
+            }
+        }
+        if let Some(rect) = region {
+            selection.regions.push(rect);
+        }
+        Ok(selection)
+    }
+
+    fn is_word(&self, index: usize) -> bool {
+        self.characters.get(index).is_some_and(|ch| {
+            self.text[ch.utf8_range.clone()]
+                .chars()
+                .any(|scalar| scalar.is_alphanumeric() || scalar == '_')
+        })
+    }
+
+    fn is_separator(&self, index: usize) -> bool {
+        self.characters[index]
+            .flags
+            .contains(TextCharFlags::SYNTHESIZED_SEPARATOR)
+    }
+}
+
+fn expand_selected_group(selected: &mut [bool]) {
+    if selected.iter().any(|hit| *hit) {
+        selected.fill(true);
+    }
+}
+
+fn index_overflow() -> Error {
+    Error::LimitExceeded("semantic query index overflow".into())
+}
+
+fn checked_index_add(index: usize, amount: usize) -> Result<usize> {
+    index.checked_add(amount).ok_or_else(index_overflow)
+}
+
+fn literal_prefix_table(needle: &[u8]) -> Vec<usize> {
+    debug_assert!(!needle.is_empty());
+    let mut table = vec![0; needle.len()];
+    let mut matched = 0;
+    for index in 1..needle.len() {
+        while matched > 0 && needle[matched] != needle[index] {
+            matched = table[matched - 1];
+        }
+        if needle[matched] == needle[index] {
+            matched += 1;
+        }
+        table[index] = matched;
+    }
+    table
+}
+
+fn validate_area(area: Rect) -> Result<()> {
+    if [
+        area.x,
+        area.y,
+        area.width,
+        area.height,
+        area.x + area.width,
+        area.y + area.height,
+    ]
+    .iter()
+    .any(|value| !value.is_finite())
+        || area.width < 0.0
+        || area.height < 0.0
+    {
+        return Err(Error::InvalidOption {
+            field: "area",
+            value: format!("{area:?}"),
+        });
+    }
+    Ok(())
+}
+
+fn intersects(left: Rect, right: Rect) -> bool {
+    left.x.max(right.x) < (left.x + left.width).min(right.x + right.width)
+        && left.y.max(right.y) < (left.y + left.height).min(right.y + right.height)
+}
+
+fn union_rectangles(mut rectangles: impl Iterator<Item = Rect>) -> Result<Option<Rect>> {
+    rectangles.try_fold(None, |union: Option<Rect>, rect| {
+        let Some(previous) = union else {
+            return Ok(Some(rect));
+        };
+        let x = previous.x.min(rect.x);
+        let y = previous.y.min(rect.y);
+        let right = finite_add(previous.x, previous.width)?.max(finite_add(rect.x, rect.width)?);
+        let bottom = finite_add(previous.y, previous.height)?.max(finite_add(rect.y, rect.height)?);
+        Ok(Some(Rect {
+            x,
+            y,
+            width: finite_add(right, -x)?,
+            height: finite_add(bottom, -y)?,
+        }))
+    })
 }
 
 pub(crate) fn build_page_text(page: &crate::Page) -> Result<PageText> {

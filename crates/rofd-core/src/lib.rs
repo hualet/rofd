@@ -31,7 +31,10 @@ pub use options::{LoadOptions, ResourceLimits, Strictness};
 pub use paint::{Color, LineCap, LineJoin, StrokeStyle};
 pub use path_data::{PathCommand, PathData};
 pub use resources::{FontResource, ImageFormat, ImageResource, ResourceIdentity, ResourceKind};
-pub use semantic::{PageText, TextChar, TextCharFlags, TextGeometryPrecision};
+pub use semantic::{
+    FindOptions, PageText, SelectionStyle, TextChar, TextCharFlags, TextGeometryPrecision,
+    TextMatch, TextSelection,
+};
 pub use signature::{SealPicture, SealPictureKind, StampAnnotation};
 pub use text::{CharacterGlyphMap, GlyphTransform, TextCode, TextObject};
 
