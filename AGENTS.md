@@ -38,3 +38,5 @@ Add unit tests beside private implementation details and integration tests in `c
 ## Commit & Pull Request Guidelines
 
 Follow the repository's Conventional Commit pattern: `feat(core): ...`, `fix(render): ...`, `test(core): ...`, `docs: ...`, or `build: ...`. Keep commits focused and use an imperative, concise subject. Pull requests should explain motivation and behavior changes, link relevant issues or design notes, and list verification commands. Include screenshots for Qt/QML or rendered-output changes, and ensure formatting, Clippy, and affected tests pass before review.
+
+Never force-push, delete, or move a git tag that has already been pushed to a remote. Published tags are release artifacts; changing them breaks anyone who already fetched the tag. If a tag points to the wrong commit, create a new tag (e.g. `v0.2.3.1`) instead of rewriting the existing one.
