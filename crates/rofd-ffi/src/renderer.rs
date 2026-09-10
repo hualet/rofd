@@ -130,10 +130,12 @@ fn default_fallback_families() -> Vec<String> {
         .collect()
 }
 
-struct RenderOptionsInput;
+pub(crate) struct RenderOptionsInput;
 
 impl RenderOptionsInput {
-    unsafe fn from_ffi(options: *const rofd_render_options_t) -> Result<RenderOptions, FfiError> {
+    pub(crate) unsafe fn from_ffi(
+        options: *const rofd_render_options_t,
+    ) -> Result<RenderOptions, FfiError> {
         if options.is_null() {
             return Ok(RenderOptions::default());
         }
@@ -196,7 +198,7 @@ impl RenderOptionsInput {
     }
 }
 
-unsafe fn renderer_ref<'a>(
+pub(crate) unsafe fn renderer_ref<'a>(
     renderer: *const rofd_renderer_t,
 ) -> Result<&'a RendererHandle, FfiError> {
     if renderer.is_null() {
@@ -295,7 +297,7 @@ pub unsafe extern "C" fn rofd_renderer_get_pixel_size(
     }
 }
 
-fn render_input_ranges(
+pub(crate) fn render_input_ranges(
     renderer: *const rofd_renderer_t,
     page: *const rofd_page_t,
     context: *mut cairo::ffi::cairo_t,

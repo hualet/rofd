@@ -5,7 +5,10 @@ use cairo::{
     Antialias, Context, Format, ImageSurface, LineCap, LineJoin, Matrix, PathSegment, SolidPattern,
 };
 use rofd_core::{Color, Document, FontResource, LoadOptions, Rect};
-use rofd_render::{CairoRenderer, Error, FontResolver, ImageDecoder, RenderOptions, ResolvedFont};
+use rofd_render::{
+    CairoRenderer, Error, FontResolver, ImageDecoder, PixelRect, RenderOptions, ResolvedFont,
+    SystemFontResolver,
+};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 const PNG: &[u8] = include_bytes!("fixtures/images/asymmetric-rgba.png");
@@ -175,6 +178,547 @@ fn defaults_and_pixel_size_cover_nonzero_page_origins_and_quarter_turns() {
 }
 
 #[test]
+fn pixel_canvas_size_is_geometry_only_and_accepts_the_i32_domain() {
+    let page = open_page("10 20 2147483647 7", "");
+    let mut options = RenderOptions {
+        max_raster_bytes: 0,
+        ..options_at_one_pixel_per_mm()
+    };
+    for rotation in [0, 90, 180, 270] {
+        options.rotation_degrees = rotation;
+        let expected = if rotation % 180 == 0 {
+            (i32::MAX, 7)
+        } else {
+            (7, i32::MAX)
+        };
+        assert_eq!(
+            CairoRenderer::pixel_canvas_size(&page, &options).unwrap(),
+            expected
+        );
+        assert!(CairoRenderer::pixel_size(&page, &options).is_err());
+    }
+    let overflow = open_page("0 0 2147483648 7", "");
+    assert!(matches!(
+        CairoRenderer::pixel_canvas_size(&overflow, &options),
+        Err(Error::InvalidSurfaceSize { .. })
+    ));
+    options.dpi = f64::INFINITY;
+    assert!(matches!(
+        CairoRenderer::pixel_canvas_size(&page, &options),
+        Err(Error::InvalidOption { field: "dpi", .. })
+    ));
+}
+
+#[test]
+fn regions_match_full_render_with_fractional_geometry_clips_images_and_alpha() {
+    let page = open_page(
+        "10 20 23.3 17.7",
+        r#"<ofd:Content><ofd:Layer ID="1">
+        <ofd:PathObject ID="2" Boundary="11 21 20 15" Fill="true" Stroke="true" LineWidth="0.7" Alpha="163">
+          <ofd:Clips><ofd:Clip>
+            <ofd:Area><ofd:Path Boundary="0 0 12 15" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 12 0 L 12 15 L 0 15 C</ofd:AbbreviatedData></ofd:Path></ofd:Area>
+            <ofd:Area><ofd:Path Boundary="8 3 12 12" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 12 0 L 12 12 L 0 12 C</ofd:AbbreviatedData></ofd:Path></ofd:Area>
+          </ofd:Clip></ofd:Clips>
+          <ofd:FillColor Value="240 40 10"/><ofd:StrokeColor Value="20 50 220"/>
+          <ofd:AbbreviatedData>M 0 0 L 20 0 L 20 15 L 0 15 C</ofd:AbbreviatedData>
+        </ofd:PathObject>
+        <ofd:ImageObject ID="3" ResourceID="901" Boundary="14 23 13 9" Alpha="191"/>
+        </ofd:Layer></ofd:Content>"#,
+    );
+    let resolver = SystemFontResolver::empty(Vec::new(), 16 * 1024 * 1024);
+    let decoder = ImageDecoder::default();
+    for rotation in [0, 90, 180, 270] {
+        let options = RenderOptions {
+            dpi: 43.7,
+            scale: 1.17,
+            rotation_degrees: rotation,
+            background: Color {
+                red: 20,
+                green: 40,
+                blue: 80,
+                alpha: 107,
+            },
+            clip: Some(Rect {
+                x: 12.3,
+                y: 21.2,
+                width: 17.4,
+                height: 15.1,
+            }),
+            ..RenderOptions::default()
+        };
+        let (width, height) = CairoRenderer::pixel_canvas_size(&page, &options).unwrap();
+        let mut full = ImageSurface::create(Format::ARgb32, width, height).unwrap();
+        let context = Context::new(&full).unwrap();
+        let full_report = CairoRenderer
+            .render_page_with_services(&page, &context, &options, &resolver, &decoder)
+            .unwrap();
+        drop(context);
+        for y in (0..height).step_by(11) {
+            for x in (0..width).step_by(13) {
+                let viewport = PixelRect {
+                    x,
+                    y,
+                    width: 13.min(width - x),
+                    height: 11.min(height - y),
+                };
+                let mut tile =
+                    ImageSurface::create(Format::ARgb32, viewport.width, viewport.height).unwrap();
+                let context = Context::new(&tile).unwrap();
+                let report = CairoRenderer
+                    .render_page_region_with_services(
+                        &page, &context, &options, viewport, &resolver, &decoder,
+                    )
+                    .unwrap();
+                assert_eq!(report, full_report);
+                drop(context);
+                for ty in 0..viewport.height {
+                    for tx in 0..viewport.width {
+                        assert_eq!(
+                            pixel(&mut tile, tx, ty),
+                            pixel(&mut full, x + tx, y + ty),
+                            "rotation {rotation}, tile {viewport:?}, pixel {tx},{ty}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn curved_region_antialiasing_stays_close_to_the_full_canvas() {
+    let page = open_page(
+        "10 20 23.3 17.7",
+        r#"<ofd:Content><ofd:Layer ID="1">
+        <ofd:PathObject ID="2" Boundary="11 21 20 15" Fill="true" Stroke="true" LineWidth="0.7" Alpha="163">
+          <ofd:FillColor Value="240 40 10"/><ofd:StrokeColor Value="20 50 220"/>
+          <ofd:AbbreviatedData>M 0 2 L 9 0 B 21 1 13 10 20 14 L 1 15 C</ofd:AbbreviatedData>
+        </ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let mut maximum_delta = 0;
+    let mut changed_pixels = 0;
+    let mut total_pixels = 0;
+    for rotation in [0, 90, 180, 270] {
+        let options = RenderOptions {
+            dpi: 43.7,
+            scale: 1.17,
+            rotation_degrees: rotation,
+            ..RenderOptions::default()
+        };
+        let mut full = render(&page, &options);
+        for y in (0..full.height()).step_by(11) {
+            for x in (0..full.width()).step_by(13) {
+                let viewport = PixelRect {
+                    x,
+                    y,
+                    width: 13.min(full.width() - x),
+                    height: 11.min(full.height() - y),
+                };
+                let mut tile =
+                    ImageSurface::create(Format::ARgb32, viewport.width, viewport.height).unwrap();
+                let context = Context::new(&tile).unwrap();
+                CairoRenderer
+                    .render_page_region(&page, &context, &options, viewport)
+                    .unwrap();
+                drop(context);
+                for ty in 0..viewport.height {
+                    for tx in 0..viewport.width {
+                        let actual = pixel(&mut tile, tx, ty);
+                        let expected = pixel(&mut full, x + tx, y + ty);
+                        changed_pixels += usize::from(actual != expected);
+                        total_pixels += 1;
+                        for (actual, expected) in actual.into_iter().zip(expected) {
+                            maximum_delta = maximum_delta.max(actual.abs_diff(expected));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Cairo clips/tessellates curves against the destination extent. Even the
+    // tile at (0, 0), with an identical CTM, can differ slightly at AA edges.
+    // Keep a strict channel bound and require at least 98% exact pixels.
+    assert!(
+        maximum_delta <= 8,
+        "{changed_pixels}/{total_pixels} pixels differ; max channel delta {maximum_delta}"
+    );
+    assert!(changed_pixels * 100 <= total_pixels * 2);
+}
+
+#[test]
+fn small_region_on_huge_page_uses_only_tile_sized_clip_surfaces() {
+    let page = open_page(
+        "10 20 1000000 1000000",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="800010 700020 10 10" Fill="true" Stroke="false">
+        <ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 10 10" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 10 0 L 10 10 L 0 10 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>
+        <ofd:FillColor Value="255 0 0"/><ofd:AbbreviatedData>M 0 0 L 10 0 L 10 10 L 0 10 C</ofd:AbbreviatedData>
+        </ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let options = RenderOptions {
+        max_raster_bytes: 920,
+        ..options_at_one_pixel_per_mm()
+    };
+    let viewport = PixelRect {
+        x: 800000,
+        y: 700000,
+        width: 10,
+        height: 10,
+    };
+    assert_eq!(
+        CairoRenderer::pixel_canvas_size(&page, &options).unwrap(),
+        (1000000, 1000000)
+    );
+    let mut surface = ImageSurface::create(Format::ARgb32, 10, 10).unwrap();
+    let context = Context::new(&surface).unwrap();
+    CairoRenderer
+        .render_page_region(&page, &context, &options, viewport)
+        .unwrap();
+    drop(context);
+    assert_red(pixel(&mut surface, 5, 5));
+    let context = Context::new(&surface).unwrap();
+    assert!(matches!(
+        CairoRenderer.render_page_region(
+            &page,
+            &context,
+            &RenderOptions {
+                max_raster_bytes: 919,
+                ..options
+            },
+            viewport
+        ),
+        Err(Error::RasterBudgetExceeded {
+            required_bytes: 920,
+            max_bytes: 919
+        })
+    ));
+}
+
+#[test]
+fn remote_regions_beyond_cairo_fixed_coordinates_keep_page_and_mm_clips() {
+    for dimension in [20_000_000, 2_000_000_000] {
+        let object_x = dimension / 5 * 4;
+        let object_y = dimension / 10 * 7;
+        let page = open_page(
+            &format!("0 0 {dimension} {dimension}"),
+            &format!(
+                r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="3" Boundary="0 0 10 10" Fill="true" Stroke="false"><ofd:FillColor Value="0 0 255"/><ofd:AbbreviatedData>M 0 0 B 0 10 10 0 10 10 C</ofd:AbbreviatedData></ofd:PathObject><ofd:PathObject ID="2" Boundary="{object_x} {object_y} 10 10" Fill="true" Stroke="false"><ofd:FillColor Value="255 0 0"/><ofd:AbbreviatedData>M 0 0 L 10 0 L 10 10 L 0 10 C</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content>"#
+            ),
+        );
+        for (rotation, x, y) in [
+            (0, object_x, object_y),
+            (90, dimension - object_y - 10, object_x),
+            (180, dimension - object_x - 10, dimension - object_y - 10),
+            (270, object_y, dimension - object_x - 10),
+        ] {
+            for clip in [
+                None,
+                Some(Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: f64::from(dimension),
+                    height: f64::from(dimension),
+                }),
+            ] {
+                let options = RenderOptions {
+                    rotation_degrees: rotation,
+                    clip,
+                    max_raster_bytes: 920,
+                    ..options_at_one_pixel_per_mm()
+                };
+                let mut tile = ImageSurface::create(Format::ARgb32, 10, 10).unwrap();
+                let context = Context::new(&tile).unwrap();
+                CairoRenderer
+                    .render_page_region(
+                        &page,
+                        &context,
+                        &options,
+                        PixelRect {
+                            x,
+                            y,
+                            width: 10,
+                            height: 10,
+                        },
+                    )
+                    .unwrap();
+                drop(context);
+                assert_eq!(
+                    pixel(&mut tile, 5, 5),
+                    [255, 0, 0, 255],
+                    "dimension {dimension}, rotation {rotation}, clip {clip:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn huge_filled_rectangle_and_rectangle_clip_are_intersected_before_cairo() {
+    let page = open_page(
+        "0 0 20000000 20000000",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 20000000 20000000" Fill="true" Stroke="false">
+        <ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 20000000 20000000" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 L 20000000 0 L 20000000 20000000 L 0 20000000 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips>
+        <ofd:FillColor Value="255 0 0"/><ofd:AbbreviatedData>M 0 0 L 20000000 0 L 20000000 20000000 L 0 20000000 C</ofd:AbbreviatedData>
+        </ofd:PathObject></ofd:Layer></ofd:Content>"#,
+    );
+    let mut tile = ImageSurface::create(Format::ARgb32, 10, 10).unwrap();
+    let context = Context::new(&tile).unwrap();
+    CairoRenderer
+        .render_page_region(
+            &page,
+            &context,
+            &options_at_one_pixel_per_mm(),
+            PixelRect {
+                x: 16000000,
+                y: 14000000,
+                width: 10,
+                height: 10,
+            },
+        )
+        .unwrap();
+    drop(context);
+    assert_eq!(pixel(&mut tile, 5, 5), [255, 0, 0, 255]);
+}
+
+#[test]
+fn region_page_clip_does_not_use_cairo_fixed_coordinate_endpoints() {
+    // Endpoints at ±8_388_607 are individually representable, but their span
+    // can still overflow Cairo's rectangle construction near the domain edge.
+    let page = open_page("0 0 16777214 16777214", "");
+    let mut tile = ImageSurface::create(Format::ARgb32, 10, 10).unwrap();
+    let context = Context::new(&tile).unwrap();
+    CairoRenderer
+        .render_page_region(
+            &page,
+            &context,
+            &options_at_one_pixel_per_mm(),
+            PixelRect {
+                x: 8388607,
+                y: 8388607,
+                width: 10,
+                height: 10,
+            },
+        )
+        .unwrap();
+    drop(context);
+    assert_eq!(pixel(&mut tile, 5, 5), [255; 4]);
+}
+
+#[test]
+fn huge_image_boundary_keeps_sampling_and_restores_state() {
+    let page = open_page(
+        "0 0 20000000 20000000",
+        r#"<ofd:Content><ofd:Layer ID="1"><ofd:ImageObject ID="2" ResourceID="901" Boundary="0 0 20000000 20000000" CTM="20000000 0 0 20000000 0 0"/></ofd:Layer></ofd:Content>"#,
+    );
+    for (rotation, x, y) in [
+        (0, 16000000, 14000000),
+        (90, 5999990, 16000000),
+        (180, 3999990, 5999990),
+        (270, 14000000, 3999990),
+    ] {
+        let options = RenderOptions {
+            image_interpolation: rofd_render::ImageInterpolation::Nearest,
+            rotation_degrees: rotation,
+            ..options_at_one_pixel_per_mm()
+        };
+        let mut tile = ImageSurface::create(Format::ARgb32, 10, 10).unwrap();
+        let context = Context::new(&tile).unwrap();
+        context.move_to(1.0, 2.0);
+        context.line_to(3.0, 4.0);
+        let original_path = path_segments(&context);
+        let matrix = context.matrix();
+        CairoRenderer
+            .render_page_region(
+                &page,
+                &context,
+                &options,
+                PixelRect {
+                    x,
+                    y,
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+        assert_eq!(path_segments(&context), original_path);
+        assert_eq!(context.matrix(), matrix);
+        drop(context);
+        assert_eq!(
+            pixel(&mut tile, 5, 5),
+            [0, 255, 255, 255],
+            "rotation {rotation}"
+        );
+    }
+}
+
+#[test]
+fn huge_arbitrary_region_paths_fail_explicitly_and_restore_caller_state() {
+    for body in [
+        r#"<ofd:AbbreviatedData>M 0 0 B 0 20000000 20000000 0 20000000 20000000 C</ofd:AbbreviatedData>"#,
+        r#"<ofd:Clips><ofd:Clip><ofd:Area><ofd:Path Boundary="0 0 20000000 20000000" Fill="true" Stroke="false"><ofd:AbbreviatedData>M 0 0 B 0 20000000 20000000 0 20000000 20000000 C</ofd:AbbreviatedData></ofd:Path></ofd:Area></ofd:Clip></ofd:Clips><ofd:AbbreviatedData>M 0 0 L 20000000 0 L 20000000 20000000 L 0 20000000 C</ofd:AbbreviatedData>"#,
+    ] {
+        let page = open_page(
+            "0 0 20000000 20000000",
+            &format!(
+                r#"<ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 20000000 20000000" Fill="true" Stroke="false"><ofd:FillColor Value="255 0 0"/>{body}</ofd:PathObject></ofd:Layer></ofd:Content>"#
+            ),
+        );
+        let surface = ImageSurface::create(Format::ARgb32, 10, 10).unwrap();
+        let context = Context::new(&surface).unwrap();
+        context.move_to(1.0, 2.0);
+        context.line_to(3.0, 4.0);
+        let original_path = path_segments(&context);
+        let original_matrix = context.matrix();
+        assert!(matches!(
+            CairoRenderer.render_page_region(
+                &page,
+                &context,
+                &options_at_one_pixel_per_mm(),
+                PixelRect {
+                    x: 16000000,
+                    y: 14000000,
+                    width: 10,
+                    height: 10
+                }
+            ),
+            Err(Error::InvalidGeometry { .. })
+        ));
+        assert_eq!(path_segments(&context), original_path);
+        assert_eq!(context.matrix(), original_matrix);
+    }
+}
+
+#[test]
+fn region_rejects_invalid_bounds_and_small_targets_without_changing_caller_state() {
+    let page = open_page("0 0 40 30", "");
+    let surface = ImageSurface::create(Format::ARgb32, 8, 8).unwrap();
+    let context = Context::new(&surface).unwrap();
+    let matrix = Matrix::new(2.0, 0.0, 0.0, 2.0, 3.0, 4.0);
+    context.set_matrix(matrix);
+    context.move_to(1.0, 2.0);
+    context.line_to(3.0, 4.0);
+    let path = path_segments(&context);
+    for viewport in [
+        PixelRect {
+            x: -1,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+        PixelRect {
+            x: 0,
+            y: -1,
+            width: 1,
+            height: 1,
+        },
+        PixelRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 1,
+        },
+        PixelRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: -1,
+        },
+        PixelRect {
+            x: 39,
+            y: 0,
+            width: 2,
+            height: 1,
+        },
+        PixelRect {
+            x: 0,
+            y: 29,
+            width: 1,
+            height: 2,
+        },
+        PixelRect {
+            x: i32::MAX,
+            y: 0,
+            width: i32::MAX,
+            height: 1,
+        },
+    ] {
+        assert!(
+            matches!(
+                CairoRenderer.render_page_region(
+                    &page,
+                    &context,
+                    &options_at_one_pixel_per_mm(),
+                    viewport
+                ),
+                Err(Error::InvalidOption {
+                    field: "viewport",
+                    ..
+                })
+            ),
+            "{viewport:?}"
+        );
+        assert_eq!(context.matrix(), matrix);
+        assert_eq!(path_segments(&context), path);
+    }
+    assert!(matches!(
+        CairoRenderer.render_page_region(
+            &page,
+            &context,
+            &options_at_one_pixel_per_mm(),
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 9,
+                height: 8
+            }
+        ),
+        Err(Error::SurfaceTooSmall {
+            required_width: 9,
+            actual_width: 8,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn region_restores_state_path_and_clip_and_writes_only_the_tile_extent() {
+    let page = open_page("0 0 40 30", "");
+    let mut surface = ImageSurface::create(Format::ARgb32, 15, 13).unwrap();
+    let context = Context::new(&surface).unwrap();
+    context.rectangle(0.0, 0.0, 4.0, 13.0);
+    context.clip();
+    let original_clip = context.clip_extents().unwrap();
+    let matrix = Matrix::new(2.0, 0.0, 0.0, 2.0, 3.0, 4.0);
+    context.set_matrix(matrix);
+    context.set_line_width(7.0);
+    context.move_to(1.0, 2.0);
+    context.line_to(3.0, 4.0);
+    let path = path_segments(&context);
+    CairoRenderer
+        .render_page_region(
+            &page,
+            &context,
+            &options_at_one_pixel_per_mm(),
+            PixelRect {
+                x: 8,
+                y: 5,
+                width: 7,
+                height: 6,
+            },
+        )
+        .unwrap();
+    assert_eq!(context.matrix(), matrix);
+    assert_eq!(context.line_width(), 7.0);
+    assert_eq!(path_segments(&context), path);
+    context.identity_matrix();
+    assert_eq!(context.clip_extents().unwrap(), original_clip);
+    drop(context);
+    assert_white(pixel(&mut surface, 3, 5));
+    assert_eq!(pixel(&mut surface, 4, 5), [0; 4]);
+    assert_eq!(pixel(&mut surface, 3, 6), [0; 4]);
+    assert_eq!(pixel(&mut surface, 14, 12), [0; 4]);
+}
+
+#[test]
 fn pixel_size_rejects_cairo_dimension_and_worst_case_surface_budget_limits() {
     let cairo_maximum = open_page("0 0 32767 1", "");
     let cairo_too_wide = open_page("0 0 32768 1", "");
@@ -326,6 +870,45 @@ fn invalid_options_are_rejected_before_external_services_are_invoked() {
         Err(Error::InvalidOption { field: "dpi", .. })
     ));
     assert_eq!(resolver.0.load(Ordering::Relaxed), 0);
+    for (options, viewport) in [
+        (
+            options,
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        ),
+        (
+            options_at_one_pixel_per_mm(),
+            PixelRect {
+                x: 20,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        ),
+        (
+            RenderOptions {
+                max_raster_bytes: 0,
+                ..options_at_one_pixel_per_mm()
+            },
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        ),
+    ] {
+        assert!(CairoRenderer
+            .render_page_region_with_services(
+                &page, &context, &options, viewport, &resolver, &decoder
+            )
+            .is_err());
+        assert_eq!(resolver.0.load(Ordering::Relaxed), 0);
+    }
 }
 
 #[test]
@@ -761,6 +1344,25 @@ fn caller_path_is_preserved_on_success_and_post_save_failure() {
         assert_eq!(
             CairoRenderer
                 .render_page(page, &context, &options_at_one_pixel_per_mm())
+                .is_ok(),
+            succeeds
+        );
+        assert_eq!(path_segments(&context), expected);
+        assert_eq!(context.current_point().unwrap(), expected_point);
+        assert_eq!(context.path_extents().unwrap(), expected_extents);
+        assert_eq!(
+            CairoRenderer
+                .render_page_region(
+                    page,
+                    &context,
+                    &options_at_one_pixel_per_mm(),
+                    PixelRect {
+                        x: 2,
+                        y: 3,
+                        width: 7,
+                        height: 9
+                    },
+                )
                 .is_ok(),
             succeeds
         );

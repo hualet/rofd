@@ -176,6 +176,22 @@ impl Default for rofd_render_options_t {
     }
 }
 
+/// Viewport in the final rotated and scaled full-page pixel canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct rofd_pixel_rect_t {
+    /// Size of this initialized record in bytes.
+    pub struct_size: u32,
+    /// Nonnegative horizontal pixel origin.
+    pub x: i32,
+    /// Nonnegative vertical pixel origin.
+    pub y: i32,
+    /// Positive number of columns.
+    pub width: i32,
+    /// Positive number of rows.
+    pub height: i32,
+}
+
 /// Rectangle expressed in millimetres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
@@ -287,6 +303,8 @@ const ROFD_LOAD_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_LOAD_OPTIONS_V1_SIZE];
 const ROFD_RENDERER_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_RENDERER_OPTIONS_V1_SIZE];
 const ROFD_RENDER_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_RENDER_OPTIONS_V1_SIZE];
 const ROFD_FIND_OPTIONS_VERSION_SIZES: &[usize] = &[ROFD_FIND_OPTIONS_V1_SIZE];
+pub(crate) const ROFD_PIXEL_RECT_V1_SIZE: usize = 20;
+const ROFD_PIXEL_RECT_VERSION_SIZES: &[usize] = &[ROFD_PIXEL_RECT_V1_SIZE];
 
 static LIBRARY_VERSION: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
 
@@ -513,12 +531,40 @@ pub unsafe extern "C" fn rofd_render_options_init(
     });
 }
 
+/// Initializes a pixel viewport to an empty rectangle.
+///
+/// Set positive width/height before rendering. Null or undersized storage is
+/// untouched. Only the highest supported prefix is initialized; unknown tails
+/// are preserved and `struct_size` receives the selected version boundary.
+///
+/// # Safety
+/// A non-null pointer whose capacity holds a supported version must be aligned
+/// and writable for that complete prefix, with no conflicting concurrent access.
+#[no_mangle]
+pub unsafe extern "C" fn rofd_pixel_rect_init(rect: *mut rofd_pixel_rect_t, capacity: usize) {
+    let _ = catch_unwind(|| {
+        if rect.is_null() {
+            return;
+        }
+        let Some(size) = highest_supported_version_size(capacity, ROFD_PIXEL_RECT_VERSION_SIZES)
+        else {
+            return;
+        };
+        // SAFETY: The caller guarantees writable aligned storage for the selected prefix.
+        unsafe {
+            rect.cast::<u8>().write_bytes(0, size);
+            ptr::addr_of_mut!((*rect).struct_size).write(size as u32);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn current_records_match_their_permanent_v1_boundaries() {
+        assert_eq!(ROFD_PIXEL_RECT_V1_SIZE, size_of::<rofd_pixel_rect_t>());
         assert_eq!(ROFD_LOAD_OPTIONS_V1_SIZE, size_of::<rofd_load_options_t>());
         assert_eq!(
             ROFD_RENDERER_OPTIONS_V1_SIZE,

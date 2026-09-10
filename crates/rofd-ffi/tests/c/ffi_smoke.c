@@ -67,8 +67,11 @@ int main(int argc, char **argv) {
     rofd_text_search_t *search = NULL;
     rofd_text_selection_t *selection = NULL;
     cairo_surface_t *surface = NULL;
+    cairo_surface_t *tile_surface = NULL;
+    cairo_t *tile_cairo = NULL;
     cairo_t *cairo = NULL;
     rofd_render_options_t render_options;
+    rofd_pixel_rect_t viewport;
     rofd_render_diagnostic_t diagnostic = {0};
     rofd_find_options_t find_options;
     rofd_text_match_t match = {0};
@@ -178,6 +181,41 @@ int main(int argc, char **argv) {
                           (size_t)stride / sizeof(uint32_t), 25, 260, 2090,
                           1170, is_rule_dark_red) > 15000u);
 
+    CHECK(rofd_renderer_get_pixel_canvas_size(renderer, page, &render_options,
+                                               &width, &height, &error) == ROFD_STATUS_OK);
+    CHECK(width == 2115 && height == 1400);
+    rofd_pixel_rect_init(&viewport, sizeof(viewport));
+    viewport.x = 83;
+    viewport.y = 47;
+    viewport.width = 257;
+    viewport.height = 129;
+    tile_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, viewport.width,
+                                              viewport.height);
+    CHECK(cairo_surface_status(tile_surface) == CAIRO_STATUS_SUCCESS);
+    tile_cairo = cairo_create(tile_surface);
+    CHECK(rofd_renderer_render_page_region_cairo(renderer, page, tile_cairo,
+            &render_options, &viewport, NULL, &error) == ROFD_STATUS_OK);
+    CHECK(cairo_get_reference_count(tile_cairo) == 1u);
+    cairo_surface_flush(tile_surface);
+    size_t different_channels = 0;
+    unsigned int maximum_delta = 0;
+    for (int row = 0; row < viewport.height; ++row) {
+        const unsigned char *tile_row = cairo_image_surface_get_data(tile_surface) +
+            (size_t)row * (size_t)cairo_image_surface_get_stride(tile_surface);
+        const unsigned char *full_row = data +
+            (size_t)(row + viewport.y) * (size_t)stride + (size_t)viewport.x * 4u;
+        for (size_t column = 0; column < (size_t)viewport.width * 4u; ++column) {
+            unsigned int delta = tile_row[column] > full_row[column] ?
+                (unsigned int)(tile_row[column] - full_row[column]) :
+                (unsigned int)(full_row[column] - tile_row[column]);
+            if (delta != 0) ++different_channels;
+            if (delta > maximum_delta) maximum_delta = delta;
+        }
+    }
+    /* Cairo curve coverage depends slightly on target extents. This invoice
+       has 8 changed channels by one level; bound both magnitude and count. */
+    CHECK(different_channels <= 16 && maximum_delta <= 1);
+
     CHECK(rofd_render_report_get_count(report, &diagnostic_count, NULL) ==
           ROFD_STATUS_OK);
     CHECK(diagnostic_count > 0u);
@@ -200,6 +238,8 @@ int main(int argc, char **argv) {
     result = 0;
 
 cleanup:
+    if (tile_cairo != NULL) cairo_destroy(tile_cairo);
+    if (tile_surface != NULL) cairo_surface_destroy(tile_surface);
     if (error != NULL) {
         const char *message = rofd_error_get_message(error);
         fprintf(stderr, "rofd error (%u): %s\n", rofd_error_get_status(error),

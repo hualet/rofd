@@ -156,6 +156,40 @@ cleanup:
 For example, after building the shared library, compile with
 `cc reader.c -Icrates/rofd-ffi/include -Ltarget/debug -lrofd_ffi $(pkg-config --cflags --libs cairo)`.
 
+## Pixel viewport rendering
+
+For tiles, call `rofd_renderer_get_pixel_canvas_size` to get the final rotated,
+scaled full-page pixel dimensions. It is independent of the allocation needed
+for an entire page; the original `get_pixel_size` retains its full-target limits.
+Intersect a requested slice with that canvas in the application, then initialize
+`rofd_pixel_rect_t` with `rofd_pixel_rect_init` and set x/y/width/height.
+
+Allocate only a viewport-sized Cairo surface and call:
+
+```c
+rofd_renderer_render_page_region_cairo(renderer, page, cr, &render_options,
+                                        &viewport, &report, &error);
+```
+
+The viewport's full-page pixel origin maps to target (0, 0). Invalid or
+out-of-canvas viewports are rejected, not clamped. `clip_mm` remains an absolute
+page-space content clip; it does not control tile positioning. Optional render
+reports and caller Cairo ownership follow the full-page API.
+
+Region rendering uses tile-sized target, mask and intermediate surfaces. Page
+display-list traversal and bounded source-image decoding still occur; this API
+does not promise partial image decoding or spatially indexed object traversal.
+Integer pixel origins preserve the full-page sample grid. Cairo may compute
+slightly different antialiased curve-edge coverage on differently sized
+targets, so universal byte equality with a full-page crop is not guaranteed.
+Tests assert exact geometric/image stitching and separately bound curve-edge
+and real-invoice differences in both magnitude and count.
+
+A valid canvas size does not guarantee every source geometry is representable
+by Cairo. Region rendering bounds page clips and axis-aligned filled/image
+rectangles to the tile; unsafe extreme path coordinates return
+`ROFD_STATUS_RENDER_ERROR` instead of reporting success with incorrect pixels.
+
 ## Consumer contract
 
 - Returned handles are caller-owned and use their matching `rofd_*_free`;

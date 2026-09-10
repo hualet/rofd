@@ -7,6 +7,7 @@ mod abi;
 mod document;
 mod error;
 mod handles;
+mod region;
 mod renderer;
 mod report;
 mod semantic;
@@ -21,6 +22,7 @@ pub use handles::{
     rofd_document_t, rofd_error_t, rofd_page_t, rofd_render_report_t, rofd_renderer_t,
     rofd_string_t, rofd_text_layout_t, rofd_text_search_t, rofd_text_selection_t,
 };
+pub use region::{rofd_renderer_get_pixel_canvas_size, rofd_renderer_render_page_region_cairo};
 pub use renderer::{
     rofd_renderer_free, rofd_renderer_get_pixel_size, rofd_renderer_new,
     rofd_renderer_render_page_cairo,

@@ -4,6 +4,8 @@
 #include "rofd.h"
 
 _Static_assert(ROFD_ABI_VERSION == 1u, "unexpected ABI version");
+_Static_assert(sizeof(rofd_pixel_rect_t) == 20, "pixel viewport ABI size");
+_Static_assert(offsetof(rofd_pixel_rect_t, height) == 16, "pixel viewport field order");
 _Static_assert(sizeof(rofd_status_t) == sizeof(uint32_t),
                "rofd_status_t must be uint32_t-sized");
 _Static_assert(ROFD_IMAGE_INTERPOLATION_NEAREST == 0u,
@@ -57,6 +59,15 @@ _Static_assert(offsetof(rofd_render_diagnostic_t, struct_size) == 0,
                "render diagnostic struct_size must be first");
 
 static int consume_api(void) {
+    rofd_pixel_rect_t viewport;
+    rofd_pixel_rect_init(&viewport, sizeof(viewport));
+    if (viewport.struct_size != sizeof(viewport) || viewport.width != 0 ||
+        rofd_renderer_get_pixel_canvas_size(NULL, NULL, NULL, NULL, NULL, NULL) !=
+            ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_renderer_render_page_region_cairo(NULL, NULL, NULL, NULL, &viewport,
+                                                NULL, NULL) != ROFD_STATUS_INVALID_ARGUMENT) {
+        return 1;
+    }
     rofd_load_options_t load_options;
     rofd_renderer_options_t renderer_options;
     rofd_render_options_t render_options;

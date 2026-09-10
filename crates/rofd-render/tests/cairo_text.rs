@@ -5,7 +5,7 @@ use cairo::{
     Matrix, Operator, PathSegment, SubpixelOrder,
 };
 use rofd_core::{Document, LoadOptions};
-use rofd_render::{CairoRenderer, Error, RenderOptions};
+use rofd_render::{CairoRenderer, Error, PixelRect, RenderOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 const FONT: &[u8] = include_bytes!("fixtures/fonts/phase3-subset.ttf");
@@ -150,6 +150,73 @@ fn embedded_latin_and_cjk_glyphs_render_at_positioned_baselines() {
     let mut surface = render(&page, 0);
     let bounds = ink_bounds(&mut surface).expect("controlled glyphs must paint");
     assert_eq!(bounds, (30, 46, 136, 83));
+}
+
+#[test]
+fn embedded_text_regions_preserve_fractional_glyph_positions_at_every_rotation() {
+    let page = page(
+        r#"<ofd:TextObject ID="2" Boundary="2 3 24 12" Font="10" Size="4" Fill="true" Stroke="false"><ofd:FillColor Value="0 0 0"/><ofd:TextCode X="1" Y="5">A</ofd:TextCode><ofd:TextCode X="8" Y="5">中</ofd:TextCode></ofd:TextObject>"#,
+    );
+    let mut changed = 0;
+    let mut total = 0;
+    let mut maximum_delta = 0;
+    for rotation in [0, 90, 180, 270] {
+        let options = RenderOptions {
+            dpi: 87.3,
+            scale: 1.13,
+            rotation_degrees: rotation,
+            ..RenderOptions::default()
+        };
+        let (width, height) = CairoRenderer::pixel_size(&page, &options).unwrap();
+        let full = ImageSurface::create(Format::ARgb32, width, height).unwrap();
+        let context = Context::new(&full).unwrap();
+        let full_report = CairoRenderer
+            .render_page(&page, &context, &options)
+            .unwrap();
+        drop(context);
+        let full_bytes = surface_bytes(&full);
+        for y in (0..height).step_by(23) {
+            for x in (0..width).step_by(19) {
+                let viewport = PixelRect {
+                    x,
+                    y,
+                    width: 19.min(width - x),
+                    height: 23.min(height - y),
+                };
+                let tile =
+                    ImageSurface::create(Format::ARgb32, viewport.width, viewport.height).unwrap();
+                let context = Context::new(&tile).unwrap();
+                assert_eq!(
+                    CairoRenderer
+                        .render_page_region(&page, &context, &options, viewport)
+                        .unwrap(),
+                    full_report
+                );
+                drop(context);
+                let tile_bytes = surface_bytes(&tile);
+                for ty in 0..viewport.height {
+                    for tx in 0..viewport.width {
+                        let tile_offset = (ty * tile.stride() + tx * 4) as usize;
+                        let full_offset = ((y + ty) * full.stride() + (x + tx) * 4) as usize;
+                        for channel in 0..4 {
+                            let actual = tile_bytes[tile_offset + channel];
+                            let expected = full_bytes[full_offset + channel];
+                            maximum_delta = maximum_delta.max(actual.abs_diff(expected));
+                            changed += usize::from(actual != expected);
+                            total += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Cairo may cull a very faint edge pixel differently on a smaller target.
+    // The fixture has two such pixels; geometry and every other channel agree.
+    assert!(
+        maximum_delta <= 13,
+        "{changed}/{total} channels differ; max {maximum_delta}"
+    );
+    assert!(changed <= 6, "{changed}/{total} channels differ");
 }
 
 #[test]

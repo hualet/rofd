@@ -12,7 +12,9 @@ mod images;
 #[allow(unsafe_code)]
 mod jbig2;
 
-pub use cairo_renderer::{CairoRenderer, ImageInterpolation, RenderOptions, RenderReport};
+pub use cairo_renderer::{
+    CairoRenderer, ImageInterpolation, PixelRect, RenderOptions, RenderReport,
+};
 pub use display_list::{
     ClipPath, Command, DisplayList, DisplayListBuilder, RenderDiagnostic, RenderDiagnosticKind,
 };

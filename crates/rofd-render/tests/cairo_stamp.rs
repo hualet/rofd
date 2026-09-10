@@ -4,7 +4,7 @@ use std::io::{Cursor, Write};
 
 use cairo::{Context, Format, ImageSurface};
 use rofd_core::{Document, LoadOptions};
-use rofd_render::{CairoRenderer, ImageInterpolation, RenderOptions};
+use rofd_render::{CairoRenderer, ImageInterpolation, PixelRect, RenderOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
 /// A 3x2 RGBA PNG with six distinct pixels.
@@ -40,6 +40,13 @@ fn signed_value(kind: &str, data: &[u8]) -> Vec<u8> {
 }
 
 fn mini_ofd() -> Vec<u8> {
+    mini_ofd_with_overlay("")
+}
+
+fn mini_ofd_with_overlay(overlay: &str) -> Vec<u8> {
+    let page = format!(
+        r#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 30 20</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 30 20" Fill="true" Stroke="false"><ofd:FillColor Value="200 32 38"/><ofd:AbbreviatedData>M 0 0 L 30 0 L 30 20 L 0 20 C</ofd:AbbreviatedData></ofd:PathObject>{overlay}</ofd:Layer></ofd:Content></ofd:Page>"#
+    );
     let files: [(&str, &[u8]); 3] = [
         (
             "OFD.xml",
@@ -51,7 +58,7 @@ fn mini_ofd() -> Vec<u8> {
         ),
         (
             "Doc_0/Page.xml",
-            br#"<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 30 20</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="1"><ofd:PathObject ID="2" Boundary="0 0 30 20" Fill="true" Stroke="false"><ofd:FillColor Value="200 32 38"/><ofd:AbbreviatedData>M 0 0 L 30 0 L 30 20 L 0 20 C</ofd:AbbreviatedData></ofd:PathObject></ofd:Layer></ofd:Content></ofd:Page>"#,
+            page.as_bytes(),
         ),
     ];
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
@@ -201,4 +208,112 @@ fn broken_or_unsupported_stamps_are_skipped_silently() {
         b"not a real image",
     );
     assert_eq!(pixel(&mut surface, 2, 2), [255, 255, 255, 255]);
+}
+
+#[test]
+fn raster_and_ofd_stamp_regions_match_the_full_rotated_canvas() {
+    let mini = mini_ofd_with_overlay(
+        r#"<ofd:PathObject ID="3" Boundary="13.7 4.3 9.6 7.7" Fill="true" Stroke="false"><ofd:FillColor Value="10 30 220"/><ofd:AbbreviatedData>M 0 0 L 9.6 0 L 9.6 7.7 L 0 7.7 C</ofd:AbbreviatedData></ofd:PathObject>"#,
+    );
+    for (kind, picture) in [("png", PNG), ("ofd", mini.as_slice())] {
+        let document = Document::from_bytes(package(kind, picture, r#"<ofd:StampAnnot PageRef="10" ID="01" Boundary="2.7 3.1 9.3 6.7" Clip="0.4 0.3 7.8 5.9"/>"#), LoadOptions::default()).unwrap();
+        let page = document.page(0).unwrap();
+        for rotation in [0, 90, 180, 270] {
+            let options = RenderOptions {
+                dpi: 43.7,
+                scale: 1.17,
+                rotation_degrees: rotation,
+                ..RenderOptions::default()
+            };
+            let (width, height) = CairoRenderer::pixel_size(&page, &options).unwrap();
+            let mut full = ImageSurface::create(Format::ARgb32, width, height).unwrap();
+            let context = Context::new(&full).unwrap();
+            CairoRenderer
+                .render_page(&page, &context, &options)
+                .unwrap();
+            drop(context);
+            for y in (0..height).step_by(7) {
+                for x in (0..width).step_by(11) {
+                    let viewport = PixelRect {
+                        x,
+                        y,
+                        width: 11.min(width - x),
+                        height: 7.min(height - y),
+                    };
+                    let mut tile =
+                        ImageSurface::create(Format::ARgb32, viewport.width, viewport.height)
+                            .unwrap();
+                    let context = Context::new(&tile).unwrap();
+                    CairoRenderer
+                        .render_page_region(&page, &context, &options, viewport)
+                        .unwrap();
+                    drop(context);
+                    for ty in 0..viewport.height {
+                        for tx in 0..viewport.width {
+                            assert_eq!(
+                                pixel(&mut tile, tx, ty),
+                                pixel(&mut full, x + tx, y + ty),
+                                "{kind} rotation {rotation}, {viewport:?}, pixel {tx},{ty}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn high_zoom_ofd_stamp_renders_only_the_visible_source_region() {
+    let document = Document::from_bytes(
+        package(
+            "ofd",
+            &mini_ofd(),
+            r#"<ofd:StampAnnot PageRef="10" ID="01" Boundary="5 5 9 6"/>"#,
+        ),
+        LoadOptions::default(),
+    )
+    .unwrap();
+    let page = document.page(0).unwrap();
+    for (rotation, x, y) in [
+        (0, 18000, 16000),
+        (90, 24000, 18000),
+        (180, 22000, 24000),
+        (270, 16000, 22000),
+    ] {
+        let options = RenderOptions {
+            dpi: 25.4,
+            scale: 2000.0,
+            rotation_degrees: rotation,
+            max_raster_bytes: 20000,
+            ..RenderOptions::default()
+        };
+        assert_eq!(
+            CairoRenderer::pixel_canvas_size(&page, &options).unwrap(),
+            (40000, 40000)
+        );
+        // The full mini-OFD source would require a 60000x40000 raster, which
+        // exceeds both Cairo's dimension limit and the available byte budget.
+        let mut tile = ImageSurface::create(Format::ARgb32, 10, 8).unwrap();
+        let context = Context::new(&tile).unwrap();
+        CairoRenderer
+            .render_page_region(
+                &page,
+                &context,
+                &options,
+                PixelRect {
+                    x,
+                    y,
+                    width: 10,
+                    height: 8,
+                },
+            )
+            .unwrap();
+        drop(context);
+        assert_eq!(
+            pixel(&mut tile, 5, 4),
+            [200, 32, 38, 255],
+            "rotation {rotation}"
+        );
+    }
 }

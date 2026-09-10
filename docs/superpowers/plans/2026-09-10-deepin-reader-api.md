@@ -12,25 +12,33 @@ pixel canvas geometry from viewport allocation in the renderer, preserving v1.
 ## Task 1: P0 region rendering
 
 Files: `crates/rofd-render/src/cairo_renderer.rs`, `src/lib.rs`,
-`tests/cairo_region.rs`, `crates/rofd-ffi/src/{abi,renderer,lib}.rs`,
-`include/rofd.h`, `tests/{renderer,abi}.rs`, `tests/c/*`, crate READMEs.
+`tests/{cairo_render,cairo_stamp,cairo_text}.rs`,
+`crates/rofd-ffi/src/{abi,region,renderer,lib}.rs`, `include/rofd.h`,
+`tests/region.rs`, `tests/c/*`, crate READMEs.
 
-- [ ] Add failing Rust tests using `PixelRect { x: 17, y: 9, width: 31, height: 23 }`,
+- [x] Add failing Rust tests using `PixelRect { x: 17, y: 9, width: 31, height: 23 }`,
   `CairoRenderer::pixel_canvas_size` and `render_page_region`; compare every RGBA
   byte with the corresponding full-page pixel, including four rotations, clips,
   nonzero origins, image/text/clipping fixtures and small budgets on huge pages.
-- [ ] Run `cargo test -p rofd-render --test cairo_region`; confirm missing API.
-- [ ] Implement positive i32 canvas geometry separately from Cairo-limited target
+- [x] Run targeted renderer/FFI tests; confirm missing API and high-zoom stamp failure.
+- [x] Implement positive i32 canvas geometry separately from Cairo-limited target
   geometry. Construct target matrix by subtracting integer viewport x/y from its
   translation. Use viewport dimensions for all masks/intermediates and budgets.
-- [ ] Add versioned FFI viewport initializer, input-range preflight and two entry
+- [x] Add versioned FFI viewport initializer, input-range preflight and two entry
   points: canvas size and region rendering (including report output). Use existing
   HandleOutput/ScalarOutput and boundary_with_inputs conventions.
-- [ ] Run region/FFI tests. Add C/C++ record/function probes and real-fixture tile
+- [x] Run region/FFI tests. Add C/C++ record/function probes and real-fixture tile
   comparison; update the exported-symbol allowlist and public contracts.
-- [ ] Run format, workspace tests, strict core/render/ffi Clippy, release FFI/Qt
+- [x] Run format, workspace tests, strict core/render/ffi Clippy, release FFI/Qt
   build and `crates/rofd-ffi/tests/run_c_tests.sh`; review and commit
   `feat(render): add pixel viewport rendering`.
+
+P0 verification: workspace/all-targets 488 passed, 0 failed, 2 intentional
+ignores; strict Clippy, format, release FFI/Qt build and C11/C++17 dynamic ABI
+runner passed. Tests are grouped in the existing cairo_render/cairo_stamp/
+cairo_text files rather than a separate cairo_region module, reusing fixtures.
+Review regressions cover 20M/2B canvas coordinates, bounded page/path/image
+rectangles, and explicit rejection of unsafe arbitrary Cairo paths.
 
 ## Task 2: P1 metadata and warnings
 

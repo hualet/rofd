@@ -23,6 +23,9 @@ const MILLIMETRES_PER_INCH: f64 = 25.4;
 const DEFAULT_MITER_LIMIT: f64 = 3.528;
 const DEFAULT_CURVE_TOLERANCE: f64 = 0.1;
 const MAX_CAIRO_IMAGE_DIMENSION: i32 = 32_767;
+// Cairo path coordinates use signed 24.8 fixed point. Conservatively keep
+// both endpoints and their span within the backend's useful integer domain.
+const MAX_CAIRO_PATH_COORDINATE: f64 = 4_000_000.0;
 const DEFAULT_MAX_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Sampling filter used while scaling decoded raster images.
@@ -34,6 +37,22 @@ pub enum ImageInterpolation {
     /// Blend adjacent source pixels for smoother scaling.
     #[default]
     Bilinear,
+}
+
+/// A pixel viewport in the final rotated and scaled page canvas.
+///
+/// The origin must be nonnegative, dimensions must be positive, and the entire
+/// rectangle must lie within [`CairoRenderer::pixel_canvas_size`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PixelRect {
+    /// Horizontal offset from the final canvas's left edge.
+    pub x: i32,
+    /// Vertical offset from the final canvas's top edge.
+    pub y: i32,
+    /// Width in device pixels.
+    pub width: i32,
+    /// Height in device pixels.
+    pub height: i32,
 }
 
 /// Options controlling page rasterization.
@@ -102,6 +121,16 @@ impl CairoRenderer {
         Ok((geometry.pixel_width, geometry.pixel_height))
     }
 
+    /// Returns final rotated and scaled canvas dimensions without allocating.
+    ///
+    /// Unlike [`Self::pixel_size`], this geometry query permits every positive
+    /// `i32` dimension and does not apply Cairo's raster dimension limit or the
+    /// raster byte budget. Use it to select viewports for large pages.
+    pub fn pixel_canvas_size(page: &Page, options: &RenderOptions) -> Result<(i32, i32)> {
+        let geometry = CanvasGeometry::new(page.size(), options)?;
+        Ok((geometry.pixel_width, geometry.pixel_height))
+    }
+
     /// Renders a page into a caller-owned Cairo context.
     ///
     /// The caller's graphics state and current path are restored on both
@@ -114,7 +143,44 @@ impl CairoRenderer {
         context: &Context,
         options: &RenderOptions,
     ) -> Result<RenderReport> {
-        let geometry = validate_render_target(page, context, options)?;
+        let geometry = RenderGeometry::new(page.size(), options)?;
+        self.render_without_services(page, context, options, geometry)
+    }
+
+    /// Renders a final-canvas pixel viewport into the target's top-left corner.
+    ///
+    /// Only the viewport extent is written, even on a larger target. Page-space
+    /// clipping keeps its absolute millimetre coordinates. Clip masks and draw
+    /// intermediates use viewport dimensions; the page display list is still
+    /// traversed and source images are decoded at their bounded source sizes.
+    /// Caller graphics state and the current path are restored as with
+    /// [`Self::render_page`].
+    ///
+    /// Page clips and fill-only axis-aligned rectangles are bounded before
+    /// reaching Cairo. Other display-list paths/clips with device coordinates
+    /// outside the conservative ±4,000,000 pixel range return
+    /// [`Error::InvalidGeometry`] instead of silently overflowing Cairo's
+    /// fixed-point path representation. Known offscreen fill-only line/Bezier
+    /// control hulls are skipped; strokes and arcs may be conservatively rejected.
+    pub fn render_page_region(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        viewport: PixelRect,
+    ) -> Result<RenderReport> {
+        let geometry = RenderGeometry::region(page.size(), options, viewport)?;
+        self.render_without_services(page, context, options, geometry)
+    }
+
+    fn render_without_services(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        geometry: RenderGeometry,
+    ) -> Result<RenderReport> {
+        validate_render_target(context, &geometry)?;
         let caller_path = cairo(context.copy_path(), "capture caller path")?;
         let rendered = DisplayList::from_page(page).and_then(|display_list| {
             self.render_display_list(
@@ -147,6 +213,32 @@ impl CairoRenderer {
         self.render_with_services(page, context, options, font_resolver, image_decoder, 0)
     }
 
+    /// Renders a pixel viewport with caller-provided reusable font/image services.
+    ///
+    /// Geometry, clipping, allocation bounds, and state restoration match
+    /// [`Self::render_page_region`]. Validation precedes service invocation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_page_region_with_services(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        viewport: PixelRect,
+        font_resolver: &dyn FontResolver,
+        image_decoder: &ImageDecoder,
+    ) -> Result<RenderReport> {
+        let geometry = RenderGeometry::region(page.size(), options, viewport)?;
+        self.render_with_services_geometry(
+            page,
+            context,
+            options,
+            font_resolver,
+            image_decoder,
+            0,
+            geometry,
+        )
+    }
+
     fn render_with_services(
         &self,
         page: &Page,
@@ -156,7 +248,30 @@ impl CairoRenderer {
         image_decoder: &ImageDecoder,
         depth: u32,
     ) -> Result<RenderReport> {
-        let geometry = validate_render_target(page, context, options)?;
+        let geometry = RenderGeometry::new(page.size(), options)?;
+        self.render_with_services_geometry(
+            page,
+            context,
+            options,
+            font_resolver,
+            image_decoder,
+            depth,
+            geometry,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_with_services_geometry(
+        &self,
+        page: &Page,
+        context: &Context,
+        options: &RenderOptions,
+        font_resolver: &dyn FontResolver,
+        image_decoder: &ImageDecoder,
+        depth: u32,
+        geometry: RenderGeometry,
+    ) -> Result<RenderReport> {
+        validate_render_target(context, &geometry)?;
         let caller_path = cairo(context.copy_path(), "capture caller path")?;
         let rendered = DisplayListBuilder::new(font_resolver, image_decoder)
             .build(page)
@@ -203,10 +318,23 @@ impl CairoRenderer {
 
         let rendered = render_saved(context, page.size(), options, geometry, &prepared);
         if rendered.is_ok() {
+            // The page interpreter has released its clip masks/intermediates,
+            // but the caller target and prepared image sources remain live.
+            let stamp_options = if geometry.is_region {
+                let target_bytes = geometry.pixel_width as u64 * geometry.pixel_height as u64 * 4;
+                Some(RenderOptions {
+                    max_raster_bytes: options
+                        .max_raster_bytes
+                        .saturating_sub(target_bytes + prepared.images.native_bytes),
+                    ..options.clone()
+                })
+            } else {
+                None
+            };
             self.draw_stamp_annotations(
                 page,
                 context,
-                options,
+                stamp_options.as_ref().unwrap_or(options),
                 geometry,
                 depth,
                 font_resolver,
@@ -304,39 +432,69 @@ impl CairoRenderer {
                             owned_decoder.get_or_insert_with(ImageDecoder::default),
                         ),
                     };
-                self.render_seal_ofd(&picture.data, options, resolver, decoder, depth)?
+                self.render_seal_ofd(
+                    &picture.data,
+                    options,
+                    resolver,
+                    decoder,
+                    depth,
+                    geometry.is_region.then_some((geometry, boundary)),
+                )?
             }
             SealPictureKind::Png
             | SealPictureKind::Jpeg
             | SealPictureKind::Gif
-            | SealPictureKind::Bmp => decode_seal_raster(
-                &picture.data,
-                page.resource_limits(),
-                options.max_raster_bytes,
-            )?,
+            | SealPictureKind::Bmp => Some(
+                decode_seal_raster(
+                    &picture.data,
+                    page.resource_limits(),
+                    options.max_raster_bytes,
+                )?
+                .into(),
+            ),
             _ => return Ok(()),
+        };
+        let Some(prepared) = prepared else {
+            return Ok(());
         };
 
         cairo(context.save(), "save stamp state")?;
         let drawn = (|| {
             context.set_matrix(geometry.page_to_device);
             if let Some(clip) = annotation.clip {
-                context.rectangle(
-                    boundary.x + clip.x,
-                    boundary.y + clip.y,
-                    clip.width,
-                    clip.height,
-                );
-                context.clip();
+                let clip = Rect {
+                    x: boundary.x + clip.x,
+                    y: boundary.y + clip.y,
+                    ..clip
+                };
+                if geometry.is_region {
+                    clip_page_rect_to_region(context, geometry, clip)?;
+                } else {
+                    context.rectangle(clip.x, clip.y, clip.width, clip.height);
+                    context.clip();
+                }
+            }
+            if geometry.is_region {
+                clip_page_rect_to_region(context, geometry, boundary)?;
             }
             context.translate(boundary.x, boundary.y);
-            context.rectangle(0.0, 0.0, boundary.width, boundary.height);
-            context.clip();
+            if !geometry.is_region {
+                context.rectangle(0.0, 0.0, boundary.width, boundary.height);
+                context.clip();
+            }
             context.scale(
-                boundary.width / f64::from(prepared.width),
-                boundary.height / f64::from(prepared.height),
+                boundary.width / f64::from(prepared.source_width),
+                boundary.height / f64::from(prepared.source_height),
             );
-            let pattern = SurfacePattern::create(&prepared.surface);
+            let pattern = SurfacePattern::create(&prepared.image.surface);
+            pattern.set_matrix(Matrix::new(
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -f64::from(prepared.source_x),
+                -f64::from(prepared.source_y),
+            ));
             pattern.set_extend(Extend::Pad);
             pattern.set_filter(match options.image_interpolation {
                 ImageInterpolation::Nearest => Filter::Nearest,
@@ -351,6 +509,7 @@ impl CairoRenderer {
 
     /// Renders the first page of a mini-OFD seal picture to a transparent
     /// surface, matching ofdrw's stamp pipeline.
+    #[allow(clippy::too_many_arguments)]
     fn render_seal_ofd(
         &self,
         data: &[u8],
@@ -358,7 +517,8 @@ impl CairoRenderer {
         font_resolver: &dyn FontResolver,
         image_decoder: &ImageDecoder,
         depth: u32,
-    ) -> Result<PreparedImage> {
+        parent_region: Option<(&RenderGeometry, Rect)>,
+    ) -> Result<Option<PreparedStamp>> {
         let document =
             rofd_core::Document::from_bytes(data.to_vec(), rofd_core::LoadOptions::default())
                 .map_err(|error| {
@@ -381,7 +541,23 @@ impl CairoRenderer {
             },
             ..options.clone()
         };
-        let seal_geometry = RenderGeometry::new(seal_page.size(), &seal_options)?;
+        let (source_width, source_height) = Self::pixel_canvas_size(&seal_page, &seal_options)?;
+        let viewport = if let Some((parent, boundary)) = parent_region {
+            let Some(viewport) =
+                seal_source_viewport(parent, boundary, source_width, source_height)?
+            else {
+                return Ok(None);
+            };
+            Some(viewport)
+        } else {
+            None
+        };
+        let seal_geometry = if let Some(viewport) = viewport {
+            RenderGeometry::region(seal_page.size(), &seal_options, viewport)?
+        } else {
+            RenderGeometry::new(seal_page.size(), &seal_options)?
+        };
+        let (width, height) = (seal_geometry.pixel_width, seal_geometry.pixel_height);
         let surface = cairo(
             ImageSurface::create(
                 Format::ARgb32,
@@ -391,32 +567,94 @@ impl CairoRenderer {
             "create seal surface",
         )?;
         let context = cairo(Context::new(&surface), "create seal context")?;
-        let rendered = self.render_with_services(
+        let rendered = self.render_with_services_geometry(
             &seal_page,
             &context,
             &seal_options,
             font_resolver,
             image_decoder,
             depth + 1,
+            seal_geometry,
         );
         drop(context);
         surface.flush();
         let flushed = cairo(surface.status(), "flush seal surface");
         combine_results(rendered.map(drop), flushed, "flush seal surface")?;
-        Ok(PreparedImage {
-            surface,
-            width: seal_geometry.pixel_width,
-            height: seal_geometry.pixel_height,
-        })
+        Ok(Some(PreparedStamp {
+            image: PreparedImage {
+                surface,
+                width,
+                height,
+            },
+            source_width,
+            source_height,
+            source_x: viewport.map_or(0, |viewport| viewport.x),
+            source_y: viewport.map_or(0, |viewport| viewport.y),
+        }))
     }
 }
 
-fn validate_render_target(
-    page: &Page,
-    context: &Context,
-    options: &RenderOptions,
-) -> Result<RenderGeometry> {
-    let geometry = RenderGeometry::new(page.size(), options)?;
+/// Maps a destination tile back to the mini-OFD's original sampling grid.
+/// Two source pixels of halo preserve bilinear interpolation at cropped edges.
+fn seal_source_viewport(
+    parent: &RenderGeometry,
+    boundary: Rect,
+    source_width: i32,
+    source_height: i32,
+) -> Result<Option<PixelRect>> {
+    let mut source_to_tile = parent.page_to_device;
+    source_to_tile.translate(boundary.x, boundary.y);
+    source_to_tile.scale(
+        boundary.width / f64::from(source_width),
+        boundary.height / f64::from(source_height),
+    );
+    let tile_to_source = cairo(source_to_tile.try_invert(), "invert stamp source transform")?;
+    let corners = [
+        (0.0, 0.0),
+        (f64::from(parent.pixel_width), 0.0),
+        (0.0, f64::from(parent.pixel_height)),
+        (
+            f64::from(parent.pixel_width),
+            f64::from(parent.pixel_height),
+        ),
+    ]
+    .map(|(x, y)| tile_to_source.transform_point(x, y));
+    if corners
+        .iter()
+        .any(|(x, y)| !x.is_finite() || !y.is_finite())
+    {
+        return Err(invalid_display_list("stamp source viewport is not finite"));
+    }
+    let left = corners.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let top = corners.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let right = corners
+        .iter()
+        .map(|p| p.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let bottom = corners
+        .iter()
+        .map(|p| p.1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if right <= 0.0
+        || bottom <= 0.0
+        || left >= f64::from(source_width)
+        || top >= f64::from(source_height)
+    {
+        return Ok(None);
+    }
+    let x = (left.floor() - 2.0).clamp(0.0, f64::from(source_width)) as i32;
+    let y = (top.floor() - 2.0).clamp(0.0, f64::from(source_height)) as i32;
+    let right = (right.ceil() + 2.0).clamp(0.0, f64::from(source_width)) as i32;
+    let bottom = (bottom.ceil() + 2.0).clamp(0.0, f64::from(source_height)) as i32;
+    Ok(Some(PixelRect {
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+    }))
+}
+
+fn validate_render_target(context: &Context, geometry: &RenderGeometry) -> Result<()> {
     if let Ok(surface) = ImageSurface::try_from(context.target()) {
         if surface.width() < geometry.pixel_width || surface.height() < geometry.pixel_height {
             return Err(Error::SurfaceTooSmall {
@@ -427,7 +665,7 @@ fn validate_render_target(
             });
         }
     }
-    Ok(geometry)
+    Ok(())
 }
 
 fn render_saved(
@@ -441,15 +679,33 @@ fn render_saved(
     context.set_operator(Operator::Over);
     set_raster_defaults(context)?;
     set_stroke_defaults(context)?;
-    context.rectangle(page_box.x, page_box.y, page_box.width, page_box.height);
-    context.clip();
+    if geometry.is_region {
+        context.identity_matrix();
+        context.new_path();
+        context.rectangle(
+            0.0,
+            0.0,
+            f64::from(geometry.pixel_width),
+            f64::from(geometry.pixel_height),
+        );
+        context.clip();
+        context.set_matrix(geometry.page_to_device);
+        clip_page_rect_to_region(context, geometry, page_box)?;
+    } else {
+        context.rectangle(page_box.x, page_box.y, page_box.width, page_box.height);
+        context.clip();
+    }
     cairo(context.status(), "establish page graphics state")?;
     set_source_color(context, options.background)?;
     cairo(context.paint(), "paint page background")?;
 
     if let Some(clip) = options.clip {
-        context.rectangle(clip.x, clip.y, clip.width, clip.height);
-        context.clip();
+        if geometry.is_region {
+            clip_page_rect_to_region(context, geometry, clip)?;
+        } else {
+            context.rectangle(clip.x, clip.y, clip.width, clip.height);
+            context.clip();
+        }
         cairo(context.status(), "apply page-space clip")?;
     }
 
@@ -461,6 +717,73 @@ fn render_saved(
         options.image_interpolation,
     );
     interpreter.run(prepared.display_list.commands())
+}
+
+/// Page rotations are quarter turns, so page-space rectangles remain axis
+/// aligned. Intersect in floating-point device coordinates before asking Cairo
+/// to construct a path: huge offscreen endpoints can overflow its fixed-point
+/// path representation even though only a tiny viewport is rendered.
+fn clip_page_rect_to_region(
+    context: &Context,
+    geometry: &RenderGeometry,
+    rect: Rect,
+) -> Result<()> {
+    clip_transformed_rect_to_region(context, geometry, rect, geometry.page_to_device)
+}
+
+fn clip_transformed_rect_to_region(
+    context: &Context,
+    geometry: &RenderGeometry,
+    rect: Rect,
+    transform: Matrix,
+) -> Result<()> {
+    let corners = [
+        (rect.x, rect.y),
+        (rect.x + rect.width, rect.y),
+        (rect.x + rect.width, rect.y + rect.height),
+        (rect.x, rect.y + rect.height),
+    ]
+    .map(|(x, y)| transform.transform_point(x, y));
+    if corners
+        .iter()
+        .all(|&(x, y)| safe_path_coordinate(x) && safe_path_coordinate(y))
+    {
+        // Preserve Cairo's original rectangle construction/rounding whenever
+        // possible. The enclosing region clip already limits target writes.
+        let matrix = context.matrix();
+        context.set_matrix(transform);
+        context.new_path();
+        context.rectangle(rect.x, rect.y, rect.width, rect.height);
+        context.clip();
+        context.set_matrix(matrix);
+        return cairo(context.status(), "apply page clip");
+    }
+    if corners
+        .iter()
+        .any(|&(x, y)| !x.is_finite() || !y.is_finite())
+        || !((transform.xy() == 0.0 && transform.yx() == 0.0)
+            || (transform.xx() == 0.0 && transform.yy() == 0.0))
+    {
+        return Err(Error::InvalidGeometry {
+            primitive: "rectangle",
+            field: "device coordinates",
+            value:
+                "non-axis-aligned or non-finite rectangle exceeds Cairo's fixed-point path domain"
+                    .to_owned(),
+        });
+    }
+    let [(x1, y1), _, (x2, y2), _] = corners;
+    let left = x1.min(x2).clamp(0.0, f64::from(geometry.pixel_width));
+    let top = y1.min(y2).clamp(0.0, f64::from(geometry.pixel_height));
+    let right = x1.max(x2).clamp(0.0, f64::from(geometry.pixel_width));
+    let bottom = y1.max(y2).clamp(0.0, f64::from(geometry.pixel_height));
+    let matrix = context.matrix();
+    context.identity_matrix();
+    context.new_path();
+    context.rectangle(left, top, right - left, bottom - top);
+    context.clip();
+    context.set_matrix(matrix);
+    cairo(context.status(), "apply bounded page clip")
 }
 
 fn cairo_image_layout(image: &crate::DecodedImage) -> Result<(i32, i32, u64)> {
@@ -489,6 +812,7 @@ fn cairo_image_layout(image: &crate::DecodedImage) -> Result<(i32, i32, u64)> {
 
 struct PreparedImages {
     images: Vec<Option<PreparedImage>>,
+    native_bytes: u64,
 }
 
 struct PreparedRender {
@@ -502,6 +826,26 @@ struct PreparedImage {
     surface: ImageSurface,
     width: i32,
     height: i32,
+}
+
+struct PreparedStamp {
+    image: PreparedImage,
+    source_width: i32,
+    source_height: i32,
+    source_x: i32,
+    source_y: i32,
+}
+
+impl From<PreparedImage> for PreparedStamp {
+    fn from(image: PreparedImage) -> Self {
+        Self {
+            source_width: image.width,
+            source_height: image.height,
+            source_x: 0,
+            source_y: 0,
+            image,
+        }
+    }
 }
 
 impl PreparedImages {
@@ -563,7 +907,10 @@ impl PreparedImages {
             };
             images[index] = Some(prepared);
         }
-        Ok(Self { images })
+        Ok(Self {
+            images,
+            native_bytes,
+        })
     }
 }
 
@@ -719,9 +1066,87 @@ struct RenderGeometry {
     pixel_height: i32,
     page_to_device: Matrix,
     surface_bytes: u64,
+    is_region: bool,
 }
 
 impl RenderGeometry {
+    fn new(page_box: Rect, options: &RenderOptions) -> Result<Self> {
+        let canvas = CanvasGeometry::new(page_box, options)?;
+        Self::from_canvas(canvas, options, None)
+    }
+
+    fn region(page_box: Rect, options: &RenderOptions, viewport: PixelRect) -> Result<Self> {
+        let canvas = CanvasGeometry::new(page_box, options)?;
+        if viewport.x < 0
+            || viewport.y < 0
+            || viewport.width <= 0
+            || viewport.height <= 0
+            || viewport
+                .x
+                .checked_add(viewport.width)
+                .is_none_or(|right| right > canvas.pixel_width)
+            || viewport
+                .y
+                .checked_add(viewport.height)
+                .is_none_or(|bottom| bottom > canvas.pixel_height)
+        {
+            return Err(Error::InvalidOption {
+                field: "viewport",
+                value: format!(
+                    "{} {} {} {}",
+                    viewport.x, viewport.y, viewport.width, viewport.height
+                ),
+            });
+        }
+        Self::from_canvas(canvas, options, Some(viewport))
+    }
+
+    fn from_canvas(
+        canvas: CanvasGeometry,
+        options: &RenderOptions,
+        viewport: Option<PixelRect>,
+    ) -> Result<Self> {
+        let (pixel_width, pixel_height) = viewport
+            .map_or((canvas.pixel_width, canvas.pixel_height), |viewport| {
+                (viewport.width, viewport.height)
+            });
+        let invalid = || Error::InvalidSurfaceSize {
+            width: f64::from(pixel_width),
+            height: f64::from(pixel_height),
+        };
+        if pixel_width > MAX_CAIRO_IMAGE_DIMENSION || pixel_height > MAX_CAIRO_IMAGE_DIMENSION {
+            return Err(invalid());
+        }
+        let required_bytes =
+            worst_case_surface_bytes(pixel_width, pixel_height).ok_or_else(invalid)?;
+        if required_bytes > options.max_raster_bytes {
+            return Err(Error::RasterBudgetExceeded {
+                required_bytes,
+                max_bytes: options.max_raster_bytes,
+            });
+        }
+        let mut page_to_device = canvas.page_to_device;
+        if let Some(viewport) = viewport {
+            page_to_device.set_x0(page_to_device.x0() - f64::from(viewport.x));
+            page_to_device.set_y0(page_to_device.y0() - f64::from(viewport.y));
+        }
+        Ok(Self {
+            pixel_width,
+            pixel_height,
+            page_to_device,
+            surface_bytes: required_bytes,
+            is_region: viewport.is_some(),
+        })
+    }
+}
+
+struct CanvasGeometry {
+    pixel_width: i32,
+    pixel_height: i32,
+    page_to_device: Matrix,
+}
+
+impl CanvasGeometry {
     fn new(page_box: Rect, options: &RenderOptions) -> Result<Self> {
         if !options.dpi.is_finite() || options.dpi <= 0.0 {
             return Err(invalid_option("dpi", options.dpi));
@@ -764,19 +1189,10 @@ impl RenderGeometry {
             || !height.is_finite()
             || width < 1.0
             || height < 1.0
-            || width > f64::from(MAX_CAIRO_IMAGE_DIMENSION)
-            || height > f64::from(MAX_CAIRO_IMAGE_DIMENSION)
+            || width > f64::from(i32::MAX)
+            || height > f64::from(i32::MAX)
         {
             return Err(Error::InvalidSurfaceSize { width, height });
-        }
-
-        let required_bytes = worst_case_surface_bytes(width as i32, height as i32)
-            .ok_or(Error::InvalidSurfaceSize { width, height })?;
-        if required_bytes > options.max_raster_bytes {
-            return Err(Error::RasterBudgetExceeded {
-                required_bytes,
-                max_bytes: options.max_raster_bytes,
-            });
         }
 
         let x = page_box.x;
@@ -823,7 +1239,6 @@ impl RenderGeometry {
             pixel_width: width as i32,
             pixel_height: height as i32,
             page_to_device,
-            surface_bytes: required_bytes,
         })
     }
 }
@@ -1028,7 +1443,12 @@ impl<'a> Interpreter<'a> {
             cairo(context.save(), "save clip path state")?;
             let filled = (|| {
                 context.transform(cairo_matrix(path.transform()));
-                append_path(&context, path.path())?;
+                append_path(
+                    &context,
+                    path.path(),
+                    self.geometry.is_region.then_some(self.geometry),
+                    true,
+                )?;
                 cairo(context.fill(), "fill clip area")
             })();
             let restored = cairo(context.restore(), "restore clip path state");
@@ -1090,7 +1510,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn draw_path(&self, path: &PathData) -> Result<()> {
-        self.draw_with_clip(|context| draw_path_unmasked(context, &self.state, path))
+        self.draw_with_clip(|context| draw_path_unmasked(context, &self.state, path, self.geometry))
     }
 
     fn draw_glyph_run(&self, run: &PreparedGlyphRun) -> Result<()> {
@@ -1106,6 +1526,7 @@ impl<'a> Interpreter<'a> {
                 width,
                 height,
                 self.image_interpolation,
+                self.geometry,
             )
         })
     }
@@ -1118,6 +1539,7 @@ fn draw_image_unmasked(
     width: f64,
     height: f64,
     interpolation: ImageInterpolation,
+    geometry: &RenderGeometry,
 ) -> Result<()> {
     let pattern = SurfacePattern::create(&image.surface);
     pattern.set_extend(Extend::Pad);
@@ -1128,8 +1550,22 @@ fn draw_image_unmasked(
 
     cairo(context.save(), "save image state")?;
     let drawn = (|| {
-        context.rectangle(0.0, 0.0, width, height);
-        context.clip();
+        if geometry.is_region {
+            clip_transformed_rect_to_region(
+                context,
+                geometry,
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width,
+                    height,
+                },
+                context.matrix(),
+            )?;
+        } else {
+            context.rectangle(0.0, 0.0, width, height);
+            context.clip();
+        }
         context.scale(
             width / f64::from(image.width),
             height / f64::from(image.height),
@@ -1316,8 +1752,18 @@ fn draw_glyph_run_unmasked(
     Ok(())
 }
 
-fn draw_path_unmasked(context: &Context, state: &PaintState, path: &PathData) -> Result<()> {
-    append_path(context, path)?;
+fn draw_path_unmasked(
+    context: &Context,
+    state: &PaintState,
+    path: &PathData,
+    geometry: &RenderGeometry,
+) -> Result<()> {
+    append_path(
+        context,
+        path,
+        geometry.is_region.then_some(geometry),
+        state.stroke.is_none(),
+    )?;
     context.set_fill_rule(cairo_fill_rule(state.fill_rule));
     apply_stroke_state(context, state)?;
     paint_current_path(context, state)?;
@@ -1364,24 +1810,157 @@ fn paint_current_path(context: &Context, state: &PaintState) -> Result<()> {
     cairo(context.status(), "finish painting current path")
 }
 
-fn append_path(context: &Context, path: &PathData) -> Result<()> {
+fn safe_path_coordinate(value: f64) -> bool {
+    value.is_finite() && value.abs() <= MAX_CAIRO_PATH_COORDINATE
+}
+
+fn validate_device_point(context: &Context, x: f64, y: f64) -> Result<()> {
+    let (x, y) = context.matrix().transform_point(x, y);
+    if !safe_path_coordinate(x) || !safe_path_coordinate(y) {
+        return Err(Error::InvalidGeometry {
+            primitive: "path",
+            field: "device coordinates",
+            value: format!("({x}, {y}) exceeds Cairo's fixed-point path domain"),
+        });
+    }
+    Ok(())
+}
+
+/// A fill-only rectangle may be intersected without inventing stroke edges.
+/// Arbitrary paths retain their shape or fail explicitly when unrepresentable.
+fn append_bounded_rectangle(
+    context: &Context,
+    path: &PathData,
+    geometry: &RenderGeometry,
+) -> Result<bool> {
+    let points = match path.commands() {
+        [PathCommand::MoveTo(a), PathCommand::LineTo(b), PathCommand::LineTo(c), PathCommand::LineTo(d), PathCommand::Close] => {
+            [*a, *b, *c, *d]
+        }
+        [PathCommand::MoveTo(a), PathCommand::LineTo(b), PathCommand::LineTo(c), PathCommand::LineTo(d), PathCommand::LineTo(e), PathCommand::Close]
+            if a == e =>
+        {
+            [*a, *b, *c, *d]
+        }
+        _ => return Ok(false),
+    };
+    let matrix = context.matrix();
+    let points = points.map(|point| matrix.transform_point(point.x(), point.y()));
+    if points
+        .iter()
+        .all(|&(x, y)| safe_path_coordinate(x) && safe_path_coordinate(y))
+    {
+        return Ok(false);
+    }
+    // Require a nondegenerate axis-aligned rectangle in device space; sheared
+    // rectangles and diagonal polygons cannot use this exact clipping path.
+    let [(ax, ay), (bx, by), (cx, cy), (dx, dy)] = points;
+    if !points.iter().all(|&(x, y)| x.is_finite() && y.is_finite())
+        || !((ax == bx && by == cy && cx == dx && dy == ay && ax != cx && ay != cy)
+            || (ay == by && bx == cx && cy == dy && dx == ax && ax != cx && ay != cy))
+    {
+        return Ok(false);
+    }
+    let left = ax.min(cx).clamp(0.0, f64::from(geometry.pixel_width));
+    let top = ay.min(cy).clamp(0.0, f64::from(geometry.pixel_height));
+    let right = ax.max(cx).clamp(0.0, f64::from(geometry.pixel_width));
+    let bottom = ay.max(cy).clamp(0.0, f64::from(geometry.pixel_height));
+    context.identity_matrix();
+    context.rectangle(left, top, right - left, bottom - top);
+    context.set_matrix(matrix);
+    cairo(context.status(), "construct bounded rectangle")?;
+    Ok(true)
+}
+
+/// A line/Bezier fill lies within the hull of all its endpoints and controls.
+/// This only skips a provably disjoint hull; arcs and stroked paths need wider
+/// bounds and deliberately do not use this shortcut.
+fn fill_hull_outside_region(context: &Context, path: &PathData, geometry: &RenderGeometry) -> bool {
+    let matrix = context.matrix();
+    let (mut left, mut top, mut right, mut bottom) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    let mut finite = true;
+    let mut include = |point: Point| {
+        let (x, y) = matrix.transform_point(point.x(), point.y());
+        finite &= x.is_finite() && y.is_finite();
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x);
+        bottom = bottom.max(y);
+    };
+    for command in path.commands() {
+        match *command {
+            PathCommand::MoveTo(point) | PathCommand::LineTo(point) => include(point),
+            PathCommand::QuadraticTo { control, end } => {
+                include(control);
+                include(end);
+            }
+            PathCommand::CubicTo {
+                control1,
+                control2,
+                end,
+            } => {
+                include(control1);
+                include(control2);
+                include(end);
+            }
+            PathCommand::ArcTo { .. } => return false,
+            PathCommand::Close => (),
+        }
+    }
+    finite
+        && left.is_finite()
+        && (right < 0.0
+            || bottom < 0.0
+            || left > f64::from(geometry.pixel_width)
+            || top > f64::from(geometry.pixel_height))
+}
+
+fn append_path(
+    context: &Context,
+    path: &PathData,
+    region: Option<&RenderGeometry>,
+    clip_rectangle: bool,
+) -> Result<()> {
     context.new_path();
+    if let Some(geometry) = region {
+        if clip_rectangle
+            && (fill_hull_outside_region(context, path, geometry)
+                || append_bounded_rectangle(context, path, geometry)?)
+        {
+            return Ok(());
+        }
+    }
     let mut current: Option<Point> = None;
     let mut subpath_start: Option<Point> = None;
     for command in path.commands() {
         match *command {
             PathCommand::MoveTo(point) => {
+                if region.is_some() {
+                    validate_device_point(context, point.x(), point.y())?;
+                }
                 context.move_to(point.x(), point.y());
                 current = Some(point);
                 subpath_start = Some(point);
             }
             PathCommand::LineTo(point) => {
+                if region.is_some() {
+                    validate_device_point(context, point.x(), point.y())?;
+                }
                 context.line_to(point.x(), point.y());
                 current = Some(point);
             }
             PathCommand::QuadraticTo { control, end } => {
                 let start =
                     current.ok_or_else(|| invalid_display_list("quadratic without start"))?;
+                if region.is_some() {
+                    validate_device_point(context, control.x(), control.y())?;
+                    validate_device_point(context, end.x(), end.y())?;
+                }
                 context.curve_to(
                     start.x() + (control.x() - start.x()) * 2.0 / 3.0,
                     start.y() + (control.y() - start.y()) * 2.0 / 3.0,
@@ -1397,6 +1976,11 @@ fn append_path(context: &Context, path: &PathData) -> Result<()> {
                 control2,
                 end,
             } => {
+                if region.is_some() {
+                    validate_device_point(context, control1.x(), control1.y())?;
+                    validate_device_point(context, control2.x(), control2.y())?;
+                    validate_device_point(context, end.x(), end.y())?;
+                }
                 context.curve_to(
                     control1.x(),
                     control1.y(),
@@ -1416,7 +2000,20 @@ fn append_path(context: &Context, path: &PathData) -> Result<()> {
                 end,
             } => {
                 let start = current.ok_or_else(|| invalid_display_list("arc without start"))?;
-                append_arc(context, start, rx, ry, rotation, large, sweep, end)?;
+                if region.is_some() {
+                    validate_device_point(context, end.x(), end.y())?;
+                }
+                append_arc(
+                    context,
+                    start,
+                    rx,
+                    ry,
+                    rotation,
+                    large,
+                    sweep,
+                    end,
+                    region.is_some(),
+                )?;
                 current = Some(end);
             }
             PathCommand::Close => {
@@ -1438,6 +2035,7 @@ fn append_arc(
     large: bool,
     sweep: bool,
     end: Point,
+    check_coordinates: bool,
 ) -> Result<()> {
     if rx == 0.0 || ry == 0.0 || (start.x() == end.x() && start.y() == end.y()) {
         if start.x() != end.x() || start.y() != end.y() {
@@ -1519,6 +2117,13 @@ fn append_arc(
         context.rotate(phi);
         context.scale(rx, ry);
         cairo(context.status(), "apply arc ellipse transform")?;
+        if check_coordinates {
+            // Conservative bound including the cubic control points Cairo may
+            // use when approximating the ellipse.
+            for (x, y) in [(-2.0, -2.0), (2.0, -2.0), (-2.0, 2.0), (2.0, 2.0)] {
+                validate_device_point(context, x, y)?;
+            }
+        }
         if sweep {
             context.arc(0.0, 0.0, 1.0, start_angle, start_angle + delta);
         } else {

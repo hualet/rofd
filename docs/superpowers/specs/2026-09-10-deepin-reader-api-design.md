@@ -24,11 +24,23 @@ graphics state and path, preserve diagnostic reporting and image/font services.
 Decoded source images remain subject to the existing bounded decoder/cache
 contracts; region rendering does not promise partial source-image decoding.
 
-Acceptance: exact full-page vs stitched-tile pixels at four rotations,
+Acceptance: exact geometric/image full-page vs stitched-tile pixels at four rotations,
 fractional DPI/scale, nonzero page origins, clips, transparency and images;
 large canvas with small budget successfully renders a small tile; invalid
 viewport/target and FFI overlap tests. Rendering traverses the page display list,
 but never creates a full-page raster before cropping.
+
+Implementation evidence refines the original universal byte-equality proposal:
+Cairo curve/glyph antialias coverage can depend on target extents even when the
+CTM is identical (including a viewport at origin zero). Keep exact grid/geometry
+tests and separate bounded magnitude/count comparisons for these edges. The
+fixed invoice has 21 differing channels at delta <=2 at 50.8 DPI, and eight at
+delta <=1 in the 254 DPI C consumer. Do not mistake these for DPI rounding seams.
+
+Large canvas acceptance is separate from Cairo's geometric domain:
+bound huge page clips and axis-aligned filled/image rectangles to the tile,
+and fail explicitly for unsafe arbitrary paths. Successful
+blank output caused by fixed-point overflow is not an acceptable fallback.
 
 ## P1: metadata and warnings
 
@@ -72,6 +84,13 @@ checks. Do not push or tag as part of this feature task.
 
 ## Source references
 
+- Primary source: repository `learning/GBT_33190-2016_电子文件存储与交换格式版式文档.pdf`,
+  printed p22 (Outlines), pp73-76 (Action/Dest/URI/GotoA). The scanned standard
+  was visually checked. Dest Type, PageID, Left, Top, Right, Bottom and Zoom are
+  XML attributes; some ofdrw setters emit numeric children instead. Accept
+  normative attributes first; any producer compatibility handling must be
+  explicit and tested. Action Event is DO/PO/CLICK; Region is optional and
+  defaults to the enclosing graphic/page boundary. GotoA NewWindow defaults true.
 - Existing `crates/rofd-render/src/cairo_renderer.rs` and FFI safety helpers.
 - Existing semantic API design: `2026-09-09-poppler-style-c-semantic-api-design.md`.
 - ofdrw official core models: `basicStructure/outlines/CT_OutlineElem.java`,

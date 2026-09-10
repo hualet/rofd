@@ -2,6 +2,8 @@
 #include <type_traits>
 
 #include "rofd.h"
+static_assert(std::is_standard_layout_v<rofd_pixel_rect_t>, "pixel rectangle layout");
+static_assert(sizeof(rofd_pixel_rect_t) == 20, "pixel viewport ABI size");
 
 static_assert(ROFD_ABI_VERSION == 1u, "unexpected ABI version");
 static_assert(std::is_standard_layout_v<rofd_rect_t>,
@@ -51,6 +53,14 @@ static_assert(std::is_same_v<decltype(&rofd_page_get_selected_text),
               "unexpected selection declaration");
 
 int main() {
+    rofd_pixel_rect_t viewport;
+    rofd_pixel_rect_init(&viewport, sizeof(viewport));
+    if (viewport.struct_size != sizeof(viewport) ||
+        rofd_renderer_get_pixel_canvas_size(nullptr, nullptr, nullptr, nullptr,
+                                             nullptr, nullptr) != ROFD_STATUS_INVALID_ARGUMENT ||
+        rofd_renderer_render_page_region_cairo(nullptr, nullptr, nullptr, nullptr,
+                                               &viewport, nullptr, nullptr) != ROFD_STATUS_INVALID_ARGUMENT)
+        return 1;
     rofd_load_options_t load_options;
     rofd_renderer_options_t renderer_options;
     rofd_render_options_t render_options;

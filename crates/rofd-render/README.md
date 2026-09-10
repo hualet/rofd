@@ -62,6 +62,51 @@ Cairo dimensions, insufficient target surfaces, allocation failures, and budget
 excesses are returned as structured errors. Rendering preserves the caller's
 Cairo graphics state and current path on both success and recoverable failure.
 
+## Pixel viewport rendering
+
+`CairoRenderer::pixel_canvas_size` calculates the final rotated/scaled canvas
+with `ceil` pixel dimensions. It accepts positive dimensions through `i32::MAX`
+without applying raster allocation limits. Existing `pixel_size` and full-page
+rendering retain their Cairo dimension and memory-budget checks.
+
+Use `render_page_region` or `render_page_region_with_services` with a `PixelRect`
+to render part of that final canvas into the target's top-left corner. The
+viewport must have nonnegative coordinates, positive dimensions, and lie
+entirely inside the canvas. Output is limited to the viewport extent, including
+when the caller provides a larger target. `RenderOptions::clip` remains an
+absolute page-space millimetre clip; it does not resize the canvas or viewport.
+
+The page transform subtracts the exact integer viewport origin, preserving the
+requested DPI and scale. The raster budget covers viewport-sized destination,
+clip-mask and drawing surfaces, plus bounded decoded source images. This allows
+small views into canvases larger than Cairo's 32767-pixel image limit. The whole
+page display list is still lowered and traversed; this API does not yet perform
+object-level spatial culling. Source images are still decoded at their full
+bounded source resolution. Embedded mini-OFD stamps preserve their original
+sampling dimensions but rasterize only the source region sampled by the current
+viewport, with a two-pixel interpolation halo. That source region can be larger
+than the output tile when an annotation shrinks the seal; it uses the remaining
+raster budget after the parent target and prepared image sources are accounted
+for. Existing full-page stamp rendering is unchanged.
+
+Cairo's path coordinates use a smaller fixed-point domain than the canvas-size
+API. Region rendering bounds page/option/stamp rectangles and fill-only
+axis-aligned path rectangles before passing them to Cairo. It skips fill-only
+line/Bezier paths whose complete control hull is provably outside the viewport.
+Other display-list path or clip coordinates outside the conservative
+±4,000,000 device-pixel range produce `Error::InvalidGeometry` rather than a
+successful but incorrectly blank raster. This guard is conservative for
+strokes and arcs; it does not implement arbitrary geometric clipping. Full-page
+rendering retains its existing behavior. Image boundary rectangles use the same
+bounded clipping while retaining the original source sampling transform.
+
+Rectangular geometry, clipping, image sampling, and stamp positioning are tested
+against full-page pixels at all four rotations and fractional DPI/scale. Cairo
+can produce slightly different antialias coverage when tessellating curves or
+culling glyph edges against a smaller destination extent, so byte-for-byte
+identity with full-page rendering is not guaranteed. Tests separately bound
+these sparse edge differences while retaining exact geometry/image checks.
+
 ## Font resolution and glyph positioning
 
 `SystemFontResolver` owns one configured `fontdb` snapshot, so callers may use

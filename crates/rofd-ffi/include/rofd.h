@@ -166,6 +166,23 @@ typedef struct rofd_render_options {
     uint64_t max_raster_bytes;
 } rofd_render_options_t;
 
+/** Rectangle in the final rotated/scaled full-page pixel canvas. Initialize
+ * with rofd_pixel_rect_init, then set nonnegative x/y and positive width/height.
+ * The full rectangle must lie inside the canvas; it is never silently clamped. */
+typedef struct rofd_pixel_rect {
+    uint32_t struct_size;
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+} rofd_pixel_rect_t;
+
+/** Initialize the supported prefix to an empty rectangle; set dimensions before
+ * rendering. NULL and undersized capacities are no-ops. Unknown tails are
+ * preserved; struct_size receives the selected supported version size. Non-NULL
+ * storage with sufficient capacity must be aligned and writable for that prefix. */
+void rofd_pixel_rect_init(rofd_pixel_rect_t *rect, size_t capacity);
+
 typedef struct rofd_rect {
     double x_mm;
     double y_mm;
@@ -370,6 +387,19 @@ rofd_status_t rofd_renderer_get_pixel_size(
     int32_t *pixel_width,
     int32_t *pixel_height,
     rofd_error_t **error);
+/** Compute the final full-page pixel canvas (ceil after DPI/scale/rotation).
+ * Unlike get_pixel_size, this accepts positive dimensions up to INT32_MAX
+ * without requiring a full-page Cairo surface or full-page raster budget.
+ * Options are validated and NULL uses defaults. Renderer/page and both scalar
+ * outputs are required. Input handles and options must be live, immutable and
+ * disjoint from writable aligned outputs; outputs must be mutually disjoint.
+ * Invalid input or output address layouts leave all outputs untouched. Overlaps preserve
+ * ordinary outputs but may populate an independent valid error slot. Other
+ * failures initialize valid scalar outputs to zero. */
+rofd_status_t rofd_renderer_get_pixel_canvas_size(
+    const rofd_renderer_t *renderer, const rofd_page_t *page,
+    const rofd_render_options_t *options, int32_t *pixel_width,
+    int32_t *pixel_height, rofd_error_t **error);
 /**
  * Render a page into a borrowed Cairo context.
  *
@@ -390,6 +420,25 @@ rofd_status_t rofd_renderer_render_page_cairo(
     const rofd_render_options_t *options,
     rofd_render_report_t **report,
     rofd_error_t **error);
+/** Render directly into a viewport-sized borrowed Cairo target. viewport is
+ * required and its initialized struct_size must cover the supported prefix;
+ * larger record tails are ignored. Pixel (viewport.x, viewport.y) in the final
+ * full-page canvas maps to target (0, 0). Target dimensions must be at least
+ * viewport.width/height; drawing stays within that rectangle. clip_mm remains
+ * an absolute physical-page millimetre clip, independent of viewport origin.
+ * Working masks/intermediates and their raster budget use viewport dimensions;
+ * decoded source images still use the existing bounded decoder/cache contract.
+ * Invalid rectangles return INVALID_ARGUMENT, without silent clipping.
+ * Cairo borrowing, synchronization and optional report ownership follow
+ * render_page_cairo. The viewport prefix must also remain live, aligned,
+ * readable and disjoint from report/error outputs. Invalid input or output address layouts
+ * leave outputs untouched. Overlaps preserve ordinary outputs but may populate
+ * an independent valid error slot. Other failures null the report.
+ * No input or output may be concurrently mutated during this call. */
+rofd_status_t rofd_renderer_render_page_region_cairo(
+    const rofd_renderer_t *renderer, const rofd_page_t *page, cairo_t *cairo,
+    const rofd_render_options_t *options, const rofd_pixel_rect_t *viewport,
+    rofd_render_report_t **report, rofd_error_t **error);
 void rofd_renderer_free(rofd_renderer_t *renderer);
 
 /** Borrow a live report and return its diagnostic count. report and
