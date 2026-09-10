@@ -1,58 +1,35 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Scope and Layout
 
-This Rust 2021 workspace is migrating from a legacy renderer to a reusable OFD library. Active development belongs in `crates/rofd-core/`; its public API is exported from `src/lib.rs`, implementation modules live beside it, and integration tests are in `crates/rofd-core/tests/`. The root `src/` tree contains the legacy parser and Cairo renderer. The optional Qt/QML prototype lives under `src/bin/rofd/`. Repository fixtures are under `tests/fixtures/`, visual assets under `resources/`, and design or implementation notes under `docs/superpowers/`. The ofdrw-migrated compatibility tests live in `tests/ofdrw-compat/`: real-world `.ofd` fixtures copied from ofdrw, ported parsing assertions, and rendering comparisons against ofdrw-rendered reference PNGs (see its `README.md` and `PROVENANCE.md`). Treat `learning/` as reference material, not production code.
+This Rust 2021 workspace is migrating from a legacy renderer to reusable OFD crates. Put production work in `crates/rofd-core/`, `crates/rofd-render/`, and `crates/rofd-ffi/`; keep `rofd-core` independent of GUI and rendering dependencies. The root `src/` tree is the legacy parser/Cairo renderer, and `src/bin/rofd/` is the optional Qt/QML reader. Fixtures live in `tests/fixtures/`, assets in `resources/`, plans in `docs/superpowers/`, and provenance-tracked ofdrw compatibility tests in `tests/ofdrw-compat/`. Treat `learning/` as reference material only.
 
-## Build, Test, and Development Commands
+## Build and Test
 
-- `cargo test -p rofd-core` runs the primary library test suite and matches CI.
-- `cargo test -p ofdrw-compat` runs the ofdrw-migrated compatibility suite (not in `default-members`); rendering comparisons need system Noto CJK fonts, and the reference PNGs are regenerated only via `tests/ofdrw-compat/tools/render-references.sh` (requires JDK and Maven).
-- `cargo fmt --all -- --check` verifies formatting without modifying files; run `cargo fmt --all` to apply it.
-- `cargo clippy -p rofd-core --all-targets -- -D warnings` enforces the CI lint policy.
-- `cargo test -p rofd` exercises the legacy root package when changing legacy code.
-- `cargo run -p rofd --features qt-reader --bin rofd [file.ofd]` launches the prototype; it requires Qt6 development packages and Cairo.
-- `rofd-render`'s default `jbig2` feature decodes JBIG2 images through the system jbig2dec library (Debian: `libjbig2dec0-dev`), located via pkg-config like Cairo and FreeType; build with `--no-default-features` to compile without it. The `-p rofd` flag is needed because the root package is not in the workspace's `default-members`.
-- `dpkg-buildpackage -us -uc -b` builds the Debian packages (`rofd` Qt/QML app, `librofd-ffi0`, `librofd-ffi-dev`) from `debian/`; it needs a Rust toolchain newer than the distro's (image 0.25 requires Rust 1.88), e.g. via rustup.
+- `cargo fmt --all -- --check`
+- `cargo clippy -p rofd-core -p rofd-render -p rofd-ffi --all-targets -- -D warnings`
+- `cargo test -p rofd-core` for the primary suite; `cargo test --workspace --all-targets` for the full workspace.
+- `cargo test -p ofdrw-compat` for real-world parsing/rendering checks; it is outside `default-members` and needs Noto CJK fonts.
+- `crates/rofd-ffi/tests/run_c_tests.sh` for C11/C++17 ABI and dynamic-link checks.
+- `cargo test -p rofd` when changing legacy code.
+- `cargo build --release -p rofd-ffi -p rofd --features rofd/qt-reader` for the shipped FFI library and Qt reader.
+- `cargo run -p rofd --features qt-reader --bin rofd [file.ofd]` to launch the reader; Qt6 and Cairo development packages are required.
+- `dpkg-buildpackage -us -uc -b` builds Debian packages. A rustup toolchain may be needed because `image 0.25` requires Rust 1.88.
 
-CI runs in the `docker.io/hualet/deepin:25.1-builder` container: `.github/workflows/build.yml` verifies formatting, Clippy, tests, and the release build on every push and pull request, and `.github/workflows/deb.yml` builds the Debian packages and attaches them to the GitHub release when a `v*` tag is pushed.
+`rofd-render` enables system `jbig2dec` support by default; use `--no-default-features` only when deliberately building without it. Regenerate ofdrw reference PNGs only with `tests/ofdrw-compat/tools/render-references.sh`, then inspect them before committing.
 
-## Version Bumps & Releases
+## Versioning and Releases
 
-Keep these places in sync when bumping the version; the tag `v<X.Y.Z>` must match the version in `debian/changelog`:
+For a release, update the root and crate versions in `Cargo.toml`, `crates/rofd-core/Cargo.toml`, `crates/rofd-render/Cargo.toml`, and `crates/rofd-ffi/Cargo.toml`; update `crates/rofd-core/tests/public_api.rs`, run Cargo to refresh `Cargo.lock`, prepend `debian/changelog`, and make the `debian/rules` library filename match the `rofd-ffi` crate version. The `vX.Y.Z` tag must match the Debian version.
 
-- `Cargo.toml` (root package): the reader application version.
-- `crates/rofd-core/Cargo.toml`, `crates/rofd-render/Cargo.toml`, `crates/rofd-ffi/Cargo.toml`: each crate versions independently (`rofd-core` is ahead of the others). Run any cargo command afterwards so `Cargo.lock` picks up the new versions.
-- `debian/changelog`: add a new `rofd (X.Y.Z-1) unstable; urgency=medium` entry on top (e.g. with `dch -v X.Y.Z-1`).
-- `debian/rules`: the installed library filename `librofd_ffi.so.0.1.0` mirrors the `rofd-ffi` crate version.
-- `crates/rofd-ffi/build.rs`: the SONAME `librofd_ffi.so.0` is the ABI major version; bump the trailing number only when the C ABI breaks, not on every release.
+Keep the C ABI SONAME in `crates/rofd-ffi/build.rs` at `librofd_ffi.so.0` unless the ABI major changes. Never force-push, delete, or move a published tag; publish a new tag if correction is required.
 
-## Coding Style & Naming Conventions
+## Code and API Rules
 
-Use standard `rustfmt` output (four-space indentation). Name modules, functions, and test cases in `snake_case`; types and traits use `UpperCamelCase`; constants use `SCREAMING_SNAKE_CASE`. Keep public `rofd-core` APIs documented: the crate denies missing documentation and forbids unsafe code. Prefer small modules, explicit errors, and resource-bounded parsing for untrusted OFD archives.
+Use standard `rustfmt` naming and formatting. Keep public `rofd-core` APIs documented; the crate denies missing docs and forbids unsafe code. Prefer small modules, explicit errors, and resource-bounded parsing of untrusted archives.
 
-## Public C API Compatibility
+Use Poppler GLib only as a usability reference for `rofd.h`: document and page handles are independently owned, and page queries have matching free functions. Do not expose GLib types or PDF-only concepts. Preserve all published v1 symbols and structures, opaque handles, `struct_size` versioning, transactional outputs, overlap checks, panic containment, bounded inputs, and exact status/error reporting. Extend the ABI additively; Rust APIs remain idiomatic and need not mirror C layouts.
 
-Design the public `rofd.h` reader API so a C consumer familiar with Poppler's
-GLib API can transfer its document/page usage model: acquire a document, acquire
-an independently owned page, then perform page-level text, selection, search,
-layout, link, annotation, and image-mapping queries with explicit matching free
-functions. Treat Poppler as a usability reference, not an ABI dependency: rofd
-must not expose GLib types, copy Poppler-specific PDF concepts, or weaken its
-existing status/error reporting, opaque handles, `struct_size` versioning,
-transactional outputs, pointer-overlap checks, panic containment, and bounded
-untrusted-input handling. Preserve every published v1 symbol and structure;
-prefer additive APIs and compatibility aliases only when they materially improve
-migration. Rust-internal and Rust-public APIs should remain idiomatic and may
-use whatever ownership, caching, indexing, and type structure best fits OFD;
-they are not required to mirror Poppler naming or object layout.
+## Tests and Reviews
 
-## Testing Guidelines
-
-Add unit tests beside private implementation details and integration tests in `crates/rofd-core/tests/` for public behavior. Use behavior-focused names such as `multiple_doc_bodies_are_explicitly_unsupported_in_v02`. Reuse helpers from `tests/support/` and repository fixtures when realistic packages matter. There is no stated coverage threshold; every bug fix should include a regression test.
-
-## Commit & Pull Request Guidelines
-
-Follow the repository's Conventional Commit pattern: `feat(core): ...`, `fix(render): ...`, `test(core): ...`, `docs: ...`, or `build: ...`. Keep commits focused and use an imperative, concise subject. Pull requests should explain motivation and behavior changes, link relevant issues or design notes, and list verification commands. Include screenshots for Qt/QML or rendered-output changes, and ensure formatting, Clippy, and affected tests pass before review.
-
-Never force-push, delete, or move a git tag that has already been pushed to a remote. Published tags are release artifacts; changing them breaks anyone who already fetched the tag. If a tag points to the wrong commit, create a new tag (e.g. `v0.2.3.1`) instead of rewriting the existing one.
+Add unit tests beside private code and integration tests for public behavior. Every bug fix needs a regression test; use repository fixtures when package realism matters. PRs should explain motivation and behavior, list verification commands, and include screenshots for Qt/QML or rendered-output changes.
