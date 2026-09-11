@@ -1,3 +1,12 @@
+rofd (0.4.0-1) unstable; urgency=medium
+
+  * Add pixel viewport rendering without allocating a full-page raster.
+  * Expose metadata, DocID, keywords, and parsing warning snapshots.
+  * Add document outlines, destinations, and page link mappings through
+    the Rust API and additive C ABI.
+
+ -- HualetWang <hualet@hualet.org>  Fri, 11 Sep 2026 08:35:51 +0800
+
 rofd (0.3.0-1) unstable; urgency=medium
 
   * Add bounded, cached page text semantics together with C APIs for
