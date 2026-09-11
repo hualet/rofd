@@ -25,7 +25,10 @@ pub struct ResourceLimits {
     /// per-call cap, while [`crate::PathData::parse_with_limit`] accepts the
     /// equivalent cap explicitly. During [`crate::Document`] page conversion,
     /// this configured value is a cumulative budget shared by every path on
-    /// one page. The default is 250,000 commands.
+    /// one page. Independently, [`crate::Page::links`] shares this budget across
+    /// all effective action-region segments on the page, including repeated
+    /// template/resource references and annotation appearances. The default is
+    /// 250,000 commands.
     pub max_path_commands: usize,
     /// Maximum number of layers, groups, leaf objects, and clip structures on
     /// one page.
@@ -37,6 +40,10 @@ pub struct ResourceLimits {
     /// Independently, a lazy document navigation query uses this as an aggregate
     /// cap on selected outline/bookmark XML elements, including action children
     /// and unknown extensions. Unrelated document elements are not charged.
+    /// [`crate::Page::links`] independently charges every effective layer,
+    /// graphic object, visible annotation, and selected action XML element to
+    /// one aggregate budget; repeated references are charged on each use.
+    /// Deferred action XML is also bounded per source before page expansion.
     pub max_page_objects: usize,
     /// Maximum nesting depth of page blocks or template references on one page,
     /// and independently of outline nodes during a lazy navigation query.

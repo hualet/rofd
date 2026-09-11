@@ -80,6 +80,35 @@ parent container transform, not through that object's CTM a second time (a
 Map explicit local Region geometry through the content transform. Region bounds
 are conservative; cubic control points may be absent, defaulting to the current
 point and endpoint respectively.
+Standard Region command names are `Move`, `Line`, `QuadraticBezier`,
+`CubicBezier`, `Arc`, and `Close`. Close returns to the current subpath start.
+
+Implementation: retain deferred actions privately with shared ownership on the
+existing effective object graph, so template/composite expansion does not copy
+action strings. One source Action produces one list entry; its action array
+initially contains one element. Page-root actions precede effective layers;
+object actions precede their children; visible annotations follow page content.
+Template-root actions use anchors in the effective layer order, including empty
+templates. Invalid explicit regions fail in strict mode or skip the link with a
+warning in lenient mode; never replace them with an invented whole-page region.
+Resolve named bookmarks independently of outline semantics and only when needed.
+Action capture binds only action-bearing owners by structural position, so unused
+empty resource entries do not spend the effective page budget. Repeated template
+and composite uses share source storage but each use consumes the cumulative
+object/action-node, region-command, and expanded-string query budgets. Any limit
+failure is fatal in both modes and publishes no link cache or navigation warnings.
+The older annotation API remains tolerant and can publish `AnnotationSkipped`;
+its cache also retains the first resource-limit failure so links cannot silently
+accept truncated annotations, regardless of which API initialized that cache.
+
+The C snapshot adds `rofd_page_get_links`, link-list count, per-link region/action
+counts, indexed region/action/destination queries, and `rofd_link_list_free`.
+Reuse `rofd_rect_t`, `rofd_action_t`, and `rofd_destination_t`; strings and regions
+survive page/document free. All indices are zero-based and any invalid list,
+region or action index returns `PAGE_OUT_OF_RANGE`. Ordinary region-output
+failures zero the rectangle; versioned action/destination transactions are the
+same as outline queries. First query can add parse warnings. Queries never run
+an action, including file URIs and attachment actions.
 
 ## ABI and delivery
 

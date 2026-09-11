@@ -6,11 +6,19 @@ use crate::{Error, Result};
 
 pub(crate) struct StringBudget {
     remaining: u64,
+    limit: u64,
 }
 
 impl StringBudget {
     pub(crate) fn new(limit: u64) -> Self {
-        Self { remaining: limit }
+        Self {
+            remaining: limit,
+            limit,
+        }
+    }
+
+    pub(crate) fn used(&self) -> u64 {
+        self.limit - self.remaining
     }
 
     fn exceeded() -> Error {

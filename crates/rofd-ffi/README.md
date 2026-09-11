@@ -6,6 +6,31 @@ link with `rofd_ffi` plus Cairo. Check `rofd_abi_version()` against
 `ROFD_ABI_VERSION` before using an ABI whose version is not already known by
 the application.
 
+## Page link mappings
+
+`rofd_page_get_links` returns an independently owned immutable snapshot, including
+an empty non-null list for pages without links. Query its count, then each link's
+region/action counts and indexed values. One source Action currently produces
+one link entry with one action and one or more region rectangles. Same-area
+actions remain separate entries in deterministic source/effective content order.
+Root actions precede content, objects precede children and visible annotations
+follow page content; actions are not restricted to Link annotation labels.
+
+Regions use absolute physical-page millimetres, with applicable object/ancestor
+transforms already applied. Explicit Region Areas become conservative bounding
+rectangles, not exact hit-test paths; rendering DPI/rotation are not applied.
+Fallback object Boundary is transformed only by the parent, not by the object's
+CTM twice. Invalid explicit regions fail in strict mode or skip that link with a
+warning in lenient mode; they never silently become whole-page links.
+
+Action/destination queries reuse `rofd_action_t` and `rofd_destination_t`, with
+the same presence flags, versioning and transactional output rules as outlines.
+Any invalid link/region/action index returns `PAGE_OUT_OF_RANGE`; ordinary count
+and rectangle failures zero the output. All snapshot strings/regions survive
+page/document free, but strings expire when `rofd_link_list_free` releases it.
+First query may add warnings. No action is executed, including `file:` URIs and
+attachments; consumers should filter CLICK events for mouse hit testing.
+
 ## Outline and navigation actions
 
 `rofd_document_get_outline` returns an independently owned preorder snapshot.
@@ -309,7 +334,7 @@ rectangles to the tile; unsafe extreme path coordinates return
   calls may share live handles across threads, but no handle may be freed while
   in use. Cairo access and synchronization remain the caller's responsibility.
 
-The v1 surface intentionally defers link and image mappings, richer annotation
+The v1 surface intentionally defers image mappings, richer annotation
 and signature queries, progressive rendering, callbacks,
 custom font providers, non-Cairo backends, and advanced composite or color-space
 controls.

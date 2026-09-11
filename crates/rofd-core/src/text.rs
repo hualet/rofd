@@ -116,6 +116,7 @@ impl CharacterGlyphMap {
 /// An immutable validated OFD text object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextObject {
+    pub(crate) actions: crate::navigation::deferred::Actions,
     pub(crate) object_id: u64,
     pub(crate) boundary: Rect,
     pub(crate) transform: Transform,

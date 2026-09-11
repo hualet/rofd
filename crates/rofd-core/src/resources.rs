@@ -206,6 +206,7 @@ enum ResourceEntry {
 #[derive(Debug)]
 struct VectorGraphicRecord {
     content: Vec<crate::raw::GraphicUnit>,
+    actions: crate::navigation::deferred::Actions,
     declaration_path: String,
 }
 
@@ -322,7 +323,9 @@ impl ResourceCatalog {
         let mut catalog = Self::empty();
         catalog.strictness = strictness;
         for (path, bytes) in documents {
-            let extracted = crate::document::extract_rich_objects(&bytes, path, lenient)?;
+            let mut actions = crate::navigation::deferred::extract(&bytes, path.as_str(), limits)?;
+            let extracted =
+                crate::document::extract_rich_objects(&actions.sanitized, path, lenient)?;
             for unit in extracted.skipped {
                 skipped_units.push((path.as_str().to_owned(), unit));
             }
@@ -335,6 +338,7 @@ impl ResourceCatalog {
                     message: error.to_string(),
                 })?;
             crate::document::inject_rich_objects_into_resource(&mut root, extracted.rich, path)?;
+            actions.resources(&mut root);
             if strictness == crate::Strictness::Strict && root.fonts.len() > 1 {
                 return Err(Error::InvalidStructure {
                     path: path.as_str().to_owned(),
@@ -618,6 +622,10 @@ impl ResourceCatalog {
             }
         }
         let _ = (width, height);
+        let actions = entry
+            .content
+            .as_ref()
+            .and_then(|content| content.actions.clone());
         let content = entry
             .content
             .map(|content| content.objects)
@@ -634,6 +642,7 @@ impl ResourceCatalog {
             id,
             ResourceEntry::VectorGraphic(VectorGraphicRecord {
                 content,
+                actions,
                 declaration_path: path.as_str().to_owned(),
             }),
             path,
@@ -647,6 +656,17 @@ impl ResourceCatalog {
             Some(other) => Err(kind_mismatch(id, ResourceKind::VectorGraphic, other.kind())),
             None => Err(Error::UnknownResource { object_id: id }),
         }
+    }
+
+    pub(crate) fn vector_graphic_actions(
+        &self,
+        id: u64,
+    ) -> Result<crate::navigation::deferred::Actions> {
+        self.vector_graphic_units(id)?;
+        Ok(match self.entries.get(&id) {
+            Some(ResourceEntry::VectorGraphic(record)) => record.actions.clone(),
+            _ => None,
+        })
     }
 
     fn insert_color_space(&mut self, entry: ColorSpaceEntry, path: &PackagePath) -> Result<()> {

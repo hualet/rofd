@@ -30,7 +30,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         (
             "Page.xml",
-            r#"<Page><Area><PhysicalBox>0 0 100 100</PhysicalBox></Area></Page>"#,
+            r#"<Page><Area><PhysicalBox>0 0 100 100</PhysicalBox></Area><Actions>
+              <Action Event="PO"><URI URI="file:///not-opened"/></Action>
+              <Action Event="CLICK"><Region>
+                <Area Start="1 2"><Line Point1="4 2"/><Line Point1="4 6"/><Close/></Area>
+                <Area Start="10 20"><Line Point1="15 20"/><Line Point1="15 28"/><Close/></Area>
+              </Region><Goto><Dest Type="XYZ" PageID="42" Left="12.5" Top="24" Zoom="0"/></Goto></Action>
+              <Action Event="CLICK"><GotoA AttachID="attached-file" NewWindow="false"/></Action>
+              <Action Event="CUSTOM"><Movie ResourceID="99"/></Action>
+            </Actions><Content><Layer ID="1"><PathObject ID="2" Boundary="10 20 20 10" CTM="20 0 0 10 0 0" Stroke="false" Fill="true"><AbbreviatedData>M 0 0 L 1 0 L 1 1 C</AbbreviatedData><Actions><Action Event="CLICK"><URI URI="relative" Base="https://example.invalid/"/></Action></Actions></PathObject></Layer></Content></Page>"#,
         ),
     ] {
         zip.start_file(path, SimpleFileOptions::default())?;

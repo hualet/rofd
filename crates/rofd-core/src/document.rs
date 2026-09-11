@@ -116,10 +116,38 @@ struct DocumentInner {
     stamp_annotations: OnceLock<Vec<crate::StampAnnotation>>,
     stamp_initialization: Mutex<()>,
     annotations_path: Option<PackagePath>,
-    page_annotations: OnceLock<Vec<crate::PageAnnotation>>,
+    page_annotations: OnceLock<PageAnnotations>,
     page_annotation_initialization: Mutex<()>,
     navigation: OnceLock<crate::navigation::NavigationData>,
     navigation_initialization: Mutex<()>,
+    bookmarks: OnceLock<crate::navigation::BookmarkData>,
+    bookmark_initialization: Mutex<()>,
+    navigation_warning_state: Mutex<NavigationWarningState>,
+}
+
+#[derive(Debug, Default)]
+struct NavigationWarningState {
+    bookmarks: bool,
+    historical_paths: std::collections::HashSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct PageAnnotations {
+    annotations: Vec<crate::PageAnnotation>,
+    // Preserve only the first original limit message. The public annotation
+    // API remains tolerant, but navigation must not mistake truncated content
+    // for a complete successful result, regardless of cache initialization order.
+    first_limit: Option<String>,
+}
+
+impl PageAnnotations {
+    fn record_limit(&mut self, error: &Error) {
+        if let Error::LimitExceeded(message) = error {
+            if self.first_limit.is_none() {
+                self.first_limit = Some(message.clone());
+            }
+        }
+    }
 }
 
 /// A read-only OFD document.
@@ -135,6 +163,9 @@ struct PageData {
     layers: Vec<crate::Layer>,
     semantic_text: OnceLock<crate::PageText>,
     semantic_text_initialization: Mutex<()>,
+    navigation_anchors: Vec<(usize, crate::navigation::deferred::Actions)>,
+    links: OnceLock<Vec<crate::PageLink>>,
+    links_initialization: Mutex<()>,
 }
 
 #[derive(Debug)]
@@ -142,6 +173,7 @@ struct TemplateData {
     layers: Vec<crate::Layer>,
     usage: crate::content::ContentUsage,
     referenced_templates: Vec<u64>,
+    navigation_anchors: Vec<(usize, crate::navigation::deferred::Actions)>,
 }
 
 /// One parsed page in an OFD document.
@@ -217,6 +249,46 @@ impl Page {
         }
         let text = crate::semantic::build_page_text(self)?;
         Ok(self.data.semantic_text.get_or_init(|| text))
+    }
+
+    /// Returns inert actions and conservative clickable regions in page millimetres.
+    ///
+    /// Each source action has a separate entry. Results and warnings are shared
+    /// by cloned page handles; malformed explicit regions never become fallback
+    /// page-sized targets. Page actions precede effective template/layer content;
+    /// visible annotation actions and appearances follow it. Graphic owner
+    /// actions precede their children. No action is executed by this library.
+    ///
+    /// Explicit region areas use the full content transform and retain separate
+    /// conservative bounds (Bezier control hulls or full corrected ellipses),
+    /// without clipping or occlusion hit-testing. Without an explicit region,
+    /// the owner boundary uses only its parent transform; absent boundaries use
+    /// the physical page. Strict mode rejects invalid region geometry; lenient
+    /// mode skips the affected link or transformed subtree with a warning.
+    ///
+    /// Object/action XML and region-command budgets apply cumulatively to the
+    /// effective page, including repeated references and annotations. Expanded
+    /// strings and diagnostics share an independent `max_entry_size` budget.
+    /// Resource limits are fatal in both modes. Failed queries publish neither
+    /// a link cache nor navigation warnings and can be retried. Named bookmarks
+    /// are resolved independently of unrelated outline errors.
+    pub fn links(&self) -> Result<&[crate::PageLink]> {
+        if let Some(links) = self.data.links.get() {
+            return Ok(links);
+        }
+        let _initialization = self
+            .data
+            .links_initialization
+            .lock()
+            .map_err(|_| Error::Internal("page links initialization lock poisoned".into()))?;
+        if let Some(links) = self.data.links.get() {
+            return Ok(links);
+        }
+        let document = Document(Arc::clone(&self._document));
+        let (links, warnings, bookmarks_used) =
+            crate::links::build(self, &document, &self.data.navigation_anchors)?;
+        document.commit_navigation_warnings(bookmarks_used, warnings)?;
+        Ok(self.data.links.get_or_init(|| links))
     }
 
     /// Returns the immutable resource limits used to validate this page and its document.
@@ -447,6 +519,9 @@ impl Document {
             page_annotation_initialization: Mutex::new(()),
             navigation: OnceLock::new(),
             navigation_initialization: Mutex::new(()),
+            bookmarks: OnceLock::new(),
+            bookmark_initialization: Mutex::new(()),
+            navigation_warning_state: Mutex::new(NavigationWarningState::default()),
         })))
     }
 
@@ -496,14 +571,76 @@ impl Document {
             &self.0.limits,
             self.0.strictness,
             &pages,
+            self.bookmarks()?,
         )?;
-        let mut committed = self
+        self.commit_navigation_warnings(true, warnings)?;
+        Ok(&self.0.navigation.get_or_init(|| data).outlines)
+    }
+
+    pub(crate) fn page_indices(&self) -> Vec<(u64, usize)> {
+        self.0
+            .pages
+            .iter()
+            .enumerate()
+            .map(|(index, page)| (page.id, index))
+            .collect()
+    }
+
+    pub(crate) fn bookmarks(&self) -> Result<&crate::navigation::BookmarkData> {
+        if let Some(data) = self.0.bookmarks.get() {
+            return Ok(data);
+        }
+        let _initialization = self
+            .0
+            .bookmark_initialization
+            .lock()
+            .map_err(|_| Error::Internal("bookmark initialization lock poisoned".into()))?;
+        if let Some(data) = self.0.bookmarks.get() {
+            return Ok(data);
+        }
+        let bytes = self.0.container.read(&self.0.document_path)?;
+        let data = crate::navigation::parse_bookmarks(
+            &bytes,
+            self.0.document_path.as_str(),
+            &self.0.limits,
+            self.0.strictness,
+            &self.page_indices(),
+        )?;
+        Ok(self.0.bookmarks.get_or_init(|| data))
+    }
+
+    pub(crate) fn commit_navigation_warnings(
+        &self,
+        bookmarks_used: bool,
+        mut pending: Vec<Warning>,
+    ) -> Result<()> {
+        let mut state = self
+            .0
+            .navigation_warning_state
+            .lock()
+            .map_err(|_| Error::Internal("navigation warning lock poisoned".into()))?;
+        if bookmarks_used && !state.bookmarks {
+            let mut bookmark_warnings = self.bookmarks()?.warnings.clone();
+            bookmark_warnings.append(&mut pending);
+            pending = bookmark_warnings;
+        }
+        let mut warnings = self
             .0
             .warnings
             .lock()
-            .map_err(|_| Error::Internal("document warning lock poisoned".to_owned()))?;
-        committed.extend(warnings);
-        Ok(&self.0.navigation.get_or_init(|| data).outlines)
+            .map_err(|_| Error::Internal("document warning lock poisoned".into()))?;
+        for warning in pending {
+            if warning.code == WarningCode::NavigationCompatibility
+                && warning.message
+                    == "accepted historical OFD navigation namespace http://www.ofdspec.org"
+                && !state.historical_paths.insert(warning.path.clone())
+            {
+                continue;
+            }
+            warnings.push(warning);
+        }
+        state.bookmarks |= bookmarks_used;
+        Ok(())
     }
 
     /// Looks up a font resource after atomically validating all declared catalogs.
@@ -693,23 +830,25 @@ impl Document {
             crate::LayerSource::Page,
         )
         .map_err(|error| with_error_path(error, &reference.path))?;
-        let layers = self
-            .merge_effective_layers(
-                page.templates,
-                direct_layers,
-                direct_usage,
-                &reference.path,
-                &mut Vec::new(),
-            )?
-            .layers;
+        let effective = self.merge_effective_layers(
+            page.templates,
+            direct_layers,
+            direct_usage,
+            page.actions,
+            &reference.path,
+            &mut Vec::new(),
+        )?;
         let parsed = Arc::new(PageData {
             size,
             application_box,
             content_box,
             bleed_box,
-            layers,
+            layers: effective.layers,
             semantic_text: OnceLock::new(),
             semantic_text_initialization: Mutex::new(()),
+            navigation_anchors: effective.navigation_anchors,
+            links: OnceLock::new(),
+            links_initialization: Mutex::new(()),
         });
         if let Some(warning) = pending_warning {
             self.push_warning(warning)?;
@@ -768,35 +907,48 @@ impl Document {
     /// [`WarningCode::AnnotationSkipped`]; only lock-poisoning internal
     /// errors surface as `Err`.
     pub fn page_annotations(&self) -> Result<Vec<crate::PageAnnotation>> {
+        Ok(self.page_annotations_cache()?.annotations.to_vec())
+    }
+
+    pub(crate) fn page_annotations_ref(&self) -> Result<&[crate::PageAnnotation]> {
+        let cached = self.page_annotations_cache()?;
+        if let Some(message) = &cached.first_limit {
+            return Err(Error::LimitExceeded(message.clone()));
+        }
+        Ok(&cached.annotations)
+    }
+
+    fn page_annotations_cache(&self) -> Result<&PageAnnotations> {
         if let Some(annotations) = self.0.page_annotations.get() {
-            return Ok(annotations.clone());
+            return Ok(annotations);
         }
         let _initialization = self.0.page_annotation_initialization.lock().map_err(|_| {
             Error::Internal("page annotation initialization lock is poisoned".to_owned())
         })?;
         if let Some(annotations) = self.0.page_annotations.get() {
-            return Ok(annotations.clone());
+            return Ok(annotations);
         }
         let parsed = self.load_page_annotations();
-        Ok(self.0.page_annotations.get_or_init(|| parsed).clone())
+        Ok(self.0.page_annotations.get_or_init(|| parsed))
     }
 
-    fn load_page_annotations(&self) -> Vec<crate::PageAnnotation> {
+    fn load_page_annotations(&self) -> PageAnnotations {
+        let mut annotations = PageAnnotations::default();
         let Some(entry_path) = self.0.annotations_path.clone() else {
-            return Vec::new();
+            return annotations;
         };
         let entry: raw::AnnotationsRoot =
-            match parse_xml(&self.0.container, &entry_path, self.0.limits.max_xml_depth) {
+            match parse_annotations_xml(&self.0.container, &entry_path, &self.0.limits) {
                 Ok(entry) => entry,
                 Err(error) => {
+                    annotations.record_limit(&error);
                     self.push_annotation_warning(
                         entry_path.as_str(),
                         format!("annotations entry file could not be parsed: {error}"),
                     );
-                    return Vec::new();
+                    return annotations;
                 }
             };
-        let mut annotations = Vec::new();
         for page in entry.pages {
             self.load_annotation_page(&entry_path, page, &mut annotations);
         }
@@ -807,7 +959,7 @@ impl Document {
         &self,
         entry_path: &PackagePath,
         page: raw::AnnotationPageEntry,
-        annotations: &mut Vec<crate::PageAnnotation>,
+        annotations: &mut PageAnnotations,
     ) {
         let page_ref = match page.page_id.parse::<u64>() {
             Ok(page_ref) => page_ref,
@@ -839,6 +991,7 @@ impl Document {
         let root = match parse_page_annot_xml(&self.0.container, &annot_path, &self.0.limits) {
             Ok(root) => root,
             Err(error) => {
+                annotations.record_limit(&error);
                 self.push_annotation_warning(
                     annot_path.as_str(),
                     format!("page annotation file could not be parsed: {error}"),
@@ -856,14 +1009,15 @@ impl Document {
         path: &PackagePath,
         page_ref: u64,
         annot: raw::AnnotEntry,
-        annotations: &mut Vec<crate::PageAnnotation>,
+        annotations: &mut PageAnnotations,
     ) {
         match crate::content::convert_annotation(annot, self, &self.0.limits, path.as_str()) {
             Ok(mut annotation) => {
                 annotation.page_ref = page_ref;
-                annotations.push(annotation);
+                annotations.annotations.push(annotation);
             }
             Err(error) => {
+                annotations.record_limit(&error);
                 self.push_annotation_warning(path.as_str(), format!("annotation skipped: {error}"))
             }
         }
@@ -1029,6 +1183,13 @@ impl Document {
         self.resource_catalog()?.vector_graphic_units(id)
     }
 
+    pub(crate) fn vector_graphic_actions(
+        &self,
+        id: u64,
+    ) -> Result<crate::navigation::deferred::Actions> {
+        self.resource_catalog()?.vector_graphic_actions(id)
+    }
+
     pub(crate) fn resolve_paint_color(
         &self,
         color: &raw::PaintColor,
@@ -1110,6 +1271,7 @@ impl Document {
                 root.templates,
                 direct_layers,
                 direct_usage,
+                root.actions,
                 &reference.path,
                 active,
             )
@@ -1127,11 +1289,14 @@ impl Document {
         template_references: Vec<crate::raw::TemplateReference>,
         direct_layers: Vec<crate::Layer>,
         mut usage: crate::content::ContentUsage,
+        direct_actions: crate::navigation::deferred::Actions,
         path: &PackagePath,
         active: &mut Vec<u64>,
     ) -> Result<TemplateData> {
         let mut background_templates = Vec::new();
         let mut foreground_templates = Vec::new();
+        let mut background_anchors = Vec::new();
+        let mut foreground_anchors = Vec::new();
         let mut referenced_templates = Vec::with_capacity(template_references.len());
         for template in template_references {
             usage = add_effective_usage(
@@ -1158,9 +1323,15 @@ impl Document {
             usage = add_effective_usage(usage, resolved.usage, &self.0.limits)?;
             match z_order {
                 TemplateZOrder::Background => {
+                    background_anchors.extend(resolved.navigation_anchors.iter().map(
+                        |(index, actions)| (index + background_templates.len(), actions.clone()),
+                    ));
                     background_templates.extend(resolved.layers.iter().cloned())
                 }
                 TemplateZOrder::Foreground => {
+                    foreground_anchors.extend(resolved.navigation_anchors.iter().map(
+                        |(index, actions)| (index + foreground_templates.len(), actions.clone()),
+                    ));
                     foreground_templates.extend(resolved.layers.iter().cloned())
                 }
             }
@@ -1177,14 +1348,23 @@ impl Document {
                 crate::LayerType::Foreground => foreground.push(layer),
             }
         }
+        if direct_actions.is_some() {
+            background_anchors.insert(0, (0, direct_actions));
+        }
         background_templates.extend(background);
         background_templates.extend(body);
         background_templates.extend(foreground);
+        background_anchors.extend(
+            foreground_anchors
+                .into_iter()
+                .map(|(index, actions)| (index + background_templates.len(), actions)),
+        );
         background_templates.extend(foreground_templates);
         Ok(TemplateData {
             layers: background_templates,
             usage,
             referenced_templates,
+            navigation_anchors: background_anchors,
         })
     }
 }
@@ -1340,9 +1520,11 @@ fn parse_page_xml(
     strictness: crate::Strictness,
 ) -> Result<(raw::PageRoot, Vec<SkippedGraphicUnit>)> {
     let bytes = container.read(path)?;
-    preflight_page_xml(&bytes, path, limits, strictness)?;
+    preflight_xml_depth(&bytes, path, limits.max_xml_depth)?;
+    let mut actions = crate::navigation::deferred::extract(&bytes, path.as_str(), limits)?;
+    preflight_page_xml(&actions.sanitized, path, limits, strictness)?;
     let lenient = strictness == crate::Strictness::Lenient;
-    let extracted = extract_rich_objects(&bytes, path, lenient)?;
+    let extracted = extract_rich_objects(&actions.sanitized, path, lenient)?;
     let mut deserializer =
         serde_xml_rs::Deserializer::new_from_reader(extracted.sanitized.as_slice())
             .non_contiguous_seq_elements(true);
@@ -1351,6 +1533,7 @@ fn parse_page_xml(
         message: error.to_string(),
     })?;
     inject_rich_objects(&mut page, extracted.rich, path)?;
+    actions.page(&mut page);
     Ok((page, extracted.skipped))
 }
 
@@ -1363,7 +1546,8 @@ fn parse_page_annot_xml(
 ) -> Result<raw::PageAnnotRoot> {
     let bytes = container.read(path)?;
     preflight_xml_depth(&bytes, path, limits.max_xml_depth)?;
-    let extracted = extract_rich_objects(&bytes, path, true)?;
+    let mut actions = crate::navigation::deferred::extract(&bytes, path.as_str(), limits)?;
+    let extracted = extract_rich_objects(&actions.sanitized, path, true)?;
     let mut deserializer =
         serde_xml_rs::Deserializer::new_from_reader(extracted.sanitized.as_slice())
             .non_contiguous_seq_elements(true);
@@ -1390,6 +1574,49 @@ fn parse_page_annot_xml(
                 path,
             )?;
         }
+    }
+    finish_rich_injection(paths, texts, images, path)?;
+    actions.annotations(&mut root.annots);
+    Ok(root)
+}
+
+fn parse_annotations_xml(
+    container: &Container,
+    path: &PackagePath,
+    limits: &crate::ResourceLimits,
+) -> Result<raw::AnnotationsRoot> {
+    let bytes = container.read(path)?;
+    preflight_xml_depth(&bytes, path, limits.max_xml_depth)?;
+    let mut actions = crate::navigation::deferred::extract(&bytes, path.as_str(), limits)?;
+    let extracted = extract_rich_objects(&actions.sanitized, path, true)?;
+    let mut deserializer =
+        serde_xml_rs::Deserializer::new_from_reader(extracted.sanitized.as_slice())
+            .non_contiguous_seq_elements(true);
+    let mut root =
+        raw::AnnotationsRoot::deserialize(&mut deserializer).map_err(|error| Error::Xml {
+            path: path.as_str().into(),
+            message: error.to_string(),
+        })?;
+    let RichObjects {
+        paths,
+        texts,
+        images,
+    } = extracted.rich;
+    let (mut paths, mut texts, mut images) =
+        (paths.into_iter(), texts.into_iter(), images.into_iter());
+    for page in &mut root.pages {
+        for annot in &mut page.inline_annots {
+            if let Some(appearance) = &mut annot.appearance {
+                inject_rich_units(
+                    &mut appearance.objects,
+                    &mut paths,
+                    &mut texts,
+                    &mut images,
+                    path,
+                )?;
+            }
+        }
+        actions.annotations(&mut page.inline_annots);
     }
     finish_rich_injection(paths, texts, images, path)?;
     Ok(root)

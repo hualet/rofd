@@ -60,6 +60,7 @@ impl ImageBorder {
 /// An immutable validated OFD raster-image object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageObject {
+    pub(crate) actions: crate::navigation::deferred::Actions,
     pub(crate) object_id: u64,
     pub(crate) boundary: Rect,
     pub(crate) transform: Transform,

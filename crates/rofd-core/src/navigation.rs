@@ -2,6 +2,8 @@
 
 pub(crate) mod actions;
 mod budget;
+pub(crate) mod deferred;
+pub(crate) mod region;
 pub(crate) mod xml;
 
 use std::collections::HashMap;
@@ -127,7 +129,6 @@ pub struct OutlineNode {
 #[derive(Debug)]
 pub(crate) struct NavigationData {
     pub(crate) outlines: Vec<OutlineNode>,
-    pub(crate) bookmarks: HashMap<String, Option<Destination>>,
 }
 
 pub(crate) fn parse_navigation(
@@ -136,9 +137,23 @@ pub(crate) fn parse_navigation(
     limits: &ResourceLimits,
     strictness: Strictness,
     pages: &[(u64, usize)],
+    bookmarks: &BookmarkData,
 ) -> Result<(NavigationData, Vec<Warning>)> {
-    let xml = NavigationXml::read(bytes, path, limits)?;
-    let mut parser = ActionParser::new(path, strictness, pages, limits.max_entry_size);
+    let mut remaining = limits.clone();
+    remaining.max_page_objects = limits
+        .max_page_objects
+        .checked_sub(bookmarks.xml_nodes)
+        .ok_or_else(|| Error::LimitExceeded("navigation XML node budget exceeded".into()))?;
+    remaining.max_entry_size = limits
+        .max_entry_size
+        .checked_sub(bookmarks.arena_bytes)
+        .ok_or_else(|| Error::LimitExceeded("navigation XML string budget exceeded".into()))?;
+    let xml = NavigationXml::read(bytes, path, &remaining, true, false)?;
+    let string_limit = limits
+        .max_entry_size
+        .checked_sub(bookmarks.string_bytes)
+        .ok_or_else(|| Error::LimitExceeded("expanded navigation string budget exceeded".into()))?;
+    let mut parser = ActionParser::new(path, strictness, pages, string_limit);
     if xml.historical_namespace {
         parser.warn(
             WarningCode::NavigationCompatibility,
@@ -147,7 +162,94 @@ pub(crate) fn parse_navigation(
     }
     let mut data = NavigationData {
         outlines: Vec::new(),
+    };
+    let mut pending = Vec::new();
+    for root in xml
+        .roots
+        .iter()
+        .copied()
+        .rev()
+        .filter(|&i| xml.nodes[i].is("Outlines"))
+    {
+        for node in xml.children(root, "OutlineElem").rev() {
+            pending.push((node, None, 1usize));
+        }
+    }
+    let mut last_children: Vec<Option<usize>> = Vec::new();
+    let mut last_root: Option<usize> = None;
+    while let Some((node, parent, depth)) = pending.pop() {
+        if depth > limits.max_page_block_depth {
+            return Err(Error::LimitExceeded(format!(
+                "navigation depth exceeds {} in {path}",
+                limits.max_page_block_depth
+            )));
+        }
+        let required = parser.required(&xml.nodes[node], "Title");
+        let title = parser.recover(required)?.unwrap_or_default();
+        let title = parser.string(title)?;
+        let expanded = parser.boolean(&xml.nodes[node], "Expanded", true)?;
+        let mut actions = Vec::new();
+        for container in xml.children(node, "Actions") {
+            actions.extend(parser.actions(&xml, container, &bookmarks.bookmarks)?);
+        }
+        let index = data.outlines.len();
+        data.outlines.push(OutlineNode {
+            title,
+            parent,
+            first_child: None,
+            next_sibling: None,
+            expanded,
+            actions,
+        });
+        last_children.push(None);
+        let previous = if let Some(parent) = parent {
+            if data.outlines[parent].first_child.is_none() {
+                data.outlines[parent].first_child = Some(index);
+            }
+            last_children[parent].replace(index)
+        } else {
+            last_root.replace(index)
+        };
+        if let Some(previous) = previous {
+            data.outlines[previous].next_sibling = Some(index);
+        }
+        for child in xml.children(node, "OutlineElem").rev() {
+            pending.push((child, Some(index), depth + 1));
+        }
+    }
+    Ok((data, parser.warnings))
+}
+
+#[derive(Debug)]
+pub(crate) struct BookmarkData {
+    pub(crate) bookmarks: HashMap<String, Option<Destination>>,
+    pub(crate) warnings: Vec<Warning>,
+    xml_nodes: usize,
+    arena_bytes: u64,
+    string_bytes: u64,
+}
+
+pub(crate) fn parse_bookmarks(
+    bytes: &[u8],
+    path: &str,
+    limits: &ResourceLimits,
+    strictness: Strictness,
+    pages: &[(u64, usize)],
+) -> Result<BookmarkData> {
+    let xml = NavigationXml::read(bytes, path, limits, false, true)?;
+    let mut parser = ActionParser::new(path, strictness, pages, limits.max_entry_size);
+    if xml.historical_namespace {
+        parser.warn(
+            WarningCode::NavigationCompatibility,
+            format_args!("accepted historical OFD navigation namespace http://www.ofdspec.org"),
+        )?;
+    }
+    let mut data = BookmarkData {
         bookmarks: HashMap::new(),
+        warnings: Vec::new(),
+        xml_nodes: xml.nodes.len(),
+        arena_bytes: xml.retained_bytes,
+        string_bytes: 0,
     };
     for root in xml
         .roots
@@ -181,59 +283,8 @@ pub(crate) fn parse_navigation(
             }
         }
     }
-    let mut pending = Vec::new();
-    for root in xml
-        .roots
-        .iter()
-        .copied()
-        .rev()
-        .filter(|&i| xml.nodes[i].is("Outlines"))
-    {
-        for node in xml.children(root, "OutlineElem").rev() {
-            pending.push((node, None, 1usize));
-        }
-    }
-    let mut last_children: Vec<Option<usize>> = Vec::new();
-    let mut last_root: Option<usize> = None;
-    while let Some((node, parent, depth)) = pending.pop() {
-        if depth > limits.max_page_block_depth {
-            return Err(Error::LimitExceeded(format!(
-                "navigation depth exceeds {} in {path}",
-                limits.max_page_block_depth
-            )));
-        }
-        let required = parser.required(&xml.nodes[node], "Title");
-        let title = parser.recover(required)?.unwrap_or_default();
-        let title = parser.string(title)?;
-        let expanded = parser.boolean(&xml.nodes[node], "Expanded", true)?;
-        let mut actions = Vec::new();
-        for container in xml.children(node, "Actions") {
-            actions.extend(parser.actions(&xml, container, &data.bookmarks)?);
-        }
-        let index = data.outlines.len();
-        data.outlines.push(OutlineNode {
-            title,
-            parent,
-            first_child: None,
-            next_sibling: None,
-            expanded,
-            actions,
-        });
-        last_children.push(None);
-        let previous = if let Some(parent) = parent {
-            if data.outlines[parent].first_child.is_none() {
-                data.outlines[parent].first_child = Some(index);
-            }
-            last_children[parent].replace(index)
-        } else {
-            last_root.replace(index)
-        };
-        if let Some(previous) = previous {
-            data.outlines[previous].next_sibling = Some(index);
-        }
-        for child in xml.children(node, "OutlineElem").rev() {
-            pending.push((child, Some(index), depth + 1));
-        }
-    }
-    Ok((data, parser.warnings))
+
+    data.string_bytes = parser.string_bytes();
+    data.warnings = parser.warnings;
+    Ok(data)
 }

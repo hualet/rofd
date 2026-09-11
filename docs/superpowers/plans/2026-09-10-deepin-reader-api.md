@@ -88,18 +88,32 @@ neither partial cache nor warnings. The real z.ofd fixture resolves five nodes.
 
 ## Task 4: P2 page link mappings
 
-Files: core `src/{navigation,raw,document,page}.rs` as existing module layout
-requires; FFI navigation module/header; fixture, Rust and C consumer tests.
+Files: core `src/{links,navigation,raw,document,content,resources}.rs` and
+`src/navigation/{deferred,region}.rs`; FFI links module/header; fixture, Rust
+and C consumer tests.
 
-- [ ] Add tests for page/object/annotation actions, explicit multi-area Region,
+- [x] Add tests for page/object/annotation actions, explicit multi-area Region,
   translated/transformed fallback boundary, internal/URI/attachment/unknown
   actions, action order and invalid coordinates. Assert non-execution.
-- [ ] Run failing tests; implement page-space rectangle mapping and reuse shared
+- [x] Run failing tests; implement page-space rectangle mapping and reuse shared
   action resolution. Snapshot owns all regions, strings and destinations.
-- [ ] Add C count/index/region/action accessors, lifetime, invalid-index, NULL,
+- [x] Add C count/index/region/action accessors, lifetime, invalid-index, NULL,
   overlap and consumer tests. Document conservative rectangle geometry.
-- [ ] Verify build/tests/Clippy/C consumers; review and commit
+- [x] Verify build/tests/Clippy/C consumers; review and commit
   `feat(core): expose page link mappings`.
+
+P2 verification: workspace/all-targets 555 passed, 0 failed, 2 intentional
+ignores; core suite including doctests 319 passed. Release FFI/Qt build, format,
+strict Clippy and C11/C++17 dynamic consumers/symbol checks passed. Coverage
+includes 23 core link tests, all 19 outline regressions, five FFI link tests,
+and nonempty C snapshot queries after freeing document/page handles.
+Review regressions cover sparse action-owner binding, unused resource catalogs,
+shared captures with cumulative effective budgets, annotation limits in both
+cache orders, and historical namespace ancestry. Independent core spec and FFI
+spec/quality reviews approved. The independent final core quality/integration
+review channels exhausted their quota; the coordinator completed the remaining
+review directly, with no further blocking findings. This is not an independent
+final core-quality sign-off.
 
 ## Execution environment
 

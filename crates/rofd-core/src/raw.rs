@@ -140,6 +140,8 @@ pub(crate) struct CompositeGraphicUnit {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct CompositeGraphicContent {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     #[allow(dead_code)]
     pub(crate) id: Option<String>,
@@ -276,6 +278,8 @@ pub(crate) struct PageEntry {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PageRoot {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     pub(crate) area: Option<PageArea>,
     #[serde(rename = "Template", default)]
     pub(crate) templates: Vec<TemplateReference>,
@@ -298,6 +302,8 @@ pub(crate) struct PageContent {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Layer {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
     #[serde(rename = "Type")]
@@ -322,6 +328,8 @@ pub(crate) enum GraphicUnit {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PageBlock {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
     #[serde(rename = "$value", default)]
@@ -331,6 +339,8 @@ pub(crate) struct PageBlock {
 /// Attributes-only payload, so it parses through the main serde pass.
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct CompositeObject {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
     #[serde(rename = "Boundary")]
@@ -370,6 +380,8 @@ pub(crate) struct PathObjectEnvelope {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PathObject {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
     /// Optional because real-world producers omit it (ofdrw's
@@ -413,6 +425,8 @@ pub(crate) struct PathObject {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct TextObject {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
     #[serde(rename = "Boundary")]
@@ -521,6 +535,8 @@ pub(crate) struct RawGlyph {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ImageObject {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
     #[serde(rename = "Boundary")]
@@ -635,6 +651,8 @@ pub(crate) struct PageAnnotRoot {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct AnnotEntry {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "ID")]
     pub(crate) id: Option<String>,
     #[serde(rename = "Type")]
@@ -648,6 +666,8 @@ pub(crate) struct AnnotEntry {
 /// The inline `Appearance` page block of an annotation.
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct AppearanceRaw {
+    #[serde(skip)]
+    pub(crate) actions: crate::navigation::deferred::Actions,
     #[serde(rename = "Boundary")]
     pub(crate) boundary: Option<String>,
     #[serde(rename = "$value", default)]

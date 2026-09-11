@@ -62,3 +62,39 @@ Named bookmark destination strings are charged before copying, so repeated
 references cannot amplify a small XML entry into unbounded memory. Budget
 errors are fatal in both strict and lenient modes and publish neither partial
 cache nor warnings.
+
+`Page::links()` returns a shared immutable list of inert `PageLink` values, one
+per source action. Page-root actions come first, followed by effective content
+in background/page/foreground order. Template-root actions precede their
+content, including empty templates; graphic owners precede their children.
+Visible annotations and their appearances follow the page layers, regardless
+of annotation type. Events and unknown action types remain inspectable; links
+do not decode images, load fonts, open URIs, or execute actions.
+
+An explicit `Region` yields a separate conservative page-millimetre rectangle
+for each `Area`, transformed through its owner's CTM, boundary translation,
+and parent content transforms. Bezier bounds include control points; arc bounds
+include the full corrected ellipse, not only the swept arc. OFD radius
+normalization, `Move`, and `Close` semantics are preserved. These rectangles
+are not exact clipping/occlusion hit masks. Without an explicit region, only
+the parent transform applies to the owner boundary (not the owner's own CTM);
+an absent boundary uses the physical page. Invalid explicit regions never
+become page-sized fallbacks: strict queries fail; lenient queries skip the
+affected link or invalid transformed subtree and emit `NavigationInvalid`.
+
+Action XML is captured in bounded shared arenas before content conversion.
+Template and composite expansion copy only `Arc` handles to this data. Link
+queries independently charge effective layers, graphic objects, visible
+annotations, and all selected action XML nodes to one `max_page_objects`
+budget; region segments share one `max_path_commands` budget. Repeated source
+references consume both budgets on every use. Expanded action/destination
+strings and diagnostics share one `max_entry_size` byte budget per query.
+Successful results and navigation warnings are committed once across page
+clones; failed queries publish neither a link cache nor navigation warnings.
+The existing annotation loader can separately publish `AnnotationSkipped`.
+Its tolerant public annotation result never hides resource limits from links:
+the first original limit failure is retained alongside the annotation cache and
+returned as `LimitExceeded` by links even if annotations were queried first.
+Bookmark resolution is cached independently from
+outlines, so unrelated malformed outlines do not block links, and links without
+named bookmark references do not parse the bookmark table.

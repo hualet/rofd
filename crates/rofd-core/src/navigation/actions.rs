@@ -44,6 +44,14 @@ impl<'a> ActionParser<'a> {
         self.budget.copy(value)
     }
 
+    pub(crate) fn string_bytes(&self) -> u64 {
+        self.budget.used()
+    }
+
+    pub(crate) fn set_path(&mut self, path: &'a str) {
+        self.path = path;
+    }
+
     pub(crate) fn required<'n>(&mut self, node: &'n XmlNode, field: &str) -> Result<&'n str> {
         node.attribute(field).ok_or_else(|| {
             self.error(format_args!(
@@ -65,7 +73,7 @@ impl<'a> ActionParser<'a> {
         }
     }
 
-    fn error(&mut self, arguments: fmt::Arguments<'_>) -> Error {
+    pub(crate) fn error(&mut self, arguments: fmt::Arguments<'_>) -> Error {
         let built = (|| {
             let message = self.budget.format(arguments)?;
             let path = self.budget.copy(self.path)?;
@@ -131,7 +139,7 @@ impl<'a> ActionParser<'a> {
             .collect()
     }
 
-    fn action(
+    pub(crate) fn action(
         &mut self,
         xml: &NavigationXml,
         index: usize,

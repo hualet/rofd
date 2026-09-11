@@ -35,6 +35,7 @@ pub enum LayerSource {
 /// An ordered layer of page objects.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
+    pub(crate) actions: crate::navigation::deferred::Actions,
     object_id: u64,
     kind: LayerType,
     source: LayerSource,
@@ -103,6 +104,9 @@ impl PageObject {
 /// page, with no automatic scaling to the boundary size.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompositeObject {
+    pub(crate) actions: crate::navigation::deferred::Actions,
+    pub(crate) action_boundary: Option<Rect>,
+    pub(crate) content_actions: crate::navigation::deferred::Actions,
     object_id: u64,
     boundary: Rect,
     transform: Transform,
@@ -140,6 +144,7 @@ impl CompositeObject {
 /// An ordered group of page objects.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageGroup {
+    pub(crate) actions: crate::navigation::deferred::Actions,
     object_id: u64,
     objects: Vec<PageObject>,
 }
@@ -216,6 +221,9 @@ impl AnnotationType {
 /// One page annotation with its inline appearance page block.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageAnnotation {
+    pub(crate) actions: crate::navigation::deferred::Actions,
+    pub(crate) action_boundary: Option<Rect>,
+    pub(crate) appearance_actions: crate::navigation::deferred::Actions,
     pub(crate) page_ref: u64,
     object_id: u64,
     kind: AnnotationType,
@@ -291,6 +299,11 @@ pub(crate) fn convert_annotation(
     };
     let object_id = context.resolve_object_id(annot.id.as_deref())?;
     context.register_id(object_id)?;
+    let appearance_present = annot.appearance.is_some();
+    let appearance_actions = annot
+        .appearance
+        .as_ref()
+        .and_then(|appearance| appearance.actions.clone());
     let (boundary, objects) = match annot.appearance {
         Some(appearance) => {
             let boundary = appearance
@@ -323,6 +336,9 @@ pub(crate) fn convert_annotation(
         ),
     };
     Ok(PageAnnotation {
+        actions: annot.actions,
+        action_boundary: appearance_present.then_some(boundary),
+        appearance_actions,
         page_ref: 0,
         object_id,
         kind,
@@ -344,6 +360,8 @@ pub enum FillRule {
 /// A validated vector path object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PathObject {
+    pub(crate) actions: crate::navigation::deferred::Actions,
+    pub(crate) action_boundary: Option<Rect>,
     object_id: u64,
     boundary: Rect,
     transform: Transform,
@@ -498,6 +516,7 @@ pub(crate) fn convert_layers(
         };
         let objects = context.convert_objects(layer.objects)?;
         layers.push(Layer {
+            actions: layer.actions,
             object_id,
             kind,
             source,
@@ -694,7 +713,11 @@ impl ConversionContext<'_> {
                     let object_id = self.resolve_object_id(group.id.as_deref())?;
                     self.register_id(object_id)?;
                     let objects = self.convert_objects(group.objects)?;
-                    PageObject::Group(PageGroup { object_id, objects })
+                    PageObject::Group(PageGroup {
+                        actions: group.actions,
+                        object_id,
+                        objects,
+                    })
                 }
                 raw::GraphicUnit::Text(object) => {
                     let object_id = self.resolve_object_id(object.id.as_deref())?;
@@ -794,6 +817,9 @@ impl ConversionContext<'_> {
                     let objects = self.convert_objects(content);
                     self.vector_graphics.pop();
                     PageObject::Composite(CompositeObject {
+                        actions: object.actions,
+                        action_boundary: object.boundary.as_ref().map(|_| boundary),
+                        content_actions: self.document.vector_graphic_actions(resource_id)?,
                         object_id,
                         boundary,
                         transform,
@@ -904,6 +930,8 @@ impl ConversionContext<'_> {
         let clips = self.convert_clips(path.clips, object_id)?;
 
         Ok(PathObject {
+            actions: path.actions,
+            action_boundary: path.boundary.as_ref().map(|_| boundary),
             object_id,
             boundary,
             transform,
@@ -1034,6 +1062,7 @@ impl ConversionContext<'_> {
         consume(&mut self.remaining_glyphs, glyph_count, "page glyph")?;
 
         Ok(TextObject {
+            actions: text.actions,
             object_id,
             boundary,
             transform,
@@ -1351,6 +1380,7 @@ impl ConversionContext<'_> {
             .map(|border| self.convert_image_border(border, object_id))
             .transpose()?;
         Ok(ImageObject {
+            actions: image.actions,
             object_id,
             boundary,
             transform,

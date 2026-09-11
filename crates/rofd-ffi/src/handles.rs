@@ -25,6 +25,10 @@ opaque_handle!(
     rofd_outline_t,
     "Opaque independently owned document outline snapshot."
 );
+opaque_handle!(
+    rofd_link_list_t,
+    "Opaque independently owned page link snapshot."
+);
 opaque_handle!(rofd_renderer_t, "Opaque owned OFD renderer handle.");
 opaque_handle!(
     rofd_render_report_t,
@@ -103,6 +107,15 @@ pub(crate) struct OwnedOutlineNode {
 
 pub(crate) struct OutlineHandle {
     pub(crate) nodes: Vec<OwnedOutlineNode>,
+}
+
+pub(crate) struct OwnedLink {
+    pub(crate) regions: Vec<rofd_core::Rect>,
+    pub(crate) actions: Vec<OwnedAction>,
+}
+
+pub(crate) struct LinkListHandle {
+    pub(crate) links: Vec<OwnedLink>,
 }
 
 pub(crate) struct RendererHandle {
@@ -184,6 +197,12 @@ impl token_private::Sealed for rofd_outline_t {}
 
 impl HandleToken for rofd_outline_t {
     type Storage = OutlineHandle;
+}
+
+impl token_private::Sealed for rofd_link_list_t {}
+
+impl HandleToken for rofd_link_list_t {
+    type Storage = LinkListHandle;
 }
 
 impl token_private::Sealed for rofd_renderer_t {}

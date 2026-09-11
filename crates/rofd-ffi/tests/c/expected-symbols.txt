@@ -11,6 +11,13 @@ rofd_error_get_message
 rofd_error_get_status
 rofd_find_options_init
 rofd_library_version
+rofd_link_list_free
+rofd_link_list_get_action
+rofd_link_list_get_action_count
+rofd_link_list_get_action_destination
+rofd_link_list_get_count
+rofd_link_list_get_region
+rofd_link_list_get_region_count
 rofd_load_options_init
 rofd_metadata_free
 rofd_metadata_get_abstract
@@ -33,6 +40,7 @@ rofd_page_find_text
 rofd_page_find_text_with_options
 rofd_page_free
 rofd_page_get_index
+rofd_page_get_links
 rofd_page_get_selected_text
 rofd_page_get_size_mm
 rofd_page_get_text

@@ -149,6 +149,7 @@ typedef struct rofd_document rofd_document_t;
 typedef struct rofd_metadata rofd_metadata_t;
 typedef struct rofd_warning_list rofd_warning_list_t;
 typedef struct rofd_outline rofd_outline_t;
+typedef struct rofd_link_list rofd_link_list_t;
 typedef struct rofd_page rofd_page_t;
 typedef struct rofd_renderer rofd_renderer_t;
 typedef struct rofd_render_report rofd_render_report_t;
@@ -474,6 +475,61 @@ rofd_status_t rofd_outline_get_action_destination(
  * is a no-op. A non-NULL handle must be freed exactly once, without concurrent
  * readers or later uses of borrowed data. */
 void rofd_outline_free(rofd_outline_t *outline);
+
+/** Copies page links into an independently owned immutable snapshot. Empty
+ * pages return a non-NULL empty list. Each entry represents one source Action
+ * with one or more conservative axis-aligned physical-page mm rectangles.
+ * Page-root actions precede effective content, object actions precede children,
+ * and visible annotation actions follow page content. Inspect event metadata;
+ * mouse hit testing normally uses CLICK actions. No action is executed, even
+ * file URIs or attachments. First query can add parse warnings. Invalid explicit
+ * Region fails in strict mode or skips that link with a warning in lenient mode,
+ * never falling back to an invented whole-page region.
+ *
+ * Page and links are required. A non-NULL page must be live and immutable;
+ * links/optional error slots must be aligned, writable, mutually disjoint and
+ * disjoint from page storage, without conflicting concurrent accesses.
+ * Malformed address layouts leave all outputs untouched. Overlaps leave ordinary
+ * outputs untouched but may publish an independent error. Other failures null
+ * a valid links output. These preflight rules apply to every link-list query.
+ * The snapshot survives page/document free; release it with link_list_free. */
+rofd_status_t rofd_page_get_links(const rofd_page_t *page,
+                                  rofd_link_list_t **links, rofd_error_t **error);
+
+/** Link-list queries borrow a live immutable list without consuming it. Every
+ * list and output is required except error; all non-NULL outputs must be aligned,
+ * writable, mutually disjoint and disjoint from list storage. Storage must stay
+ * live without conflicting concurrent access. All indices are zero-based;
+ * invalid link/region/action indices return PAGE_OUT_OF_RANGE. Ordinary failures
+ * zero count/rectangle outputs. No borrowed string may outlive the list. */
+rofd_status_t rofd_link_list_get_count(const rofd_link_list_t *links,
+                                       size_t *count, rofd_error_t **error);
+rofd_status_t rofd_link_list_get_region_count(const rofd_link_list_t *links,
+    size_t link_index, size_t *count, rofd_error_t **error);
+/** Region coordinates already include applicable owner/ancestor transforms,
+ * independent of render DPI/rotation. Fallback Boundary is in parent coordinates
+ * and does not receive the object's CTM twice. */
+rofd_status_t rofd_link_list_get_region(const rofd_link_list_t *links,
+    size_t link_index, size_t region_index, rofd_rect_t *region_mm, rofd_error_t **error);
+rofd_status_t rofd_link_list_get_action_count(const rofd_link_list_t *links,
+    size_t link_index, size_t *count, rofd_error_t **error);
+/** Initialize struct_size for action/destination outputs; a layout-valid pointer
+ * must be readable for its initialized size and writable for a supported prefix.
+ * Ordinary failures clear the known prefix including padding, preserve the
+ * declared struct_size and leave unknown tails untouched. Strings are borrowed
+ * read-only until link_list_free, including unknown type and event names. */
+rofd_status_t rofd_link_list_get_action(const rofd_link_list_t *links,
+    size_t link_index, size_t action_index, rofd_action_t *action, rofd_error_t **error);
+/** Non-Goto actions return UNSUPPORTED. Unresolved Goto succeeds with NO_INDEX
+ * and without HAS_PAGE_INDEX. Inspect HAS_* flags before using coordinates or
+ * page_index; zero zoom means retain current zoom. Other semantics match
+ * rofd_outline_get_action_destination. */
+rofd_status_t rofd_link_list_get_action_destination(const rofd_link_list_t *links,
+    size_t link_index, size_t action_index, rofd_destination_t *destination,
+    rofd_error_t **error);
+/** NULL is a no-op; a non-NULL list must be uniquely owned, live, and freed
+ * exactly once without concurrent readers or subsequent borrowed-string uses. */
+void rofd_link_list_free(rofd_link_list_t *links);
 
 /** Borrow a live page without consuming it; its storage must be disjoint from
  * page_index and error and must not be freed during the call. */

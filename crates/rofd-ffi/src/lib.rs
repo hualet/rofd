@@ -7,6 +7,7 @@ mod abi;
 mod document;
 mod error;
 mod handles;
+mod links;
 mod metadata;
 mod navigation;
 mod region;
@@ -20,11 +21,16 @@ pub use document::{
     rofd_page_free, rofd_page_get_index, rofd_page_get_size_mm,
 };
 pub use error::{rofd_error_free, rofd_error_get_message, rofd_error_get_status};
-pub use handles::rofd_outline_t;
 pub use handles::{
     rofd_document_t, rofd_error_t, rofd_metadata_t, rofd_page_t, rofd_render_report_t,
     rofd_renderer_t, rofd_string_t, rofd_text_layout_t, rofd_text_search_t, rofd_text_selection_t,
     rofd_warning_list_t,
+};
+pub use handles::{rofd_link_list_t, rofd_outline_t};
+pub use links::{
+    rofd_link_list_free, rofd_link_list_get_action, rofd_link_list_get_action_count,
+    rofd_link_list_get_action_destination, rofd_link_list_get_count, rofd_link_list_get_region,
+    rofd_link_list_get_region_count, rofd_page_get_links,
 };
 pub use metadata::{
     rofd_document_get_metadata, rofd_document_get_warnings, rofd_metadata_free,

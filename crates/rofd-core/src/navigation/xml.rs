@@ -22,10 +22,10 @@ pub(crate) fn native(name: &OwnedName) -> bool {
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct XmlNode {
     pub(crate) name: OwnedName,
-    attributes: Vec<OwnedAttribute>,
+    pub(crate) attributes: Vec<OwnedAttribute>,
     pub(crate) text: String,
     pub(crate) children: Vec<usize>,
 }
@@ -43,11 +43,82 @@ impl XmlNode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct NavigationXml {
     pub(crate) nodes: Vec<XmlNode>,
     pub(crate) roots: Vec<usize>,
     pub(crate) historical_namespace: bool,
+    pub(crate) retained_bytes: u64,
+}
+
+pub(crate) struct XmlCapture {
+    pub(crate) xml: NavigationXml,
+    stack: Vec<usize>,
+    strings: StringBudget,
+    max_nodes: usize,
+}
+
+impl XmlCapture {
+    pub(crate) fn new(limits: &ResourceLimits) -> Self {
+        Self {
+            xml: NavigationXml {
+                nodes: Vec::new(),
+                roots: Vec::new(),
+                historical_namespace: false,
+                retained_bytes: 0,
+            },
+            stack: Vec::new(),
+            strings: StringBudget::new(limits.max_entry_size),
+            max_nodes: limits.max_page_objects,
+        }
+    }
+    pub(crate) fn start(
+        &mut self,
+        name: OwnedName,
+        attributes: Vec<OwnedAttribute>,
+    ) -> Result<usize> {
+        if self.xml.nodes.len() >= self.max_nodes {
+            return Err(Error::LimitExceeded(
+                "action XML node count exceeds max_page_objects".into(),
+            ));
+        }
+        retain_name(&mut self.strings, &name)?;
+        for attribute in &attributes {
+            retain_name(&mut self.strings, &attribute.name)?;
+            self.strings.reserve(attribute.value.len())?;
+        }
+        self.xml.retained_bytes = self.strings.used();
+        self.xml.historical_namespace |= name.namespace.as_deref()
+            == Some("http://www.ofdspec.org")
+            || attributes
+                .iter()
+                .any(|a| a.name.namespace.as_deref() == Some("http://www.ofdspec.org"));
+        let index = self.xml.nodes.len();
+        self.xml.nodes.push(XmlNode {
+            name,
+            attributes,
+            text: String::new(),
+            children: Vec::new(),
+        });
+        if let Some(&parent) = self.stack.last() {
+            self.xml.nodes[parent].children.push(index);
+        } else {
+            self.xml.roots.push(index);
+        }
+        self.stack.push(index);
+        Ok(index)
+    }
+    pub(crate) fn text(&mut self, value: &str) -> Result<()> {
+        if let Some(&index) = self.stack.last() {
+            self.strings.reserve(value.len())?;
+            self.xml.retained_bytes = self.strings.used();
+            self.xml.nodes[index].text.push_str(value);
+        }
+        Ok(())
+    }
+    pub(crate) fn end(&mut self) {
+        self.stack.pop();
+    }
 }
 
 impl NavigationXml {
@@ -63,11 +134,18 @@ impl NavigationXml {
             .filter(move |&i| self.nodes[i].is(local))
     }
 
-    pub(crate) fn read(bytes: &[u8], path: &str, limits: &ResourceLimits) -> Result<Self> {
+    pub(crate) fn read(
+        bytes: &[u8],
+        path: &str,
+        limits: &ResourceLimits,
+        outlines: bool,
+        bookmarks: bool,
+    ) -> Result<Self> {
         let mut result = Self {
             nodes: Vec::new(),
             roots: Vec::new(),
             historical_namespace: false,
+            retained_bytes: 0,
         };
         let mut selected: Vec<usize> = Vec::new();
         let mut depth = 0usize;
@@ -97,7 +175,8 @@ impl NavigationXml {
                     let start = document
                         && depth == 2
                         && native(&name)
-                        && matches!(name.local_name.as_str(), "Outlines" | "Bookmarks");
+                        && ((outlines && name.local_name == "Outlines")
+                            || (bookmarks && name.local_name == "Bookmarks"));
                     if start || !selected.is_empty() {
                         if result.nodes.len() >= limits.max_page_objects {
                             return Err(Error::LimitExceeded(format!(
@@ -146,6 +225,7 @@ impl NavigationXml {
                 _ => {}
             }
         }
+        result.retained_bytes = retained_strings.used();
         Ok(result)
     }
 }
